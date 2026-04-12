@@ -1,0 +1,101 @@
+{
+  "metadata": {
+    "date": "2026-04-02",
+    "owner": "codex",
+    "theme": "single_action_react_refactor",
+    "default_provider": "kimi",
+    "default_model": "kimi-k2.5-thinking",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "doc_worklog",
+      "title": "Create and maintain 2026-04-02 work log",
+      "status": "done",
+      "notes": "Created docs/work_logs/2026-04-02.md and started continuous Chinese progress logging."
+    },
+    {
+      "id": "doc_checklist",
+      "title": "Create 2026-04-02 checklist JSON with initial pending statuses",
+      "status": "done",
+      "notes": "Initialized this checklist with all pending items, then moved statuses as work advanced."
+    },
+    {
+      "id": "doc_protocol_update",
+      "title": "Update iteration protocol docs for strict single-action ReAct contract",
+      "status": "done",
+      "notes": "Updated ITERATION_PROTOCOL/TOOL_SURFACE/SYSTEM_RECORD to remove rollback+repair same-round batching semantics and describe strict one-action contract plus hook lifecycle."
+    },
+    {
+      "id": "doc_codex_update",
+      "title": "Update CODEX.md (English) with 2026-04-02 architecture objective and rationale",
+      "status": "done",
+      "notes": "Added new focus/update sections covering strict single-action ReAct, hook framework, budget policy, and current unit verification."
+    },
+    {
+      "id": "react_single_action_codegen",
+      "title": "Preserve bounded planner local action windows in codegen while runtime stays one-action-biased",
+      "status": "done",
+      "notes": "The earlier max-1 parser truncation was identified as a root cause for L2_130/L2_192. codegen first preserved up to 3 coherent same-window planner actions, and after deeper L2_130 replay analysis the bounded planner-window cap was widened again to 5 because some valid annular/flange sketch windows naturally need 4-5 coherent actions before the terminal solid op. runtime still decides the executed prefix."
+    },
+    {
+      "id": "token_timeout_relaxation",
+      "title": "Relax Kimi thinking output/token and timeout limits to reduce premature truncation",
+      "status": "done",
+      "notes": "Removed tight thinking max_tokens clamp, raised Kimi timeout floor, and increased default runtime timeouts/round budgets."
+    },
+    {
+      "id": "runner_single_action_execution",
+      "title": "Remove one-action mode multi-step batching in runner execution path",
+      "status": "done",
+      "notes": "Initial strict single-action execution landed first; later analysis narrowed the policy to default single-action plus tightly scoped model-driven local-window promotion. The latest failure analysis widened that promotion in one bounded direction: simple pre-solid closed-profile completion windows like create_sketch+add_circle+extrude can now stay intact, explicit hole windows still keep the direct-hole fast path, and fresh face-attached cut windows no longer collapse to one hole when topology evidence says the centers do not fit one host face."
+    },
+    {
+      "id": "runtime_hooks",
+      "title": "Add lightweight runtime hooks (round/action/failure lifecycle)",
+      "status": "done",
+      "notes": "Added src/sub_agent_runtime/hooks.py and runner emissions for run/round/action/planner lifecycle events."
+    },
+    {
+      "id": "relation_feedback_compaction",
+      "title": "Add planner-facing relation digest to reduce noisy relation payloads",
+      "status": "done",
+      "notes": "Added planner_digest summaries for relation_index/relation_focus/relation_eval and added prompt-budget compaction stages to trim oversized relation/topology payloads."
+    },
+    {
+      "id": "prompt_budget_compaction",
+      "title": "Add staged prompt-budget compaction for oversized round requests",
+      "status": "done",
+      "notes": "Implemented staged compaction (relation digest-only -> topology trim -> history trace trim -> hard fallback) with prompt_budget metadata for audit."
+    },
+    {
+      "id": "planner_timeout_hardening",
+      "title": "Harden planner/provider timeout behavior to prevent full-run hangs",
+      "status": "done",
+      "notes": "OpenAI-compatible client now uses thread invoke + hard timeout, and benchmark harness now has per-case timeout fuse (--case-timeout with auto-derived default) so one stalled case cannot block full L2."
+    },
+    {
+      "id": "benchmark_full_l2_baseline",
+      "title": "Run sampled L2 10-case baseline after major refactor",
+      "status": "in_progress",
+      "notes": "r7 baseline completed enough to isolate the remaining failing set to L2_63 / L2_130 / L2_192. After discovering codegen-side plan truncation, the latest targeted reruns are benchmark/runs/20260402_235959_l2_triplet_codegen_window_retention plus follow-up single-case reruns benchmark/runs/20260402_130_arc_signed_fix and benchmark/runs/20260402_192_face_window_batch. New proof points: (1) L2_63 is now cleared again on the newer stack in benchmark/runs/20260402_l2_triplet_mixed_hole_runtime_guard/L2_63; (2) L2_130 exposed a deeper annular-path degeneration bug beyond the signed-arc crash, so runtime now canonicalizes origin-centered annular semicircle paths even when planner omitted start; (3) L2_130 also exposed that multi-center face cuts cannot be blindly lowered to one hole, so same-window sketch+cut is preserved unless topology proves a single host face; (4) replaying L2_130 showed some coherent local sketch windows naturally need 4-5 actions, so the bounded planner-window cap was widened from 3 to 5 and is now being verified in benchmark/runs/20260403_l2_130_192_window5; (5) L2_192 motivated bounded batching for simple pre-solid closed-profile completion windows so first-solid bootstrap no longer burns three rounds on create_sketch -> add_circle -> extrude."
+    },
+    {
+      "id": "benchmark_failure_rootcause_loop",
+      "title": "For each failed case, analyze logs/artifacts, write root cause, and iterate fixes",
+      "status": "in_progress",
+      "notes": "Current reusable root causes expanded to: (1) planner/provider call can hang without case-level timeout; (2) no-solid bootstrap plane rewrites were overriding explicit plane/view hints; (3) first-solid transitions lacked explicit pre-solid shape evidence gating and multiplicity guards; (4) mixed circular face-edit windows wrongly removed direct hole actions in strict one-action mode; (5) strict one-action execution still wasted rounds on obvious existing-solid drilling windows instead of implicitly selecting stable direct-hole primitives; (6) over-strict one-action splitting also broke model-authored local windows that were already coherent, so runtime now allows tightly bounded adaptive local-window promotion; (7) an even deeper bug clipped planner local windows to a single action inside codegen parsing before runner selection; (8) add_path arc rewriting still assumed start_angle/end_angle and crashed on equally valid center+end+signed arc_degrees payloads; (9) existing-solid local-window batching was still too conservative because it only promoted post-create_sketch continuations, not new face-attached create_sketch+profile+completion windows; (10) annular half-shell prompts can still degenerate if planner omits add_path.start, so runner now infers the start from the first arc and canonicalizes the full annular path; (11) multi-center face-cut windows can look hole-like in prompt text but are not safely lowerable unless topology proves a single host face, so direct-hole lowering now has a single-face safety gate; (12) pre-solid local-window batching also missed current-sketch continuation windows like add_rectangle + extrude, so the runner now has a dedicated pre-solid continuation batch path instead of requiring every promotable pre-solid window to restart with create_sketch; (13) even when planner returned a full pre-solid composite completion window like create_sketch + add_path + flange rectangles + extrude, the runner still truncated execution to the profile prefix, so a separate pre-solid composite completion policy was added to preserve the terminal solid op."
+    },
+    {
+      "id": "benchmark_full_l2_target_10of10",
+      "title": "Reach 10/10 pass on sampled L2 with reusable fixes",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}

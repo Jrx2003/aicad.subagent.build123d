@@ -1,0 +1,107 @@
+{
+  "metadata": {
+    "date": "2026-04-01",
+    "owner": "codex",
+    "theme": "l2_full_closure",
+    "default_provider": "kimi",
+    "default_model": "kimi-k2.5-thinking",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "doc_worklog",
+      "title": "Create and maintain 2026-04-01 work log",
+      "status": "done",
+      "notes": "Created docs/work_logs/2026-04-01.md for the new day and recorded the shared pre-solid revolve-axis root cause from L2_96."
+    },
+    {
+      "id": "doc_checklist",
+      "title": "Create 2026-04-01 checklist JSON for the remaining sampled-L2 closure work",
+      "status": "done",
+      "notes": "This file now tracks the restart of the authority full 10-case run on the latest runtime contracts."
+    },
+    {
+      "id": "doc_codex_update",
+      "title": "Update CODEX.md with the 2026-04-01 revolve-axis contract fix and current targeted-pass state",
+      "status": "done",
+      "notes": "CODEX.md now records the shared L2_96 revolve-axis guard, the shared L2_164 annular-seed canonicalization fix, the shared L2_148 create_sketch offset / point-loft compression chain, and the new L2_90/L2_172 hole-lowering family fixes."
+    },
+    {
+      "id": "revolve_axis_contract",
+      "title": "Land a shared pre-solid revolve-axis rewrite so centerline revolves stay in-plane",
+      "status": "done",
+      "notes": "runner.py now rewrites misaligned revolve axes from requirement-implied vertical/horizontal centerlines or explicit around/about-axis wording; fresh live proof is benchmark/runs/20260401_030900_l2_96_revolve_axis_fix/L2_96 with planner axis=Y rewritten to execution axis=Z and score 1.0."
+    },
+    {
+      "id": "targeted_live_rerun",
+      "title": "Keep targeted live reruns green before restarting the authority full run",
+      "status": "done",
+      "notes": "Current targeted pass set: benchmark/runs/20260401_002720/L2_130, benchmark/runs/20260401_013015_l2_192_bottom_fix/L2_192, benchmark/runs/20260401_024200_l2_149_path_origin_fix/L2_149, benchmark/runs/20260401_030900_l2_96_revolve_axis_fix/L2_96, benchmark/runs/20260401_032700_l2_164_seed_rewrite_fix/L2_164, benchmark/runs/20260401_045200_l2_148_point_loft_compression/L2_148, benchmark/runs/20260401_061500_l2_90_construction_hole_fix/L2_90, benchmark/runs/20260401_062200_l2_172_countersink_lowering_fix/L2_172."
+    },
+    {
+      "id": "full_l2_refresh",
+      "title": "Restart the sampled 10-case L2 benchmark on the latest code",
+      "status": "done",
+      "notes": "Baseline authority surface is now complete. Main run: benchmark/runs/20260401_094309_l2_full_baseline_refresh. L2_130 stalled on a provider-side planner call, so the baseline was completed with companion run benchmark/runs/20260401_103100_l2_130_baseline_recovery."
+    },
+    {
+      "id": "full_l2_10_of_10",
+      "title": "Reach 10/10 pass on the sampled L2 authority run",
+      "status": "in_progress",
+      "notes": "Authority rerun `benchmark/runs/20260401_150500_l2_full_after_corner_cut` is now complete at 6/10 pass. PASS=L2_88,L2_90,L2_96,L2_148,L2_149,L2_164. FAIL=L2_63,L2_130,L2_172,L2_192. Important nuance: L2_90 and L2_164 are benchmark-pass but still `converged=false`; L2_172 is the inverse (`converged=true` but benchmark-fail), so the next cycle must target evaluator-visible feature-anchor / completion defects rather than only runner stop flags."
+    },
+    {
+      "id": "fix_add_path_arc_turn_semantics",
+      "title": "Preserve add_path arc cw/ccw semantics through normalization and execution",
+      "status": "done",
+      "notes": "Root cause was deeper than the earlier flange-width suspicion: registry normalization dropped arc direction='cw/ccw', so service replay defaulted missing turn to left and flipped the annular inner arc onto the wrong half. Deterministic replay of benchmark/runs/20260401_002720/L2_130/actions/round_03_action_01_request.json now restores bbox=[54,25,40] on current code."
+    },
+    {
+      "id": "fix_loft_apex_proxy_generalization",
+      "title": "Generalize point-loft compression from tiny circles to tiny apex profile proxies",
+      "status": "done",
+      "notes": "runner.py now treats tiny regular polygons (and equivalent degenerate top profiles) as apex proxies and rewrites them to loft(to_point=[x,y,z]) in the no-solid loft bootstrap. Unit coverage added in test_runner_contracts.py."
+    },
+    {
+      "id": "fix_pre_solid_bootstrap_proxy_builder_compression",
+      "title": "Detect pre-solid state from executed history and compress tiny apex proxy plus following loft",
+      "status": "done",
+      "notes": "Root cause exposed by the fresh L2_148 failure: the runner only treated solid_count=None as pre-solid when no actions had executed yet, and it refused apex-proxy promotion if a later loft already existed in the same batch. runner.py now infers pre-solid state from executed action history and compresses tiny apex proxy + following loft into a single point-loft action. New unit coverage proves both the geometry-free pre-solid rewrite and the batch compression path."
+    },
+    {
+      "id": "fix_post_solid_outside_corner_cut_contract",
+      "title": "Normalize post-solid outside-corner polygon cuts so reverse-cut semantics remove the outer corners",
+      "status": "done",
+      "notes": "Root cause exposed by the next L2_148 failure: after point-loft and trim were fixed, the final hexagon cut still removed the center prism and split the frustum into 3 solids. runner.py now rewrites post-solid corner-removal polygons to `size_mode=apothem` when the prompt provides the equivalent `lines ... from the center` distance, and normalizes the paired cut_extrude to `flip_side=true` plus `through_all=true`. Fresh live proof: benchmark/runs/20260401_143500_l2_148_outside_corner_cut_fix with score 0.9343."
+    },
+    {
+      "id": "fix_pattern_completion_compression",
+      "title": "Compress pattern and repeated-hole completion so face-edit scaffolding does not consume the final round",
+      "status": "pending",
+      "notes": "Current authority blocker is primarily L2_192. Need direct lowering from face-attached construction/pattern scaffolding into executable repeated-hole completion, and a safer final cut contract so patterned hole sketches do not end in OCC `NCollection_Sequence::ChangeValue` on the last cut."
+    },
+    {
+      "id": "fix_path_profile_local_reprojection",
+      "title": "Reproject path-attached profile primitives into sketch-local endpoint frames and tighten sweep validation",
+      "status": "pending",
+      "notes": "Shared failure family surfaced by L2_149. create_sketch(path_ref=...) reaches the endpoint frame, but add_circle/add_polygon payloads can still execute in world coordinates while validator passes the result."
+    },
+    {
+      "id": "fix_polygon_size_mode_inference",
+      "title": "Restrict regular-polygon apothem inference and block false-positive post-solid completion",
+      "status": "pending",
+      "notes": "Shared failure family surfaced by L2_148. Inscribed-radius prompts must not be rewritten to apothem mode, and feature_profile_shape_alignment must reject the wrong profile semantics."
+    },
+    {
+      "id": "fix_annular_flange_rectangle_contract",
+      "title": "Stop annular flange rectangle rewrites from inflating explicit requirement dimensions",
+      "status": "blocked",
+      "notes": "2026-04-01 afternoon evidence shows the current sampled-L2 L2_130 regression was not primarily caused by the flange rewrite: the exact old passing request still uses width=9.5 height=7.5, and current deterministic replay only failed because add_path arc cw/ccw semantics were lost. Keep this item open as architectural debt, but do not treat it as the active root cause until a fresh post-fix benchmark still points there."
+    }
+  ]
+}

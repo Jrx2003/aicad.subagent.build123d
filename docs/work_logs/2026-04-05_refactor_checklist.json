@@ -1,0 +1,196 @@
+{
+  "date": "2026-04-05",
+  "theme": "Claude-Code style model-driven CAD Agent V2",
+  "items": [
+    {
+      "id": "docs_v2_contract",
+      "title": "Update canonical docs to V2 contract",
+      "status": "completed"
+    },
+    {
+      "id": "llm_tool_calling",
+      "title": "Add LLM tool-calling interfaces and provider support",
+      "status": "completed"
+    },
+    {
+      "id": "tool_runtime_v2",
+      "title": "Implement tool orchestration, hooks, and turn state",
+      "status": "completed"
+    },
+    {
+      "id": "context_compact_v2",
+      "title": "Implement turn-grouped context manager and compact budgets",
+      "status": "completed"
+    },
+    {
+      "id": "runner_v2_dispatch",
+      "title": "Refactor runner into adapter with legacy/v2 dispatch",
+      "status": "completed"
+    },
+    {
+      "id": "validator_core_vs_diagnostic",
+      "title": "Split validate_requirement feedback into core and diagnostic lanes",
+      "status": "completed"
+    },
+    {
+      "id": "registry_surface_slimming",
+      "title": "Shrink registry and prompt-facing policy exposure for V2",
+      "status": "in_progress"
+    },
+    {
+      "id": "v2_prompt_surface_status_first",
+      "title": "Slim V2 prompt surface to status-first and tool-partition-first context",
+      "status": "completed"
+    },
+    {
+      "id": "binary_safe_prompt_compaction",
+      "title": "Keep V2 prompt compaction JSON-safe when write payloads contain binary artifacts",
+      "status": "completed"
+    },
+    {
+      "id": "benchmark_artifact_refresh",
+      "title": "Refresh benchmark naming, aggregation, case analysis, and trace usefulness for V2",
+      "status": "completed"
+    },
+    {
+      "id": "conversation_first_trace",
+      "title": "Emit Claude-Code-style public decision logs, conversation trace, tool timeline, stop reason, and failure bundle",
+      "status": "completed"
+    },
+    {
+      "id": "l1_full_rerun_with_new_diagnostics",
+      "title": "Rerun sampled L1 on V2 after benchmark diagnostics refresh and classify dominant failure modes",
+      "status": "completed"
+    },
+    {
+      "id": "sampled_l2_validation",
+      "title": "Run sampled L2 10-case benchmark after major slices",
+      "status": "pending"
+    },
+    {
+      "id": "v2_live_probe",
+      "title": "Run at least one real V2 probe under test_runs",
+      "status": "completed"
+    },
+    {
+      "id": "execute_cadquery_session_bridge",
+      "title": "Make execute_cadquery persist authoritative session state and support post-code validation/query/render",
+      "status": "completed"
+    },
+    {
+      "id": "execute_cadquery_validator_fallback",
+      "title": "Allow code-path validation to fall back from sketch history to topology, face geometry, and conservative geometry summary",
+      "status": "completed"
+    },
+    {
+      "id": "l1_full_rerun_after_code_path_bridge",
+      "title": "Rerun full L1 after execute_cadquery session bridge and validator fallback, then repair remaining failures only from completed evidence",
+      "status": "completed"
+    },
+    {
+      "id": "conversation_attachment_cleanup",
+      "title": "Replace synthetic assistant replay with attachment-style transcript plus objective health, and normalize face aliases in tool/service layer",
+      "status": "completed"
+    },
+    {
+      "id": "runtime_loop_safe_validation_demotion",
+      "title": "Keep raw validate_requirement contract stable but derive loop-safe core blockers inside V2 runtime so provenance-only blockers do not dominate stop/continue",
+      "status": "completed"
+    },
+    {
+      "id": "kimi_timeout_floor_fix",
+      "title": "Respect explicit timeout settings for kimi-k2.5-thinking and remove the old 300s floor behavior",
+      "status": "completed"
+    },
+    {
+      "id": "execute_cadquery_snapshot_alignment_fallback",
+      "title": "Use final snapshot topology/geometry to validate code-path face edits and positioned hole alignment when structured action history is absent",
+      "status": "completed"
+    },
+    {
+      "id": "execute_cadquery_snapshot_frame_and_fillet_fallback",
+      "title": "Use final snapshot face structure to validate same-shape hollow frames, triangle pocket alignment, and targeted fillets when execute_cadquery bypasses structured history",
+      "status": "completed"
+    },
+    {
+      "id": "runtime_skill_notes",
+      "title": "Inject compact CAD runtime skill notes for reusable repair families instead of adding runner-local patches",
+      "status": "completed"
+    },
+    {
+      "id": "flat_revolve_axisymmetric_skill_family",
+      "title": "Detect flat zero-volume nominal solids and teach the model to repair axisymmetric parts with coaxial primitives instead of retrying the same revolve family",
+      "status": "completed"
+    },
+    {
+      "id": "l1_targeted_failure_cluster_rerun",
+      "title": "Rerun L1 failure clusters after timeout/validator/skill-layer fixes and keep iterating from completed benchmark evidence",
+      "status": "in_progress"
+    },
+    {
+      "id": "named_plane_global_box_skill_mapping",
+      "title": "Add generic runtime skill guidance that maps named-plane symmetric profile extrudes to global box dimensions for whole-part execute_cadquery rebuilds",
+      "status": "completed"
+    },
+    {
+      "id": "first_successful_code_write_immediate_validation",
+      "title": "Probe the first successful session-backed execute_cadquery write immediately so whole-part code paths can stop before drifting into redundant inspection or repairs",
+      "status": "completed"
+    },
+    {
+      "id": "plane_anchored_positive_extrude_core_validation",
+      "title": "Promote named-plane positive-extrude span from a soft runtime skill to a loop-safe core validation fact so centered whole-part rewrites cannot be marked complete by mistake",
+      "status": "completed"
+    },
+    {
+      "id": "query_sketch_current_window_contract",
+      "title": "Make query_sketch expose the current sketch window first and keep only minimal path ancestry for path-attached sketches",
+      "status": "completed"
+    },
+    {
+      "id": "whole_part_post_write_validation_probe",
+      "title": "After successful execute_cadquery whole-part rewrites, refresh validation once before another broad inspection turn when blockers are stale or rounds are exhausted",
+      "status": "completed"
+    },
+    {
+      "id": "round_budget_sketch_risk_surface",
+      "title": "Expose round budget and current sketch completion risk so the model can choose whole-part rewrites under tight budgets",
+      "status": "completed"
+    },
+    {
+      "id": "failed_write_repair_visibility",
+      "title": "Persist failed write-tool results, surface previous_tool_failure_summary, and keep last good evidence available for repair turns",
+      "status": "completed"
+    },
+    {
+      "id": "execute_cadquery_snapshot_notch_profile_fallback",
+      "title": "Recognize circular profile shape and notch/slot subtractive intent from execute_cadquery final snapshots when structured local history is absent",
+      "status": "completed"
+    },
+    {
+      "id": "final_validation_convergence_consistency",
+      "title": "Mark the run as converged whenever benchmark-finalization validation proves completion",
+      "status": "completed"
+    },
+    {
+      "id": "auto_validation_stop_policy",
+      "title": "Stop the V2 loop immediately when non-progress auto-validation returns complete instead of exhausting rounds waiting for finish_run",
+      "status": "completed"
+    },
+    {
+      "id": "execute_cadquery_multi_plane_union_fallback",
+      "title": "Recognize explicit multi-plane additive unions from execute_cadquery final snapshots when datum-plane extrude specs imply a unique bbox/volume signature",
+      "status": "completed"
+    },
+    {
+      "id": "execute_cadquery_snapshot_inner_void_and_groove_fallback",
+      "title": "Recognize mixed nested inner-void sections and axisymmetric annular groove windows from execute_cadquery final snapshots when structured history is absent",
+      "status": "completed"
+    },
+    {
+      "id": "apply_cad_action_extrude_contract_guard",
+      "title": "Reject unsupported additive-extrude semantic overloads instead of silently degrading them into plain extrudes",
+      "status": "in_progress"
+    }
+  ]
+}

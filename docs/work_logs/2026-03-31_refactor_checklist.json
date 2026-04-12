@@ -1,0 +1,83 @@
+{
+  "metadata": {
+    "date": "2026-03-31",
+    "owner": "codex",
+    "theme": "l2_full_closure",
+    "default_provider": "kimi",
+    "default_model": "kimi-k2.5-thinking",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "doc_worklog",
+      "title": "Create and maintain 2026-03-31 work log",
+      "status": "done",
+      "notes": "Created docs/work_logs/2026-03-31.md as today's Chinese root-cause and verification log"
+    },
+    {
+      "id": "doc_checklist",
+      "title": "Create 2026-03-31 checklist JSON for remaining L2 closure work",
+      "status": "done",
+      "notes": "This file tracks the remaining live reruns and the final 10/10 sampled-L2 goal"
+    },
+    {
+      "id": "doc_worklogs_tracked",
+      "title": "Stop ignoring docs/work_logs so progress records can be pushed upstream",
+      "status": "done",
+      "notes": "Removed docs/work_logs from .gitignore so the Chinese work logs and checklist JSON now sync with remote like normal source files"
+    },
+    {
+      "id": "doc_codex_update",
+      "title": "Update CODEX.md with the 2026-03-31 remaining-failure state and default model note",
+      "status": "done",
+      "notes": "Added the new 2026-03-31 update covering the mixed central-cut plus bolt-circle surface-policy constraint and reaffirmed kimi/kimi-k2.5-thinking as the live verification default"
+    },
+    {
+      "id": "authoritative_failure_review",
+      "title": "Re-read the latest authoritative full 10-case L2 run and isolate only failed cases",
+      "status": "done",
+      "notes": "benchmark/runs/20260331_111649 leaves only L2_130 and L2_192 as failures"
+    },
+    {
+      "id": "l2_130_root_cause",
+      "title": "Trace L2_130 to the underlying path execution and closure bridge defects",
+      "status": "done",
+      "notes": "Confirmed failure chain: first tangent_arc bootstrap crash, then no pending wires, then degenerate three_point_arc line fallback in benchmark/runs/20260331_111649/L2_130"
+    },
+    {
+      "id": "l2_192_root_cause",
+      "title": "Trace L2_192 to planner drift from face sketch plus cut_extrude into hole plus hole",
+      "status": "done",
+      "notes": "Compared benchmark/runs/20260331_111649/L2_192 against passing benchmark/runs/20260331_105437/L2_192 and isolated mixed-hole-layout strategy drift"
+    },
+    {
+      "id": "targeted_live_rerun",
+      "title": "Run fresh live reruns for the remaining failed cases",
+      "status": "done",
+      "notes": "Fresh rerun benchmark/runs/20260401_002720/L2_130 passes at 0.9783. After two additional reusable fixes on L2_192 (pattern-hole diameter normalization and mixed-hole-window split) plus the widened bottom-face downward-extrude direction repair, fresh rerun benchmark/runs/20260401_013015_l2_192_bottom_fix also passes at 1.0."
+    },
+    {
+      "id": "case_failure_loop",
+      "title": "If any targeted rerun fails, inspect artifacts, log the reusable root cause, patch, and rerun",
+      "status": "in_progress",
+      "notes": "Today's reusable fixes now include: mixed central-cut plus bolt-circle face-edit hard constraint for L2_192; patterned-hole diameter normalization when planners leak pitch-circle size into hole actions; mixed central-hole plus ring-hole windows now split into separate direct-hole families; bottom-face additive extrudes now normalize not only negative distances but also negative/downward direction tokens; planner-facing extrude/cut_extrude height-depth aliases are now accepted end-to-end by registry plus execution so height-based spans no longer silently fall back to default 20/5; partial-circle add_circle lowered to add_path; rectangle corner aliases normalized into explicit center placement; no-solid extrude(profile_ref) cleared when the active sketch window already contains add_path; center-angle path rewrites now repair cursor-to-arc continuity; add_path close/closed is now a shared contract across normalization, sketch-state inference, and replay code generation; no-solid create_sketch now prefers axis-compatible planes even when the prompt uses Front/Top view wording instead of datum-plane wording; center-angle add_path rewrites now preserve geometrically closed profiles by injecting closed=true before extrusion; half-annular side-flange rewrites now recover radii from live center-angle and tangent_arc payloads, accept lower_left side anchors, expand ambiguous 2mm side rectangles into shell-bridging pads sized by wall thickness plus outward extension, accept centered left-side payloads at inner-radius anchors, and ignore inner-radius / rotated full-height body dimensions that planner dialects leak into width/height; same-round rewrites now see actions already executed earlier in the current round; face-attached add_circle/hole centers can now be rebased from reused absolute section coordinates into the current face-local sketch frame; flange surface requirements that mention the length direction can now retarget create_sketch away from wrong end caps and reproject local feature centers into the flange midspan plane; add_path now normalizes planner dialect aliases (`arc_degrees`, `turn_direction`, 3D direction vectors) into plane-local rail semantics; create_sketch(path_ref=...) now replays at the endpoint world origin instead of only recording that origin in query metadata"
+    },
+    {
+      "id": "full_l2_refresh",
+      "title": "Rerun the sampled 10-case L2 benchmark on the latest code",
+      "status": "in_progress",
+      "notes": "The previous full run exposed two additional shared execution-contract defects in the sampled L2 sweep family: add_path planner dialects could collapse rails back into straight lines, and create_sketch(path_ref=...) only attached correctly in query metadata while replay execution still built the profile at the wrong world origin. After landing those shared fixes, fresh rerun benchmark/runs/20260401_024200_l2_149_path_origin_fix/L2_149 now passes at 1.0, so the next step is the restarted full sampled 10-case L2 authority run on the updated code."
+    },
+    {
+      "id": "full_l2_10_of_10",
+      "title": "Reach 10/10 pass on the sampled L2 set",
+      "status": "pending",
+      "notes": "Completion is defined by the fresh full-run brief_report.md and per-case evaluation files, not by replay-only evidence"
+    }
+  ]
+}

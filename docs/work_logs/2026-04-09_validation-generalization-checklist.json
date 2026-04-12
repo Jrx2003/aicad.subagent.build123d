@@ -1,0 +1,105 @@
+{
+  "metadata": {
+    "date": "2026-04-09",
+    "owner": "codex",
+    "theme": "validation_generalization_refactor_phase1",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "design_internal_review",
+      "title": "Read current validation architecture notes, runtime docs, and validator/skill/taxonomy code",
+      "status": "done",
+      "notes": "Confirmed the main problem is hard-coded narrowing in validator, blocker taxonomy, and skill_pack rather than a pure lack of judge power."
+    },
+    {
+      "id": "design_external_corpus_scan",
+      "title": "Scan external CadQuery repositories as candidate corpus/stress-set sources",
+      "status": "done",
+      "notes": "Reviewed cadquery-contrib, cadquery-models, and cq-gridfinity READMEs and mapped their likely value to sweep/loft/selectors, parametric parts, and product-like shells/options."
+    },
+    {
+      "id": "design_spec",
+      "title": "Write formal design spec for validation generalization refactor",
+      "status": "done",
+      "notes": "Spec saved under docs/superpowers/specs with architecture, scope, benchmark role changes, corpus strategy, and run archival policy."
+    },
+    {
+      "id": "design_worklog",
+      "title": "Create dedicated work log for the validation generalization refactor",
+      "status": "done",
+      "notes": "Created a date-scoped work log summarizing the direction change and current boundaries."
+    },
+    {
+      "id": "design_checklist",
+      "title": "Create dedicated checklist JSON for phase-1 tracking",
+      "status": "done",
+      "notes": "Initialized this checklist to track design, planning, implementation, and verification."
+    },
+    {
+      "id": "user_spec_review",
+      "title": "Wait for user review and approval of the design spec",
+      "status": "done",
+      "notes": "User approved the written design spec and authorized implementation planning."
+    },
+    {
+      "id": "plan_phase1_impl",
+      "title": "Write implementation plan for phase-1 evidence/interpretation refactor",
+      "status": "done",
+      "notes": "Plan saved to docs/superpowers/plans/2026-04-09-validation-generalization-phase1.md."
+    },
+    {
+      "id": "impl_validation_intermediate_layers",
+      "title": "Introduce evidence_bundle and interpretation layers inside validate_requirement while keeping the external contract stable",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "impl_taxonomy_demotion",
+      "title": "Demote blocker_taxonomy from repair-lane binding to observation tags and decision hints",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "impl_skill_pack_demotion",
+      "title": "Refactor skill_pack from family guidance toward evidence-gap strategy guidance",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "impl_benchmark_generalization_metrics",
+      "title": "Add benchmark diagnostics for premature narrowing, insufficient evidence, and repeated same-signal retries",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "impl_external_corpus_index",
+      "title": "Create the initial external corpus index and curated stress set",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "impl_run_archive",
+      "title": "Archive runs older than 2026-04-06 and noncanonical run directory names without breaking historical references",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "impl_docs_sync",
+      "title": "Update CODEX and canonical CAD iteration docs to match the new evidence-first direction",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "verify_tests_probe_benchmark",
+      "title": "Run focused unit tests, at least one real probe, and benchmark/external-sample validation evidence",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "metadata": {
+    "date": "2026-04-03",
+    "owner": "codex",
+    "theme": "evidence_scheduler_and_tool_partition_refactor",
+    "default_provider": "kimi",
+    "default_model": "kimi-k2.5-thinking",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "doc_worklog",
+      "title": "Create and maintain 2026-04-03 work log",
+      "status": "done",
+      "notes": "Created docs/work_logs/2026-04-03.md and recorded the evidence-scheduler / tool-partition refactor rationale."
+    },
+    {
+      "id": "doc_checklist",
+      "title": "Create 2026-04-03 checklist JSON",
+      "status": "done",
+      "notes": "Initialized a new day-specific checklist to track the April 3 refactor pass."
+    },
+    {
+      "id": "doc_protocol_update",
+      "title": "Update iteration protocol docs for minimal required evidence and inspection partitions",
+      "status": "done",
+      "notes": "ITERATION_PROTOCOL / TOOL_SURFACE / SYSTEM_RECORD now describe minimal-required evidence, semantic-completion lane, topology-targeting lane, and joint-request groups."
+    },
+    {
+      "id": "doc_codex_update",
+      "title": "Update CODEX.md with 2026-04-03 architectural direction",
+      "status": "done",
+      "notes": "Added a new 2026-04-03 focus/update section covering evidence-scheduler slimming, inspection partitions, and the scripts/describe migration assessment."
+    },
+    {
+      "id": "scripts_describe_assessment",
+      "title": "Reassess scripts/describe migration value against current runtime contracts",
+      "status": "done",
+      "notes": "Conclusion: use it as planner-facing feature digest / diagnosis aid first, not as a hard runtime judge."
+    },
+    {
+      "id": "runner_min_required_evidence",
+      "title": "Make required evidence action-conditioned instead of post-solid always-validate",
+      "status": "done",
+      "notes": "runner._build_evidence_status now keeps post-solid required evidence minimal and delays validate_requirement until semantic-terminal or blocker-driven transitions."
+    },
+    {
+      "id": "runner_topology_autocapture",
+      "title": "Limit auto query_topology capture to topology-sensitive actions",
+      "status": "done",
+      "notes": "Auto-capture no longer triggers topology just because a requirement is relation-heavy."
+    },
+    {
+      "id": "surface_policy_partitions",
+      "title": "Add planner-facing inspection partitions and joint-request groups",
+      "status": "done",
+      "notes": "surface_policy now exposes required_now/state_readback/sketch_state/topology_targeting/semantic_completion/visual_confirmation plus compact joint groups."
+    },
+    {
+      "id": "prompt_guidance_update",
+      "title": "Teach planner to use inspection partitions instead of broad repeated inspection",
+      "status": "done",
+      "notes": "codegen prompt now explicitly says to choose the smallest tool lane and not to treat validate_requirement as an every-round companion query."
+    },
+    {
+      "id": "focused_unit_regression",
+      "title": "Run focused unit regressions for runner / active_surface / codegen",
+      "status": "done",
+      "notes": "PYTHONPATH=src uv run --extra dev pytest -q tests/unit/sub_agent_runtime/test_runner_contracts.py tests/unit/sub_agent_runtime/test_active_surface.py tests/unit/sub_agent/test_codegen_aci.py -> 237 passed."
+    },
+    {
+      "id": "provider_async_timeout_fix",
+      "title": "Replace thread-backed planner invoke with cancellable async provider calls",
+      "status": "done",
+      "notes": "L2_88 showed that asyncio.wait_for around to_thread(invoke) still leaves a hung worker thread. OpenAICompatibleClient now prefers ainvoke and keeps sync invoke only as a fallback."
+    },
+    {
+      "id": "prompt_bundle_slimming",
+      "title": "Slim round-local capability bundle exposure and render library guidance only on demand",
+      "status": "done",
+      "notes": "Prompt bloat was dominated by capability/library cards rather than the compact round request JSON itself. Pre-solid rounds now drop solid-only bundles and omit Library Card unless the current bundle set is genuinely complex."
+    },
+    {
+      "id": "benchmark_full_l2_refresh",
+      "title": "Run a fresh sampled full L2 after the evidence-scheduler refactor",
+      "status": "in_progress",
+      "notes": "The 20260403_030500_l2_full_evidence_scheduler_slim run exposed a provider-level planner hang on L2_88; the next rerun should include both the async-timeout fix and the round-local prompt bundle slimming."
+    },
+    {
+      "id": "benchmark_failure_rootcause_loop",
+      "title": "Inspect failed L2 cases and continue the root-cause loop",
+      "status": "in_progress",
+      "notes": "Prompt-only create_sketch guidance was insufficient for L2_63. Triplet rerun then exposed two clearer execution-layer roots: annular explicit narrow flanges were still being mis-expanded, and a bottom-face boss extrude could absorb a later pitch-circle hole family into one invalid additive sketch. Latest L2_192 replay exposed an even deeper planner-side failure: round 2 skipped the pending bottom-face boss entirely and jumped to later top-face cut/pattern work. A new feature_agenda layer now feeds ordered requirement phases back into planner / active_surface / topology-hint prioritization before the next live rerun. Current live rerun for L2_130 also shows a second-layer validator issue: after the top-face cut succeeds, blockers still remain on feature_target_face_edit / feature_target_face_subtractive_merge, so the loop degrades into inspection-only rounds instead of converging."
+    },
+    {
+      "id": "runner_bootstrap_window_preservation",
+      "title": "Preserve no-solid local completion windows after injected create_sketch",
+      "status": "done",
+      "notes": "runner now expands a strict single selected sketch primitive into create_sketch + original local profile/completion window when the rewrite reason is bootstrap_profile_requires_explicit_create_sketch."
+    },
+    {
+      "id": "runner_parallel_prefetch",
+      "title": "Parallelize independent required-evidence prefetch queries",
+      "status": "done",
+      "notes": "_maybe_prefetch_required_evidence now runs independent query_snapshot/query_sketch/query_geometry/query_topology/validate_requirement calls with asyncio.gather while preserving separate artifacts."
+    },
+    {
+      "id": "doc_parallel_tooling_update",
+      "title": "Update protocol docs for bootstrap continuation and parallel readonly queries",
+      "status": "done",
+      "notes": "ITERATION_PROTOCOL / TOOL_SURFACE / SYSTEM_RECORD now describe injected create_sketch window preservation and parallel required-evidence prefetch."
+    },
+    {
+      "id": "benchmark_full_l2_target_10of10",
+      "title": "Reach 10/10 pass on sampled L2 with reusable fixes",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "runner_annular_rewrite_boundary",
+      "title": "Tighten annular side-flange rectangle rewrites to preserve explicit corner-anchored narrow flanges",
+      "status": "in_progress",
+      "notes": "L2_130 first showed that runner was corrupting already-explicit flange rectangles into overlap-shell slabs. Initial boundary tightening was not sufficient: the current live rerun still rewrites explicit 2x2 bottom flanges into 9.5x7.5 overlap-shell rectangles, so more dialect guards are still required."
+    },
+    {
+      "id": "planner_history_delta_compaction",
+      "title": "Delta-compact planner-facing action history instead of replaying repeated snapshot geometry",
+      "status": "done",
+      "notes": "Repeated unchanged snapshots now collapse to same_state_as_previous and history no longer repeats volume/surface_area payloads already present in current query evidence."
+    },
+    {
+      "id": "planner_budget_realism",
+      "title": "Measure prompt budget using the actual pretty-printed round-request payload",
+      "status": "done",
+      "notes": "L2_192 exposed that minified-length budgeting understated prompt size after indent=2 rendering; budget checks now use the real serialized form and topology-window trimming triggers accordingly."
+    },
+    {
+      "id": "planner_topology_summary_surface",
+      "title": "Make planner-facing topology summary-first instead of adjacency-heavy by default",
+      "status": "done",
+      "notes": "query_topology.topology_window now keeps compact local targeting facts while full adjacency/detail remains in artifacts."
+    },
+    {
+      "id": "runner_annular_explicit_outer_side_preservation",
+      "title": "Preserve explicit annular narrow flanges beyond corner_reference-only dialects",
+      "status": "done",
+      "notes": "Center/position-anchored outer-side narrow flanges now survive annular rewrite, while axis-swapped ambiguous payloads still normalize to overlap-shell form."
+    },
+    {
+      "id": "runner_face_attached_boss_hole_split",
+      "title": "Prevent additive boss extrudes from absorbing later pitch-circle hole families",
+      "status": "done",
+      "notes": "On existing solids, a primary boss circle plus a later requirement-driven multi-center hole family is now split by rewriting the secondary family to construction before additive extrude."
+    },
+    {
+      "id": "planner_feature_agenda",
+      "title": "Add ordered feature agenda so planner does not skip earlier pending requirement phases",
+      "status": "done",
+      "notes": "Introduced common.feature_agenda, exposed it to planner prompt, reordered face target preference in active_surface, and biased topology selection hints toward the next pending phase face family."
+    }
+  ]
+}

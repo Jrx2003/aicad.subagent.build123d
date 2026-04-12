@@ -1,0 +1,322 @@
+{
+  "case_count": 3,
+  "dataset_root": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L",
+  "reports": [
+    {
+      "case_id": "L1_148",
+      "csv_encoding": "gb18030",
+      "csv_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L1/L1_sampled_rows.csv",
+      "difference_notes": [
+        "STEP geometric signatures are closely aligned"
+      ],
+      "generated_stats": {
+        "bbox": [
+          10.0,
+          80.0,
+          80.0
+        ],
+        "bbox_max": [
+          5.0,
+          40.0,
+          40.0
+        ],
+        "bbox_min": [
+          -5.0,
+          -40.0,
+          -40.0
+        ],
+        "bbox_sorted": [
+          10.0,
+          80.0,
+          80.0
+        ],
+        "centroid": [
+          1.2943828129726978e-16,
+          2.905330297330188e-16,
+          -2.062745036508002e-16
+        ],
+        "centroid_normalized": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "edges": 36,
+        "face_type_hist": {
+          "PLANE": 14
+        },
+        "faces": 14,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 6200.0,
+        "volume": 15000.0
+      },
+      "ground_truth_stats": {
+        "bbox": [
+          10.0,
+          80.0,
+          80.0
+        ],
+        "bbox_max": [
+          5.0,
+          40.0,
+          40.0
+        ],
+        "bbox_min": [
+          -5.0,
+          -40.0,
+          -40.0
+        ],
+        "bbox_sorted": [
+          10.0,
+          80.0,
+          80.0
+        ],
+        "centroid": [
+          1.233236303234353e-16,
+          -1.8963596125508455e-16,
+          3.0484257093929857e-16
+        ],
+        "centroid_normalized": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "edges": 36,
+        "face_type_hist": {
+          "PLANE": 14
+        },
+        "faces": 14,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 6200.0,
+        "volume": 14999.999999999998
+      },
+      "gt_step_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L1/steps/L1_148.step",
+      "level": "L1",
+      "passed": true,
+      "sandbox_error": null,
+      "sandbox_success": true,
+      "score": 1.0
+    },
+    {
+      "case_id": "L1_159",
+      "csv_encoding": "gb18030",
+      "csv_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L1/L1_sampled_rows.csv",
+      "difference_notes": [
+        "STEP geometric signatures are closely aligned"
+      ],
+      "generated_stats": {
+        "bbox": [
+          80.0,
+          40.0,
+          20.0
+        ],
+        "bbox_max": [
+          40.0,
+          20.0,
+          20.0
+        ],
+        "bbox_min": [
+          -40.0,
+          -20.0,
+          0.0
+        ],
+        "bbox_sorted": [
+          20.0,
+          40.0,
+          80.0
+        ],
+        "centroid": [
+          -0.37272946783440525,
+          -5.231984300525469e-16,
+          9.9378784220276
+        ],
+        "centroid_normalized": [
+          0.49534088165206996,
+          0.5,
+          0.49689392110138
+        ],
+        "edges": 15,
+        "face_type_hist": {
+          "CYLINDER": 1,
+          "PLANE": 7
+        },
+        "faces": 8,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 11514.159265358998,
+        "volume": 63214.601836602684
+      },
+      "ground_truth_stats": {
+        "bbox": [
+          80.0,
+          40.0,
+          20.0
+        ],
+        "bbox_max": [
+          40.0,
+          20.0,
+          20.0
+        ],
+        "bbox_min": [
+          -40.0,
+          -20.0,
+          0.0
+        ],
+        "bbox_sorted": [
+          20.0,
+          40.0,
+          80.0
+        ],
+        "centroid": [
+          -0.37272946783440525,
+          -5.231984300525469e-16,
+          9.9378784220276
+        ],
+        "centroid_normalized": [
+          0.49534088165206996,
+          0.5,
+          0.49689392110138
+        ],
+        "edges": 15,
+        "face_type_hist": {
+          "CYLINDER": 1,
+          "PLANE": 7
+        },
+        "faces": 8,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 11514.159265358998,
+        "volume": 63214.601836602684
+      },
+      "gt_step_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L1/steps/L1_159.step",
+      "level": "L1",
+      "passed": true,
+      "sandbox_error": null,
+      "sandbox_success": true,
+      "score": 1.0
+    },
+    {
+      "case_id": "L1_191",
+      "csv_encoding": "gb18030",
+      "csv_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L1/L1_sampled_rows.csv",
+      "difference_notes": [
+        "STEP geometric signatures are closely aligned"
+      ],
+      "generated_stats": {
+        "bbox": [
+          60.0,
+          40.0,
+          30.0
+        ],
+        "bbox_max": [
+          30.0,
+          20.0,
+          15.0
+        ],
+        "bbox_min": [
+          -30.0,
+          -20.0,
+          -15.0
+        ],
+        "bbox_sorted": [
+          30.0,
+          40.0,
+          60.0
+        ],
+        "centroid": [
+          7.385732391619641e-15,
+          -0.04695971189530834,
+          -0.13730520965754692
+        ],
+        "centroid_normalized": [
+          0.5000000000000001,
+          0.49882600720261727,
+          0.49542315967808176
+        ],
+        "edges": 27,
+        "face_type_hist": {
+          "CYLINDER": 2,
+          "PLANE": 10
+        },
+        "faces": 12,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 11247.64801127181,
+        "volume": 70982.83185307187
+      },
+      "ground_truth_stats": {
+        "bbox": [
+          60.0,
+          40.0,
+          30.0
+        ],
+        "bbox_max": [
+          30.0,
+          20.0,
+          15.0
+        ],
+        "bbox_min": [
+          -30.0,
+          -20.0,
+          -15.0
+        ],
+        "bbox_sorted": [
+          30.0,
+          40.0,
+          60.0
+        ],
+        "centroid": [
+          7.385025294840864e-15,
+          -0.04695971189530833,
+          -0.13730520965754692
+        ],
+        "centroid_normalized": [
+          0.5000000000000001,
+          0.49882600720261727,
+          0.49542315967808176
+        ],
+        "edges": 27,
+        "face_type_hist": {
+          "CYLINDER": 2,
+          "PLANE": 10
+        },
+        "faces": 12,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 11247.64801127181,
+        "volume": 70982.83185307187
+      },
+      "gt_step_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L1/steps/L1_191.step",
+      "level": "L1",
+      "passed": true,
+      "sandbox_error": null,
+      "sandbox_success": true,
+      "score": 1.0
+    }
+  ]
+}

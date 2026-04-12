@@ -1,0 +1,127 @@
+{
+  "record_id": "cad_iteration_system_record_v2_only",
+  "record_version": "3.1.3",
+  "last_updated": "2026-04-09",
+  "canonical_dir": "docs/cad_iteration",
+  "execution_order": [1, 2, 3, 4, 5],
+  "mission": {
+    "summary": "Deliver requirement-complete CAD artifacts through a model-driven V2 tool loop with compact context, one authoritative domain-kernel state, and fully inspectable evidence.",
+    "loop_style": "model_choose_tool_or_tools_then_execute",
+    "default_runtime_mode": "v2",
+    "preferred_runtime_mode": "v2",
+    "stable_api_shell": "sub_agent_runtime.runner.IterativeSubAgentRunner",
+    "output_artifact": "model.step"
+  },
+  "domain_kernel_contract": {
+    "authoritative_semantic_state": true,
+    "canonical_state_class": "sub_agent_runtime.feature_graph.DomainKernelState",
+    "canonical_surface_name": "DomainKernelState",
+    "canonical_digest_key": "domain_kernel_digest",
+    "canonical_runtime_tools": [
+      "query_kernel_state",
+      "patch_domain_kernel"
+    ],
+    "feature_instance_surface_name": "FeatureInstance",
+    "repair_patch_surface_name": "DomainKernelPatch",
+    "repair_packet_surface_name": "FamilyRepairPacket",
+    "repair_packet_prompt_fields": [
+      "latest_repair_packet_family_id",
+      "latest_repair_packet_feature_instance_id",
+      "latest_repair_packet_repair_mode",
+      "latest_repair_packet_host_frame",
+      "latest_repair_packet_target_anchor_summary",
+      "latest_repair_packet_realized_anchor_summary",
+      "latest_repair_packet_recipe_id",
+      "latest_repair_packet_recipe_summary",
+      "latest_repair_packet_recipe_skeleton"
+    ],
+    "current_high_value_repair_packet_families": [
+      "explicit_anchor_hole",
+      "spherical_recess"
+    ],
+    "family_geometry_binding_notes": {
+      "spherical_recess": "validator/probe may recover realized local centers from host-plane circular edges plus spherical-face bbox evidence when face radius fields are absent"
+    },
+    "binding_kinds": [
+      "execution",
+      "validation",
+      "observation",
+      "manual_patch"
+    ],
+    "kernel_sync_sources": [
+      "write_results",
+      "validation_results",
+      "feature_probes",
+      "manual_domain_kernel_patches"
+    ],
+    "revision_history_required": true,
+    "geometry_mutation_is_not_allowed_through_kernel_tools": true
+  },
+  "runtime_modes": ["v2"],
+  "tool_turn_policy": {
+    "max_write_tools_per_turn": 1,
+    "allow_multiple_read_tools_per_turn": true,
+    "parallel_read_tools_when_safe": true,
+    "default_first_write_bias": "strict_code_first",
+    "canonical_turn_lanes": [
+      "code_first_build",
+      "code_repair_after_validation_blocker",
+      "local_finish",
+      "kernel_refresh",
+      "finish_or_continue_after_judgment"
+    ],
+    "preferred_first_write_tool": "execute_build123d",
+    "execute_build123d_preflight_lint": true,
+    "local_finish_tool": "apply_cad_action",
+    "semantic_refresh_tools": [
+      "query_kernel_state",
+      "query_feature_probes",
+      "execute_build123d_probe",
+      "validate_requirement"
+    ]
+  },
+  "freshness_contract": {
+    "fresh_post_write_evidence_is_authoritative": true,
+    "successful_write_invalidates": [
+      "query_kernel_state",
+      "query_snapshot",
+      "query_sketch",
+      "query_geometry",
+      "query_topology",
+      "query_feature_probes",
+      "execute_build123d_probe",
+      "validate_requirement",
+      "render_view",
+      "get_history"
+    ],
+    "prompt_precedence": [
+      "fresh_post_write_evidence",
+      "fresh_validation_core_blockers",
+      "domain_kernel_digest",
+      "compacted_history"
+    ]
+  },
+  "benchmark_contract": {
+    "default_runtime_mode": "v2",
+    "runtime_mode_source_recorded_in_practice_identity": false,
+    "run_dir_format": "YYYYMMDD_HHMMSS",
+    "artifact_dirs": [
+      "prompts",
+      "plans",
+      "actions",
+      "queries",
+      "outputs",
+      "trace"
+    ],
+    "summary_file": "summary.json"
+  },
+  "invariants": {
+    "keep_intermediate_evidence": true,
+    "keep_prompt_plan_action_query_output_artifacts": true,
+    "upstream_contracts_stable": [
+      "sub_agent_runtime.contracts.IterationRequest",
+      "sub_agent_runtime.contracts.IterationRunResult"
+    ],
+    "benchmark_prompt_repairs_must_stay_in_dataset_layer": true
+  }
+}

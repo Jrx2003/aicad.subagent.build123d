@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.agents/
+.claude/
+.env
+.tmp/
+.worktrees/
+*.pyc
+.DS_Store
+test_runs/
+benchmark/runs/
+benchmark/sampled_10_per_L/
+benchmark/.DS_Store
+course/
+diff-review-*/
+report-*/
+scripts/describe/
+
+# Always track project work logs and checkpoint notes.
+!docs/
+!docs/work_logs/
+!docs/work_logs/**

@@ -1,0 +1,112 @@
+{
+  "case_count": 1,
+  "dataset_root": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L",
+  "reports": [
+    {
+      "case_id": "L2_90",
+      "csv_encoding": "gb18030",
+      "csv_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L2/L2_sampled_rows.csv",
+      "difference_notes": [
+        "STEP geometric signatures are closely aligned"
+      ],
+      "generated_stats": {
+        "bbox": [
+          100.0,
+          100.0,
+          15.0
+        ],
+        "bbox_max": [
+          50.0,
+          50.0,
+          15.0
+        ],
+        "bbox_min": [
+          -50.0,
+          -50.0,
+          0.0
+        ],
+        "bbox_sorted": [
+          15.0,
+          100.0,
+          100.0
+        ],
+        "centroid": [
+          1.1386073202353959e-12,
+          -2.588121234291616e-13,
+          7.499999999999998
+        ],
+        "centroid_normalized": [
+          0.5000000000000113,
+          0.49999999999999745,
+          0.4999999999999999
+        ],
+        "edges": 21,
+        "face_type_hist": {
+          "CYLINDER": 7,
+          "PLANE": 2
+        },
+        "faces": 9,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 22540.92728950736,
+        "volume": 101905.41170082327
+      },
+      "ground_truth_stats": {
+        "bbox": [
+          100.0,
+          100.0,
+          15.0
+        ],
+        "bbox_max": [
+          50.0,
+          50.0,
+          15.0
+        ],
+        "bbox_min": [
+          -50.0,
+          -50.0,
+          0.0
+        ],
+        "bbox_sorted": [
+          15.0,
+          100.0,
+          100.0
+        ],
+        "centroid": [
+          1.1388929167505464e-12,
+          -2.586693251715863e-13,
+          7.499999999999998
+        ],
+        "centroid_normalized": [
+          0.5000000000000113,
+          0.49999999999999745,
+          0.4999999999999999
+        ],
+        "edges": 21,
+        "face_type_hist": {
+          "CYLINDER": 7,
+          "PLANE": 2
+        },
+        "faces": 9,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 22540.92728950736,
+        "volume": 101905.41170082327
+      },
+      "gt_step_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L2/steps/L2_90.step",
+      "level": "L2",
+      "passed": true,
+      "sandbox_error": null,
+      "sandbox_success": true,
+      "score": 1.0
+    }
+  ]
+}

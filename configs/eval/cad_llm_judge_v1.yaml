@@ -1,0 +1,41 @@
+rubric_id: cad_llm_judge
+rubric_version: v1
+prompt_version: cad_judge_prompt_v1
+judge_model: glm-4.7
+
+weights:
+  requirement_fidelity: 0.35
+  geometric_reasonableness: 0.25
+  manufacturability_proxy: 0.20
+  code_quality_proxy: 0.10
+  execution_stability: 0.10
+
+anchors:
+  requirement_fidelity:
+    high: "The generated model intent is consistent with the code and likely satisfies the task."
+    mid: "Core shape appears reasonable, but important intent details are uncertain."
+    low: "Generated result appears inconsistent with likely intent from code or execution artifacts."
+  geometric_reasonableness:
+    high: "Geometry seems coherent and free of obvious anomalies."
+    mid: "Some geometric choices seem questionable or weakly constrained."
+    low: "Geometry appears clearly unreasonable or malformed."
+  manufacturability_proxy:
+    high: "No obvious manufacturability concerns are evident from the artifact and code."
+    mid: "Potential manufacturability concerns exist but are not definitive."
+    low: "Clear manufacturability risks are apparent."
+  code_quality_proxy:
+    high: "Code is clear, modular enough, and uses explicit parameters/operations."
+    mid: "Code works but has weak structure, readability, or maintainability."
+    low: "Code quality is poor and likely unstable or hard to maintain."
+  execution_stability:
+    high: "Execution output indicates stable and clean runtime behavior."
+    mid: "Execution succeeded with warnings/noise that may indicate fragility."
+    low: "Execution is unstable or suggests high likelihood of failure/regression."
+
+hard_gates:
+  missing_step_max_score: 0.20
+  empty_artifact_max_score: 0.30
+
+confidence:
+  low_threshold: 0.65
+  enable_rejudge: false

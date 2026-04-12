@@ -1,0 +1,110 @@
+{
+  "case_count": 1,
+  "dataset_root": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L",
+  "reports": [
+    {
+      "case_id": "L1_122",
+      "csv_encoding": "gb18030",
+      "csv_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L1/L1_sampled_rows.csv",
+      "difference_notes": [
+        "STEP geometric signatures are closely aligned"
+      ],
+      "generated_stats": {
+        "bbox": [
+          80.0,
+          50.0,
+          40.0
+        ],
+        "bbox_max": [
+          40.0,
+          25.0,
+          40.0
+        ],
+        "bbox_min": [
+          -40.0,
+          -25.0,
+          0.0
+        ],
+        "bbox_sorted": [
+          40.0,
+          50.0,
+          80.0
+        ],
+        "centroid": [
+          -7.175534240862666e-16,
+          -7.264588930411264e-16,
+          15.499999999999998
+        ],
+        "centroid_normalized": [
+          0.5,
+          0.5,
+          0.38749999999999996
+        ],
+        "edges": 24,
+        "face_type_hist": {
+          "PLANE": 10
+        },
+        "faces": 10,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 20899.999999999996,
+        "volume": 100000.0
+      },
+      "ground_truth_stats": {
+        "bbox": [
+          80.0,
+          50.0,
+          40.0
+        ],
+        "bbox_max": [
+          40.0,
+          25.0,
+          40.0
+        ],
+        "bbox_min": [
+          -40.0,
+          -25.0,
+          0.0
+        ],
+        "bbox_sorted": [
+          40.0,
+          50.0,
+          80.0
+        ],
+        "centroid": [
+          -7.175534240862666e-16,
+          -7.264588930411264e-16,
+          15.499999999999998
+        ],
+        "centroid_normalized": [
+          0.5,
+          0.5,
+          0.38749999999999996
+        ],
+        "edges": 24,
+        "face_type_hist": {
+          "PLANE": 10
+        },
+        "faces": 10,
+        "inertia_principal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "solids": 1,
+        "surface_area": 20899.999999999996,
+        "volume": 100000.0
+      },
+      "gt_step_path": "/Users/jerryx/code/aicad.subagent.iteration/benchmark/sampled_10_per_L/L1/steps/L1_122.step",
+      "level": "L1",
+      "passed": true,
+      "sandbox_error": null,
+      "sandbox_success": true,
+      "score": 1.0
+    }
+  ]
+}
