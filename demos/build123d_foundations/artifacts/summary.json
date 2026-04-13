@@ -2,12 +2,12 @@
   "entries": [
     {
       "stem": "demo_01_local_frame_countersink",
-      "title": "Local frame countersink plate",
-      "narrative": "Translate corner-based sketch coordinates into the centered host frame, then place repeated cutters with Locations.",
+      "title": "局部坐标 countersink 板",
+      "narrative": "先把角点坐标映射到居中宿主坐标系，再用 `Locations` 放置重复 cutter。",
       "talking_points": [
-        "Explicit coordinate remapping makes face-local arrays deterministic.",
-        "Locations removes repeated placement boilerplate from the model code.",
-        "The same pattern matches the successful L2_172 runtime path."
+        "显式坐标重映射让面局部阵列更稳定、更可解释。",
+        "`Locations` 去掉了重复 placement 的样板代码。",
+        "这和成功的 L2_172 运行时路径是同一种模式。"
       ],
       "step_path": "artifacts/demo_01_local_frame_countersink.step",
       "volume": 46642.832,
@@ -19,12 +19,12 @@
     },
     {
       "stem": "demo_02_half_shell_directional_holes",
-      "title": "Half-shell with directional holes",
-      "narrative": "Keep the half-shell, pad, and lug drilling in one builder so subtract/intersect semantics stay explicit and lintable.",
+      "title": "半壳体与定向打孔",
+      "narrative": "把半壳、底部 pad 和侧向打孔保持在同一个构建器里，让减料与相交语义始终显式可见。",
       "talking_points": [
-        "Mode.INTERSECT gives a clean same-builder half-shell instead of fragile post-hoc trimming.",
-        "Plane.XZ.offset(0) keeps the drilling frame honest: local coordinates are (x, z), not (x, y).",
-        "This is the contract area exposed by the L2_130 repair work."
+        "`Mode.INTERSECT` 能在同一构建器里干净地保留半壳，而不是依赖脆弱的后处理裁切。",
+        "`Plane.XZ.offset(0)` 能保证打孔 frame 语义正确：局部坐标是 `(x, z)`，不是 `(x, y)`。",
+        "这正是 L2_130 最近暴露和收紧的契约区域。"
       ],
       "step_path": "artifacts/demo_02_half_shell_directional_holes.step",
       "volume": 20945.902,
@@ -36,12 +36,12 @@
     },
     {
       "stem": "demo_03_enclosure_body",
-      "title": "Shelled enclosure body",
-      "narrative": "Stage the cavity as a PRIVATE part and subtract it only after the outer host dimensions are stable.",
+      "title": "壳体本体",
+      "narrative": "先把 cavity 作为 `Mode.PRIVATE` 的暂存零件构建出来，等外部宿主尺寸稳定后再统一减掉。",
       "talking_points": [
-        "Mode.PRIVATE avoids mutating the host while staging cavity geometry.",
-        "The body keeps the opening-face semantics explicit instead of relying on selector-heavy shell edits.",
-        "This mirrors the runtime preference for explicit inner-solid subtraction on simple shelled boxes."
+        "`Mode.PRIVATE` 可以避免在暂存 cavity 时提前污染宿主。",
+        "本体继续保留 opening-face 语义，而不是依赖 selector 很重的 shell 编辑。",
+        "这和运行时对简单 shelled box 优先使用显式 inner-solid subtraction 的偏好一致。"
       ],
       "step_path": "artifacts/demo_03_enclosure_body.step",
       "volume": 35808.0,
@@ -53,12 +53,12 @@
     },
     {
       "stem": "demo_03_enclosure_lid",
-      "title": "Lip-fit lid with countersunk fasteners",
-      "narrative": "Build the lid plate and lip as separate solids, then add countersunk holes from the top frame.",
+      "title": "lip-fit 盖子与沉头紧固孔",
+      "narrative": "把 lid plate 和 lip 作为两个显式实体组织，再从顶部坐标系切出沉头紧固孔。",
       "talking_points": [
-        "The lip is an explicit ring, not an implicit shell side effect.",
-        "Fastener placement stays readable because placement and subtraction are decoupled.",
-        "This is the clean Build123d pattern behind the external enclosure experiment work."
+        "lip 是一个显式的环形结构，而不是隐式 shell 副作用。",
+        "紧固孔之所以更易读，是因为 placement 和 subtraction 被明确拆开了。",
+        "这更接近外部 enclosure 实验背后真正需要的 Build123d 建模模式。"
       ],
       "step_path": "artifacts/demo_03_enclosure_lid.step",
       "volume": 15274.674,

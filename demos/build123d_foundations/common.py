@@ -55,5 +55,7 @@ def export_artifact(
 def write_suite_summary(entries: list[dict[str, object]]) -> Path:
     artifact_dir = ensure_artifact_dir()
     summary_path = artifact_dir / "summary.json"
-    summary_path.write_text(json.dumps({"entries": entries}, indent=2) + "\n")
+    summary_path.write_text(
+        json.dumps({"entries": entries}, indent=2, ensure_ascii=False) + "\n"
+    )
     return summary_path

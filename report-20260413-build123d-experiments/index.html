@@ -14,14 +14,14 @@
           <h1>Build123d 迁移已经有足够证据支撑一次清晰汇报。</h1>
           <p class="hero__lede">
             今天的目标不再是“不惜一切代价把迁移全部做完”，而是用真实 run 和一组小而清晰的
-            demo，说明为什么对这个仓库来说，Build123d 比旧的 CadQuery 契约更适合作为运行时建模表面。
+            演示案例，说明为什么对这个仓库来说，Build123d 比旧的 CadQuery 契约更适合作为运行时建模表面。
           </p>
         </div>
         <aside class="metric-stack">
           <div class="metric-card">
             <span class="metric-card__label">最佳成功样例</span>
             <strong>L2_172</strong>
-            <span>1 轮 / 完成验证 / benchmark 通过</span>
+            <span>1 轮 / 完成验证 / 基准评测通过</span>
           </div>
           <div class="metric-card">
             <span class="metric-card__label">Builder 修复样例</span>
@@ -30,7 +30,7 @@
           </div>
           <div class="metric-card metric-card--warn">
             <span class="metric-card__label">仍然开放的缺口</span>
-            <strong>外部 enclosure case</strong>
+            <strong>外部 enclosure 案例</strong>
             <span>失败已结构化，不再是无声的 sandbox 混乱</span>
           </div>
         </aside>
@@ -50,13 +50,13 @@
       <section class="chapter" id="architecture" data-reveal>
         <div class="chapter__head">
           <span>01</span>
-          <h2>为什么 Build123d 对这个 runtime 更有帮助</h2>
+          <h2>为什么 Build123d 对这个运行时更有帮助</h2>
         </div>
         <div class="card-grid card-grid--three">
           <article class="card">
             <h3>局部坐标系更显式</h3>
             <p>
-              `Plane`、`Locations` 和 centered host geometry 让 requirement 中的局部坐标
+              `Plane`、`Locations` 和居中宿主几何让 requirement 中的局部坐标
               更容易映射成稳定的模型空间 placement。
             </p>
             <p class="card__note">
@@ -67,20 +67,20 @@
             <h3>Builder 原生布尔更干净</h3>
             <p>
               `Mode.SUBTRACT` 和 `Mode.INTERSECT` 可以把 half-shell、annular band 这类逻辑
-              放在一个可读的 builder 内完成，而不是依赖脆弱的链式状态。
+              放在一个可读的构建器内完成，而不是依赖脆弱的链式状态。
             </p>
             <p class="card__note">
               这正是 `L1_218` 的修复路径和 `L2_130` 半壳 contract 收紧的基础。
             </p>
           </article>
           <article class="card">
-            <h3>安全的 staging 能力</h3>
+            <h3>安全的暂存能力</h3>
             <p>
-              `Mode.PRIVATE` 让我们可以在活动中的 builder 内先 staging cavity 或 lip solid，
+              `Mode.PRIVATE` 让我们可以在活动中的构建器内先暂存 cavity 或 lip solid，
               而不会在时机未成熟时提前污染 host。
             </p>
             <p class="card__note">
-              这对 shelled box、lid，以及带 opening-face 语义的 feature family 都很重要。
+              这对 shelled box、盖子，以及带 opening-face 语义的 feature family 都很重要。
             </p>
           </article>
         </div>
@@ -89,38 +89,38 @@
       <section class="chapter" id="demos" data-reveal>
         <div class="chapter__head">
           <span>02</span>
-          <h2>三组适合现场演示的 demo</h2>
+          <h2>三组适合现场讲解的演示案例</h2>
         </div>
         <div class="demo-list">
           <article class="demo-card">
-            <h3>Demo A：局部坐标 countersink 板</h3>
+            <h3>演示 A：局部坐标 countersink 板</h3>
             <p>
               路径：<code>demos/build123d_foundations/demo_local_frame_countersink.py</code>
             </p>
             <ul>
               <li>展示 corner-frame 到 centered-frame 的坐标重映射。</li>
-              <li>用 `Locations` 清晰表达重复 cutter 的 placement。</li>
+              <li>用 `Locations` 清晰表达重复 cutter 的布局。</li>
               <li>直接对应成功的 `L2_172` 模式。</li>
             </ul>
           </article>
           <article class="demo-card">
-            <h3>Demo B：半壳体与定向打孔</h3>
+            <h3>演示 B：半壳体与定向打孔</h3>
             <p>
               路径：<code>demos/build123d_foundations/demo_half_shell_directional_holes.py</code>
             </p>
             <ul>
-              <li>展示 same-builder `Mode.INTERSECT` 处理 half-shell trimming。</li>
-              <li>展示 `Plane.XZ.offset(0)` 才是正确的定向打孔 frame。</li>
-              <li>解释为什么 runtime 现在会 lint 这类 plane-offset 坐标混淆。</li>
+              <li>展示同一构建器内的 `Mode.INTERSECT` 如何处理 half-shell trimming。</li>
+              <li>展示 `Plane.XZ.offset(0)` 才是正确的定向打孔坐标框架。</li>
+              <li>解释为什么运行时现在会 lint 这类 plane-offset 坐标混淆。</li>
             </ul>
           </article>
           <article class="demo-card">
-            <h3>Demo C：壳体本体与 lip-fit 盖子</h3>
+            <h3>演示 C：壳体本体与 lip-fit 盖子</h3>
             <p>
               路径：<code>demos/build123d_foundations/demo_enclosure_body_lid.py</code>
             </p>
             <ul>
-              <li>用 `Mode.PRIVATE` staging cavity 和 lip 几何。</li>
+              <li>用 `Mode.PRIVATE` 暂存 cavity 和 lip 几何。</li>
               <li>把 body 与 lid 的语义显式拆开，便于阅读和解释。</li>
               <li>给仍未收口的 enclosure gap 提供一个更适合汇报的对照面。</li>
             </ul>
@@ -138,14 +138,14 @@
             <h3>对应 run</h3>
             <p><code>test_runs/20260413_094502</code></p>
             <p>
-              Prompt：一个包含 shelled body、lip-fit cover 和 countersunk fastener holes 的紧凑 enclosure。
+              Requirement：一个包含 shelled body、lip-fit cover 和 countersunk fastener holes 的紧凑 enclosure。
             </p>
           </article>
           <article class="card card--warn">
             <h3>这次失败为什么是有价值的</h3>
             <p>
-              首轮写入没有消失在一个泛化的 sandbox error 中。Preflight lint 立刻拦住了
-              legacy countersink helper，并给出了结构化 repair recipe：
+              首轮写入没有消失在一个泛化的 sandbox error 中。预检 lint 立刻拦住了
+              legacy countersink helper，并给出了结构化修复方案：
               <code>explicit_anchor_hole_countersink_array_safe_recipe</code>。
             </p>
             <p class="card__note">
@@ -159,19 +159,19 @@
       <section class="chapter" id="success-case" data-reveal>
         <div class="chapter__head">
           <span>04</span>
-          <h2>正例：真实 runtime 证据</h2>
+          <h2>正例：真实运行时证据</h2>
         </div>
         <div class="card-grid card-grid--two">
           <article class="card media-card">
             <div>
               <h3>L2_172：一轮完成的 countersink 板</h3>
               <p>
-                `benchmark/runs/20260413_102600/L2_172` 在 1 个 planner round 内完成，
+                `benchmark/runs/20260413_102600/L2_172` 在 1 个规划轮次内完成，
                 同时满足 `first_write_tool=execute_build123d`、`validation_complete=true`
                 和 evaluator pass。
               </p>
               <p class="card__note">
-                这个 case 的关键一步，是把局部坐标显式翻译到 centered host frame。
+                这个案例的关键一步，是把局部坐标显式翻译到居中宿主坐标系。
               </p>
             </div>
             <div class="media-pair">
@@ -183,11 +183,11 @@
             <div>
               <h3>L1_218：环形槽修复链路</h3>
               <p>
-                `benchmark/runs/20260413_141000/L1_218` 最终收敛，关键在于通过 Build123d repair path
-                把 groove 拉回到更显式的 band/subtract contract。
+                `benchmark/runs/20260413_141000/L1_218` 最终收敛，关键在于通过 Build123d 修复路径
+                把 groove 拉回到更显式的带状减料契约。
               </p>
               <p class="card__note">
-                这个 case 适合汇报，因为它展示的是一个健康的修复闭环，而不只是一次性成功。
+                这个案例适合汇报，因为它展示的是一个健康的修复闭环，而不只是一次性成功。
               </p>
             </div>
             <div class="media-pair">
@@ -206,10 +206,10 @@
         <div class="timeline">
           <div class="timeline__item"><strong>prompts/</strong><span>模型这一轮到底看到了什么。</span></div>
           <div class="timeline__item"><strong>plans/</strong><span>模型为什么选这个工具，以及它准备写什么代码。</span></div>
-          <div class="timeline__item"><strong>actions/</strong><span>Build123d 写入是否成功，还是命中了结构化 lint / repair surface。</span></div>
+          <div class="timeline__item"><strong>actions/</strong><span>Build123d 写入是否成功，还是命中了结构化 lint / 修复面。</span></div>
           <div class="timeline__item"><strong>queries/</strong><span>写后 validator、kernel refresh 和 probe 拿回了什么证据。</span></div>
-          <div class="timeline__item"><strong>trace/</strong><span>每一轮的决策链路和 stop reason。</span></div>
-          <div class="timeline__item"><strong>outputs/ 与 evaluation/</strong><span>最终 STEP 产物以及 benchmark 对照证据。</span></div>
+          <div class="timeline__item"><strong>trace/</strong><span>每一轮的决策链路和停止原因。</span></div>
+          <div class="timeline__item"><strong>outputs/ 与 evaluation/</strong><span>最终 STEP 产物以及基准评测对照证据。</span></div>
         </div>
       </section>
 
@@ -221,10 +221,10 @@
         <div class="judgment-band">
           <p>
             这次迁移已经有足够扎实的内容支撑一次汇报：Build123d 确实在我们最关心的几个点上改善了
-            runtime，包括显式 local frame、builder 可见的 boolean、safe staging，以及可确定的 preflight repair surface。
+            运行时，包括显式局部坐标系、构建器可见的 boolean、安全暂存，以及可确定的预检修复面。
           </p>
           <p>
-            需要诚实说明的是：benchmark 锚点通过，并不等于仓库已经“全部完成”。enclosure family
+            需要诚实说明的是：基准评测锚点通过，并不等于仓库已经“全部完成”。enclosure family
             仍然需要更泛化的 body / lid / top-face reasoning。
           </p>
         </div>
@@ -237,16 +237,16 @@
         </div>
         <div class="card-grid card-grid--three">
           <article class="card">
-            <h3>保持 demo 小而稳定</h3>
-            <p>把这套 demo 作为 Build123d 迁移阶段的稳定解释面，而不是不断堆大而杂的案例。</p>
+            <h3>保持演示案例小而稳定</h3>
+            <p>把这套演示案例作为 Build123d 迁移阶段的稳定解释面，而不是不断堆大而杂的案例。</p>
           </article>
           <article class="card">
             <h3>继续泛化 enclosure reasoning</h3>
             <p>重点放在 shell opening 语义、lid/body 拆解，以及 top-face fastener placement。</p>
           </article>
           <article class="card">
-            <h3>把 benchmark 当信号，不当目标</h3>
-            <p>继续只接受那些能提升多个未知 prompt 共享 runtime contract 的修复，而不是单个 case 强化。</p>
+            <h3>把基准评测当信号，不当目标</h3>
+            <p>继续只接受那些能提升多个未知 prompt 共享运行时契约的修复，而不是单个 case 强化。</p>
           </article>
         </div>
       </section>
@@ -260,7 +260,7 @@
           <article class="code-card">
             <h3>L2_172 决策摘要</h3>
             <pre><code>把 corner-based 的草图坐标
-转换到 centered host frame，
+转换到居中宿主坐标系，
 然后一次性写出完整的 Build123d 脚本。</code></pre>
           </article>
           <article class="code-card">

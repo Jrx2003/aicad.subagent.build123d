@@ -86,27 +86,23 @@ def export_demo() -> list[dict[str, object]]:
         export_artifact(
             "demo_03_enclosure_body",
             build_body(),
-            title="Shelled enclosure body",
-            narrative=(
-                "Stage the cavity as a PRIVATE part and subtract it only after the outer host dimensions are stable."
-            ),
+            title="壳体本体",
+            narrative="先把 cavity 作为 `Mode.PRIVATE` 的暂存零件构建出来，等外部宿主尺寸稳定后再统一减掉。",
             talking_points=[
-                "Mode.PRIVATE avoids mutating the host while staging cavity geometry.",
-                "The body keeps the opening-face semantics explicit instead of relying on selector-heavy shell edits.",
-                "This mirrors the runtime preference for explicit inner-solid subtraction on simple shelled boxes.",
+                "`Mode.PRIVATE` 可以避免在暂存 cavity 时提前污染宿主。",
+                "本体继续保留 opening-face 语义，而不是依赖 selector 很重的 shell 编辑。",
+                "这和运行时对简单 shelled box 优先使用显式 inner-solid subtraction 的偏好一致。",
             ],
         ),
         export_artifact(
             "demo_03_enclosure_lid",
             build_lid(),
-            title="Lip-fit lid with countersunk fasteners",
-            narrative=(
-                "Build the lid plate and lip as separate solids, then add countersunk holes from the top frame."
-            ),
+            title="lip-fit 盖子与沉头紧固孔",
+            narrative="把 lid plate 和 lip 作为两个显式实体组织，再从顶部坐标系切出沉头紧固孔。",
             talking_points=[
-                "The lip is an explicit ring, not an implicit shell side effect.",
-                "Fastener placement stays readable because placement and subtraction are decoupled.",
-                "This is the clean Build123d pattern behind the external enclosure experiment work.",
+                "lip 是一个显式的环形结构，而不是隐式 shell 副作用。",
+                "紧固孔之所以更易读，是因为 placement 和 subtraction 被明确拆开了。",
+                "这更接近外部 enclosure 实验背后真正需要的 Build123d 建模模式。",
             ],
         ),
     ]
@@ -114,5 +110,5 @@ def export_demo() -> list[dict[str, object]]:
 
 if __name__ == "__main__":
     for artifact in export_demo():
-        print(f"Wrote {artifact['step_path']}")
+        print(f"已写出 {artifact['step_path']}")
         print(artifact["narrative"])

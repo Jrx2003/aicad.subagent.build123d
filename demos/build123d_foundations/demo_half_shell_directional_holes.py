@@ -52,20 +52,17 @@ def export_demo() -> dict[str, object]:
     return export_artifact(
         "demo_02_half_shell_directional_holes",
         build_demo(),
-        title="Half-shell with directional holes",
-        narrative=(
-            "Keep the half-shell, pad, and lug drilling in one builder so subtract/intersect "
-            "semantics stay explicit and lintable."
-        ),
+        title="半壳体与定向打孔",
+        narrative="把半壳、底部 pad 和侧向打孔保持在同一个构建器里，让减料与相交语义始终显式可见。",
         talking_points=[
-            "Mode.INTERSECT gives a clean same-builder half-shell instead of fragile post-hoc trimming.",
-            "Plane.XZ.offset(0) keeps the drilling frame honest: local coordinates are (x, z), not (x, y).",
-            "This is the contract area exposed by the L2_130 repair work.",
+            "`Mode.INTERSECT` 能在同一构建器里干净地保留半壳，而不是依赖脆弱的后处理裁切。",
+            "`Plane.XZ.offset(0)` 能保证打孔 frame 语义正确：局部坐标是 `(x, z)`，不是 `(x, y)`。",
+            "这正是 L2_130 最近暴露和收紧的契约区域。",
         ],
     )
 
 
 if __name__ == "__main__":
     artifact = export_demo()
-    print(f"Wrote {artifact['step_path']}")
+    print(f"已写出 {artifact['step_path']}")
     print(artifact["narrative"])

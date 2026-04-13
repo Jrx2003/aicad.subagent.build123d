@@ -42,20 +42,17 @@ def export_demo() -> dict[str, object]:
     return export_artifact(
         "demo_01_local_frame_countersink",
         build_demo(),
-        title="Local frame countersink plate",
-        narrative=(
-            "Translate corner-based sketch coordinates into the centered host frame, "
-            "then place repeated cutters with Locations."
-        ),
+        title="局部坐标 countersink 板",
+        narrative="先把角点坐标映射到居中宿主坐标系，再用 `Locations` 放置重复 cutter。",
         talking_points=[
-            "Explicit coordinate remapping makes face-local arrays deterministic.",
-            "Locations removes repeated placement boilerplate from the model code.",
-            "The same pattern matches the successful L2_172 runtime path.",
+            "显式坐标重映射让面局部阵列更稳定、更可解释。",
+            "`Locations` 去掉了重复 placement 的样板代码。",
+            "这和成功的 L2_172 运行时路径是同一种模式。",
         ],
     )
 
 
 if __name__ == "__main__":
     artifact = export_demo()
-    print(f"Wrote {artifact['step_path']}")
+    print(f"已写出 {artifact['step_path']}")
     print(artifact["narrative"])
