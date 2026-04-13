@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import binascii
+from contextlib import AsyncExitStack
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -152,6 +153,12 @@ class RequirementValidationResult:
     checks: list[dict[str, Any]]
     core_checks: list[dict[str, Any]]
     diagnostic_checks: list[dict[str, Any]]
+    clause_interpretations: list[dict[str, Any]]
+    coverage_confidence: float
+    insufficient_evidence: bool
+    observation_tags: list[str]
+    decision_hints: list[str]
+    blocker_taxonomy: list[dict[str, Any]]
     relation_index: dict[str, Any] | None
     summary: str
 
@@ -195,6 +202,10 @@ class McpSandboxRunner:
         self._env = dict(env) if env is not None else os.environ.copy()
         self._tool_name = tool_name
         self._timeout_buffer_seconds = timeout_buffer_seconds
+        self._session_stack: AsyncExitStack | None = None
+        self._client_session: ClientSession | None = None
+        self._session_lock = asyncio.Lock()
+        self._call_lock = asyncio.Lock()
 
     async def execute(
         self,
@@ -946,6 +957,12 @@ class McpSandboxRunner:
                 checks=[],
                 core_checks=[],
                 diagnostic_checks=[],
+                clause_interpretations=[],
+                coverage_confidence=0.0,
+                insufficient_evidence=False,
+                observation_tags=[],
+                decision_hints=[],
+                blocker_taxonomy=[],
                 relation_index=None,
                 summary="Validation timed out",
             )
@@ -967,6 +984,12 @@ class McpSandboxRunner:
                 checks=[],
                 core_checks=[],
                 diagnostic_checks=[],
+                clause_interpretations=[],
+                coverage_confidence=0.0,
+                insufficient_evidence=False,
+                observation_tags=[],
+                decision_hints=[],
+                blocker_taxonomy=[],
                 relation_index=None,
                 summary="Validation failed",
             )
@@ -1086,17 +1109,63 @@ class McpSandboxRunner:
         )
 
     async def _call_named_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        params = StdioServerParameters(
-            command=self._command,
-            args=self._args,
-            cwd=self._cwd,
-            env=self._env,
-        )
+        last_error: Exception | None = None
+        async with self._call_lock:
+            for attempt_index in range(2):
+                try:
+                    session = await self._ensure_client_session()
+                    return await session.call_tool(tool_name, arguments)
+                except asyncio.CancelledError:
+                    await self.aclose()
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    await self.aclose()
+                    if attempt_index == 0:
+                        continue
+                    raise
 
-        async with stdio_client(params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("sandbox_mcp_call_failed_without_error")
+
+    async def aclose(self) -> None:
+        async with self._session_lock:
+            await self._aclose_locked()
+
+    async def _ensure_client_session(self) -> ClientSession:
+        async with self._session_lock:
+            if self._client_session is not None:
+                return self._client_session
+
+            params = StdioServerParameters(
+                command=self._command,
+                args=self._args,
+                cwd=self._cwd,
+                env=self._env,
+            )
+            stack = AsyncExitStack()
+            try:
+                read_stream, write_stream = await stack.enter_async_context(
+                    stdio_client(params)
+                )
+                session = ClientSession(read_stream, write_stream)
+                await stack.enter_async_context(session)
                 await session.initialize()
-                return await session.call_tool(tool_name, arguments)
+            except Exception:
+                await stack.aclose()
+                raise
+
+            self._session_stack = stack
+            self._client_session = session
+            return session
+
+    async def _aclose_locked(self) -> None:
+        stack = self._session_stack
+        self._session_stack = None
+        self._client_session = None
+        if stack is not None:
+            await stack.aclose()
 
     def _map_call_result(self, call_result: Any) -> SandboxResult:
         structured = getattr(call_result, "structuredContent", None)
@@ -1693,6 +1762,12 @@ class McpSandboxRunner:
                 checks=[],
                 core_checks=[],
                 diagnostic_checks=[],
+                clause_interpretations=[],
+                coverage_confidence=0.0,
+                insufficient_evidence=False,
+                observation_tags=[],
+                decision_hints=[],
+                blocker_taxonomy=[],
                 relation_index=None,
                 summary="Validation payload is invalid",
             )
@@ -1722,6 +1797,37 @@ class McpSandboxRunner:
             if isinstance(diagnostic_checks_raw, list)
             else []
         )
+        clause_interpretations_raw = structured.get("clause_interpretations")
+        clause_interpretations = (
+            [item for item in clause_interpretations_raw if isinstance(item, dict)]
+            if isinstance(clause_interpretations_raw, list)
+            else []
+        )
+        coverage_confidence_raw = structured.get("coverage_confidence")
+        coverage_confidence = (
+            float(coverage_confidence_raw)
+            if isinstance(coverage_confidence_raw, (int, float))
+            else 0.0
+        )
+        insufficient_evidence = bool(structured.get("insufficient_evidence"))
+        observation_tags_raw = structured.get("observation_tags")
+        observation_tags = (
+            [item for item in observation_tags_raw if isinstance(item, str)]
+            if isinstance(observation_tags_raw, list)
+            else []
+        )
+        decision_hints_raw = structured.get("decision_hints")
+        decision_hints = (
+            [item for item in decision_hints_raw if isinstance(item, str)]
+            if isinstance(decision_hints_raw, list)
+            else []
+        )
+        blocker_taxonomy_raw = structured.get("blocker_taxonomy")
+        blocker_taxonomy = (
+            [item for item in blocker_taxonomy_raw if isinstance(item, dict)]
+            if isinstance(blocker_taxonomy_raw, list)
+            else []
+        )
         relation_index_raw = structured.get("relation_index")
         relation_index = (
             relation_index_raw if isinstance(relation_index_raw, dict) else None
@@ -1745,6 +1851,12 @@ class McpSandboxRunner:
             checks=checks,
             core_checks=core_checks,
             diagnostic_checks=diagnostic_checks,
+            clause_interpretations=clause_interpretations,
+            coverage_confidence=coverage_confidence,
+            insufficient_evidence=insufficient_evidence,
+            observation_tags=observation_tags,
+            decision_hints=decision_hints,
+            blocker_taxonomy=blocker_taxonomy,
             relation_index=relation_index,
             summary=summary,
         )

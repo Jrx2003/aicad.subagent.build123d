@@ -52,6 +52,8 @@ from sandbox_mcp_server.contracts import (
     RenderStyle,
     RenderViewInput,
     RenderViewOutput,
+    RequirementClauseInterpretation,
+    RequirementClauseStatus,
     RequirementCheck,
     RequirementCheckStatus,
     SandboxArtifact,
@@ -83,6 +85,13 @@ from sandbox_mcp_server.registry import (
     requirement_uses_operation_as_optional_method,
     parse_topology_ref,
 )
+from sandbox_mcp_server.validation_evidence import RequirementEvidenceBuilder
+from sandbox_mcp_server.validation_interpretation import (
+    RequirementInterpretationSummary,
+    build_interpretation_summary_from_clauses,
+    interpret_requirement_clauses,
+)
+from sandbox_mcp_server.validation_llm import ValidationLLMAdjudicator
 from common.blocker_taxonomy import (
     classify_blocker_taxonomy_many,
     normalize_probe_family_ids,
@@ -163,6 +172,8 @@ def build_validation_blocker_taxonomy(
             completeness_relevance=item.completeness_relevance,
             severity=item.severity,
             recommended_repair_lane=item.recommended_repair_lane,
+            observation_tags=list(item.observation_tags),
+            decision_hints=list(item.decision_hints),
         )
         for item in records
     ]
@@ -336,12 +347,14 @@ class SandboxMCPService:
         self,
         runner: SandboxRunner,
         evaluation_orchestrator: EvaluationOrchestrator | None = None,
+        validation_adjudicator: ValidationLLMAdjudicator | None = None,
         max_history_length: int = 50,
     ) -> None:
         self._runner = runner
         self._evaluation_orchestrator = (
             evaluation_orchestrator or EvaluationOrchestrator()
         )
+        self._validation_adjudicator = validation_adjudicator
         self._session_manager = SessionManager(max_history_length=max_history_length)
 
     async def execute(self, request: ExecuteBuild123dInput) -> ExecuteBuild123dOutput:
@@ -617,6 +630,9 @@ class SandboxMCPService:
             "    __aicad_last_result = result\n"
             "elif __aicad_last_show_object is not None:\n"
             "    result = __aicad_last_show_object\n"
+            "    __aicad_last_result = result\n"
+            "else:\n"
+            "    result = Part()\n"
             "    __aicad_last_result = result\n"
         )
         return f"{prelude}\n{wrapped}\n{epilogue}"
@@ -1368,16 +1384,77 @@ class SandboxMCPService:
                 checks=[],
                 core_checks=[],
                 diagnostic_checks=[],
+                clause_interpretations=[],
+                coverage_confidence=0.0,
+                insufficient_evidence=False,
+                observation_tags=[],
+                decision_hints=[],
+                blocker_taxonomy=[],
                 summary="Validation failed: no usable snapshot",
             )
 
         assert entry is not None
-        checks = self._build_requirement_checks(
+        requirement_text = request.requirement_text or self._requirement_text_from_payload(
+            request.requirements
+        )
+        legacy_checks = self._build_requirement_checks(
             snapshot=entry.result_snapshot,
             history=history,
             requirements=request.requirements,
-            requirement_text=request.requirement_text,
+            requirement_text=requirement_text,
         )
+        evidence_bundle = RequirementEvidenceBuilder.build(
+            snapshot=entry.result_snapshot,
+            history=history,
+            requirements=request.requirements,
+            requirement_text=requirement_text,
+        )
+        interpretation = interpret_requirement_clauses(
+            bundle=evidence_bundle,
+            requirements=request.requirements,
+            requirement_text=requirement_text,
+            supplemental_checks=legacy_checks,
+        )
+        interpretation = await self._maybe_apply_validation_llm_adjudication(
+            requirement_text=requirement_text,
+            bundle=evidence_bundle,
+            interpretation=interpretation,
+            history=history,
+        )
+
+        has_unresolved_clause_coverage = bool(interpretation.insufficient_evidence)
+        has_contradicted_clause_coverage = any(
+            clause.status == RequirementClauseStatus.CONTRADICTED
+            for clause in interpretation.clause_interpretations
+        )
+        use_legacy_family_checks = self._has_family_specific_requirement_checks(
+            legacy_checks
+        )
+        can_demote_family_checks = (
+            use_legacy_family_checks
+            and not has_unresolved_clause_coverage
+            and not has_contradicted_clause_coverage
+            and interpretation.coverage_confidence >= 0.75
+        )
+
+        if can_demote_family_checks:
+            checks = [
+                check
+                for check in legacy_checks
+                if not self._is_family_specific_requirement_check(check)
+            ]
+            checks = self._merge_projected_clause_checks(
+                base_checks=checks,
+                projected_checks=interpretation.legacy_checks,
+            )
+            has_insufficient_evidence = False
+        else:
+            checks = self._merge_projected_clause_checks(
+                base_checks=list(legacy_checks),
+                projected_checks=interpretation.legacy_checks,
+            )
+            has_insufficient_evidence = has_unresolved_clause_coverage
+
         core_checks, diagnostic_checks = partition_requirement_checks(checks)
         blocker_taxonomy = build_validation_blocker_taxonomy(
             core_checks=core_checks,
@@ -1388,12 +1465,13 @@ class SandboxMCPService:
             for check in core_checks
             if check.blocking and check.status == RequirementCheckStatus.FAIL
         ]
-        is_complete = len(blockers) == 0
-        summary = (
-            "Requirement validation passed"
-            if is_complete
-            else f"Requirement validation has {len(blockers)} blocker(s)"
-        )
+        is_complete = len(blockers) == 0 and not has_insufficient_evidence
+        if is_complete:
+            summary = "Requirement validation passed"
+        elif blockers:
+            summary = f"Requirement validation has {len(blockers)} blocker(s)"
+        else:
+            summary = "Requirement validation has insufficient evidence"
         relation_index = None
 
         return ValidateRequirementOutput(
@@ -1407,10 +1485,174 @@ class SandboxMCPService:
             checks=checks,
             core_checks=core_checks,
             diagnostic_checks=diagnostic_checks,
+            clause_interpretations=interpretation.clause_interpretations,
+            coverage_confidence=interpretation.coverage_confidence,
+            insufficient_evidence=has_insufficient_evidence,
+            observation_tags=interpretation.observation_tags,
+            decision_hints=interpretation.decision_hints,
             blocker_taxonomy=blocker_taxonomy,
             relation_index=relation_index,
             summary=summary,
         )
+
+    async def _maybe_apply_validation_llm_adjudication(
+        self,
+        *,
+        requirement_text: str,
+        bundle: Any,
+        interpretation: RequirementInterpretationSummary,
+        history: list[ActionHistoryEntry],
+    ) -> RequirementInterpretationSummary:
+        if self._validation_adjudicator is None:
+            return interpretation
+        if not interpretation.insufficient_evidence:
+            return interpretation
+        adjudicated = await self._validation_adjudicator.adjudicate(
+            requirement_text=requirement_text,
+            bundle=bundle,
+            clauses=interpretation.clause_interpretations,
+            history=history,
+        )
+        if adjudicated is None or not adjudicated.clauses:
+            return interpretation
+        decisions_by_clause_id = {
+            decision.clause_id: decision
+            for decision in adjudicated.clauses
+            if isinstance(decision.clause_id, str)
+            and decision.clause_id.strip()
+            and float(decision.confidence) >= 0.7
+        }
+        if not decisions_by_clause_id:
+            return interpretation
+        updated_clauses: list[RequirementClauseInterpretation] = []
+        changed = False
+        for clause in interpretation.clause_interpretations:
+            decision = decisions_by_clause_id.get(clause.clause_id)
+            if (
+                decision is None
+                or clause.status != RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+                or decision.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+            ):
+                updated_clauses.append(clause)
+                continue
+            if not self._clause_is_eligible_for_llm_adjudication(clause):
+                updated_clauses.append(
+                    clause.model_copy(
+                        update={
+                            "observation_tags": list(
+                                dict.fromkeys(
+                                    [
+                                        *clause.observation_tags,
+                                        "validation:geometry_grounding_required",
+                                    ]
+                                )
+                            ),
+                            "decision_hints": list(
+                                dict.fromkeys(
+                                    [
+                                        *clause.decision_hints,
+                                        "inspect_more_evidence",
+                                        "require geometry-grounded verification before completion",
+                                    ]
+                                )
+                            ),
+                        }
+                    )
+                )
+                changed = True
+                continue
+            changed = True
+            updated_clauses.append(
+                clause.model_copy(
+                    update={
+                        "status": decision.status,
+                        "evidence": str(decision.evidence or clause.evidence or "").strip(),
+                        "observation_tags": list(
+                            dict.fromkeys([*clause.observation_tags, "llm:validation_adjudicated"])
+                        ),
+                        "decision_hints": list(
+                            dict.fromkeys(
+                                [*(decision.decision_hints or []), *clause.decision_hints]
+                            )
+                        ),
+                    }
+                )
+            )
+        if not changed:
+            return interpretation
+        return build_interpretation_summary_from_clauses(updated_clauses, bundle=bundle)
+
+    def _clause_is_eligible_for_llm_adjudication(
+        self,
+        clause: RequirementClauseInterpretation,
+    ) -> bool:
+        text = str(getattr(clause, "clause_text", "") or "").strip().lower()
+        if not text:
+            return False
+        observation_tags = {
+            str(tag).strip().lower()
+            for tag in getattr(clause, "observation_tags", []) or []
+            if isinstance(tag, str) and str(tag).strip()
+        }
+        if observation_tags.intersection(
+            {
+                "clause:coordinate",
+                "clause:local_feature",
+                "clause:notch_like",
+                "clause:pattern",
+            }
+        ):
+            return False
+        if re.search(r"\b[xyz]\s*=\s*-?\d", text):
+            return False
+        unsafe_text_markers = (
+            "centered at",
+            "centred at",
+            "top face",
+            "bottom face",
+            "left",
+            "right",
+            "through the",
+            "direction",
+            "union this",
+        )
+        return not any(marker in text for marker in unsafe_text_markers)
+
+    def _has_family_specific_requirement_checks(
+        self,
+        checks: list[RequirementCheck],
+    ) -> bool:
+        return any(self._is_family_specific_requirement_check(check) for check in checks)
+
+    def _is_family_specific_requirement_check(self, check: RequirementCheck) -> bool:
+        check_id = str(getattr(check, "check_id", "") or "").strip()
+        if check_id == "feature_spherical_recess_host_plane_opening":
+            return False
+        return check_id.startswith("feature_") or check_id in {
+            "path_disconnected",
+            "missing_profile",
+        }
+
+    def _merge_projected_clause_checks(
+        self,
+        *,
+        base_checks: list[RequirementCheck],
+        projected_checks: list[RequirementCheck],
+    ) -> list[RequirementCheck]:
+        merged = list(base_checks)
+        seen = {
+            check.check_id
+            for check in merged
+            if isinstance(check.check_id, str) and check.check_id.strip()
+        }
+        for check in projected_checks:
+            if not isinstance(check.check_id, str) or not check.check_id.strip():
+                continue
+            if check.check_id in seen:
+                continue
+            seen.add(check.check_id)
+            merged.append(check)
+        return merged
 
     def _resolve_history_entry(
         self,
@@ -1538,13 +1780,21 @@ class SandboxMCPService:
                 semantics.mentions_revolved_groove_cut
             )
         elif family == "explicit_anchor_hole":
-            signals["expected_local_centers"] = self._infer_expected_local_feature_centers(
+            expected_centers = self._infer_expected_local_feature_centers(
                 requirement_text
             )
-            signals["realized_centers"] = self._snapshot_collect_subtractive_feature_centers(
+            realized_centers = self._snapshot_collect_subtractive_feature_centers(
                 snapshot,
                 face_targets=semantics.face_targets,
             )
+            signals["expected_local_centers"] = expected_centers
+            signals["realized_centers"] = realized_centers
+            layout_hints = self._explicit_anchor_probe_layout_hints(
+                requirement_text=requirement_text,
+                expected_centers=expected_centers,
+            )
+            if layout_hints:
+                signals.update(layout_hints)
         elif family == "spherical_recess":
             signals["mentions_spherical_recess"] = bool(
                 getattr(semantics, "mentions_spherical_recess", False)
@@ -1581,6 +1831,13 @@ class SandboxMCPService:
             summary = (
                 f"{family}: {passed_count}/{len(selected_checks)} relevant checks currently pass"
             )
+            if family == "explicit_anchor_hole":
+                normalized_centers = signals.get("normalized_local_centers")
+                if isinstance(normalized_centers, list) and normalized_centers:
+                    summary = (
+                        f"{summary}; centered host frame suggests normalized centers "
+                        f"{normalized_centers}"
+                    )
         else:
             confidence = 0.35 if solids > 0 and volume > 0.0 else 0.15
             success = solids > 0 and volume > 0.0 and family == "general_geometry"
@@ -1597,6 +1854,44 @@ class SandboxMCPService:
             blockers=blockers,
             recommended_next_tools=recommended_probe_tools_for_family(family),
         )
+
+    def _explicit_anchor_probe_layout_hints(
+        self,
+        *,
+        requirement_text: str | None,
+        expected_centers: list[list[float]],
+    ) -> dict[str, Any]:
+        if not expected_centers:
+            return {}
+        host_dims = self._extract_rectangular_host_face_dimensions(requirement_text)
+        normalized_centers = self._translate_rectangular_host_face_local_centers(
+            requirement_text,
+            expected_centers,
+        )
+        if (
+            host_dims is None
+            or not normalized_centers
+            or self._center_sets_match_2d_direct(
+                expected_centers,
+                normalized_centers,
+                tolerance=0.01,
+            )
+        ):
+            return {}
+        width, height = host_dims
+        return {
+            "host_frame_dimensions": [round(width, 6), round(height, 6)],
+            "host_frame_translation_from_corner": [
+                round(-width / 2.0, 6),
+                round(-height / 2.0, 6),
+            ],
+            "normalized_local_centers": normalized_centers,
+            "coordinate_frame_hint": (
+                "The point coordinates appear to come from a rectangular host-face sketch. "
+                "If the host solid is centered about the origin, translate the sketch "
+                "coordinates into the centered host frame before placing the hole centers."
+            ),
+        }
 
     def _build_execute_probe_summary(
         self,
@@ -5392,8 +5687,8 @@ class SandboxMCPService:
         if execute_build123d_face_revolve:
             has_material_revolve = True
         cone_like_face_present = any(
-            str(face.geom_type).strip().upper() == "CONE"
-            for face in ((snapshot.geometry_objects.faces if snapshot.geometry_objects else []) or [])
+            str(getattr(face, "geom_type", "")).strip().upper() == "CONE"
+            for face in self._snapshot_feature_faces(snapshot)
         )
         result_shape_ok = (
             has_material_revolve
@@ -6423,11 +6718,8 @@ class SandboxMCPService:
                     )
                     has_countersink_feature = snapshot_countersink_feature
                 cone_like_face_present = any(
-                    str(face.geom_type).strip().upper() == "CONE"
-                    for face in (
-                        (snapshot.geometry_objects.faces if snapshot.geometry_objects else [])
-                        or []
-                    )
+                    str(getattr(face, "geom_type", "")).strip().upper() == "CONE"
+                    for face in self._snapshot_feature_faces(snapshot)
                 )
                 checks.append(
                     RequirementCheck(
@@ -6583,6 +6875,48 @@ class SandboxMCPService:
                     blocking=True,
                     evidence=(
                         f"required_centers={expected_local_feature_centers}, realized_centers={realized_feature_centers}"
+                    ),
+                )
+            )
+
+        if (
+            history
+            and self._history_starts_from_execute_build123d_snapshot(history)
+            and getattr(semantics, "mentions_spherical_recess", False)
+            and self._requirement_requires_host_plane_open_spherical_recess(
+                requirement_text
+            )
+        ):
+            opening_centers = self._snapshot_collect_host_plane_circle_edge_centers(
+                snapshot=history[-1].result_snapshot,
+                face_targets=semantics.face_targets,
+            )
+            allow_centered_translation = (
+                self._requirement_uses_centered_pattern_local_coordinates(
+                    requirement_text
+                )
+            )
+            openings_match = bool(opening_centers)
+            if expected_local_feature_centers:
+                openings_match = self._center_sets_match_with_requirement_coordinate_modes(
+                    opening_centers,
+                    expected_local_feature_centers,
+                    requirement_text=requirement_text,
+                    allow_translation=allow_centered_translation,
+                )
+            checks.append(
+                RequirementCheck(
+                    check_id="feature_spherical_recess_host_plane_opening",
+                    label="Spherical recesses whose diameter edge lies on the host face expose matching circular openings on that host plane",
+                    status=(
+                        RequirementCheckStatus.PASS
+                        if openings_match
+                        else RequirementCheckStatus.FAIL
+                    ),
+                    blocking=True,
+                    evidence=(
+                        f"required_opening_centers={expected_local_feature_centers or []}, "
+                        f"realized_host_plane_circle_centers={opening_centers}"
                     ),
                 )
             )
@@ -7351,8 +7685,12 @@ class SandboxMCPService:
     ) -> set[str]:
         if topology_index is None or face is None:
             return set()
+        scope_faces = self._faces_for_parent_solid_scope(
+            topology_index.faces,
+            parent_solid_id=getattr(face, "parent_solid_id", None),
+        )
         extents = self._topology_extents(
-            faces=topology_index.faces,
+            faces=scope_faces or topology_index.faces,
             edges=topology_index.edges,
         )
         if extents is None:
@@ -9180,6 +9518,7 @@ class SandboxMCPService:
             host_bbox = getattr(host_face, "bbox", None)
             if host_bbox is None:
                 continue
+            host_parent_solid_id = str(getattr(host_face, "parent_solid_id", "") or "").strip()
             axis_span = (
                 float(snapshot.geometry.bbox[axis_index])
                 if len(snapshot.geometry.bbox) >= 3
@@ -9197,6 +9536,15 @@ class SandboxMCPService:
                     continue
                 candidate_bbox = getattr(candidate, "bbox", None)
                 if candidate_bbox is None:
+                    continue
+                candidate_parent_solid_id = str(
+                    getattr(candidate, "parent_solid_id", "") or ""
+                ).strip()
+                if (
+                    host_parent_solid_id
+                    and candidate_parent_solid_id
+                    and candidate_parent_solid_id != host_parent_solid_id
+                ):
                     continue
                 if not self._snapshot_face_projects_inside_host(
                     candidate_bbox=candidate_bbox,
@@ -9230,6 +9578,11 @@ class SandboxMCPService:
                     continue
                 center_point = self._snapshot_feature_center_point(candidate)
                 if geom_type == "SPHERE":
+                    center_point = self._snapshot_infer_spherical_feature_center_on_host_plane(
+                        face=candidate,
+                        axis_index=axis_index,
+                        plane_value=plane_value,
+                    )
                     inferred_radius = self._snapshot_infer_spherical_feature_radius(
                         candidate,
                     )
@@ -9282,7 +9635,7 @@ class SandboxMCPService:
                     continue
                 matches.append((face, target_label))
             if matches:
-                return matches
+                return self._prefer_largest_host_faces(matches)
         geometry_objects = snapshot.geometry_objects
         if geometry_objects is None or not geometry_objects.faces:
             return []
@@ -9294,7 +9647,7 @@ class SandboxMCPService:
             if target_label is None:
                 continue
             matches.append((face, target_label))
-        return matches
+        return self._prefer_largest_host_faces(matches)
 
     def _bbox_in_plane_spans(
         self,
@@ -9383,6 +9736,89 @@ class SandboxMCPService:
                 return [float(raw_point[0]), float(raw_point[1]), float(raw_point[2])]
         return None
 
+    def _extract_requirement_outer_face_hint(
+        self,
+        requirement_text: str | None,
+    ) -> tuple[str, int, int] | None:
+        text = str(requirement_text or "").strip().lower()
+        if not text:
+            return None
+        face_map = {
+            "top": (2, 1),
+            "bottom": (2, -1),
+            "front": (1, 1),
+            "back": (1, -1),
+            "right": (0, 1),
+            "left": (0, -1),
+        }
+        matches = list(
+            re.finditer(
+                r"\b(top|bottom|front|back|left|right)\s+(?:surface|face)\b",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        if not matches:
+            return None
+        last_match = matches[-1]
+        label = str(last_match.group(1)).lower()
+        axis_index, outward_sign = face_map[label]
+        return label, axis_index, outward_sign
+
+    def _snapshot_infer_cylindrical_slot_reference_point(
+        self,
+        *,
+        face: Any,
+        axis_index: int,
+        solid_bbox: BoundingBox3D | None,
+        radius_value: float | None,
+        requirement_text: str | None,
+    ) -> list[float] | None:
+        bbox = getattr(face, "bbox", None)
+        if bbox is None:
+            return self._snapshot_feature_center_point(face)
+
+        reference_point = [
+            round((float(bbox.xmin) + float(bbox.xmax)) / 2.0, 6),
+            round((float(bbox.ymin) + float(bbox.ymax)) / 2.0, 6),
+            round((float(bbox.zmin) + float(bbox.zmax)) / 2.0, 6),
+        ]
+
+        axis_origin = getattr(face, "axis_origin", None)
+        if (
+            isinstance(axis_origin, list)
+            and len(axis_origin) >= 3
+            and all(isinstance(item, (int, float)) for item in axis_origin[:3])
+        ):
+            for idx in range(3):
+                if idx == axis_index:
+                    continue
+                axis_min, axis_max = self._bbox_axis_bounds(bbox, idx)
+                axis_tolerance = self._extent_tolerance(axis_min, axis_max)
+                origin_value = float(axis_origin[idx])
+                if axis_min - axis_tolerance <= origin_value <= axis_max + axis_tolerance:
+                    reference_point[idx] = round(origin_value, 6)
+
+        outer_face_hint = self._extract_requirement_outer_face_hint(requirement_text)
+        if (
+            outer_face_hint is not None
+            and solid_bbox is not None
+            and isinstance(radius_value, (int, float))
+            and float(radius_value) > 0.0
+        ):
+            _label, host_axis_index, outward_sign = outer_face_hint
+            if host_axis_index != axis_index:
+                solid_axis_min, solid_axis_max = self._bbox_axis_bounds(solid_bbox, host_axis_index)
+                face_axis_min, face_axis_max = self._bbox_axis_bounds(bbox, host_axis_index)
+                host_tolerance = self._extent_tolerance(solid_axis_min, solid_axis_max)
+                radius = float(radius_value)
+                if outward_sign > 0 and self._near_max(face_axis_max, solid_axis_max, host_tolerance):
+                    reference_point[host_axis_index] = round(solid_axis_max - radius, 6)
+                elif outward_sign < 0 and self._near_min(face_axis_min, solid_axis_min, host_tolerance):
+                    reference_point[host_axis_index] = round(solid_axis_min + radius, 6)
+
+        return reference_point
+
     def _snapshot_feature_surface_center_point(
         self,
         face: Any,
@@ -9425,6 +9861,25 @@ class SandboxMCPService:
         plane_offset = abs(float(center_point[axis_index]) - plane_value)
         return plane_offset < radius - tolerance
 
+    def _snapshot_infer_spherical_feature_center_on_host_plane(
+        self,
+        *,
+        face: Any,
+        axis_index: int,
+        plane_value: float,
+    ) -> list[float] | None:
+        bbox = getattr(face, "bbox", None)
+        if bbox is None:
+            return self._snapshot_feature_center_point(face)
+        inferred = [
+            round((float(bbox.xmin) + float(bbox.xmax)) / 2.0, 6),
+            round((float(bbox.ymin) + float(bbox.ymax)) / 2.0, 6),
+            round((float(bbox.zmin) + float(bbox.zmax)) / 2.0, 6),
+        ]
+        if 0 <= axis_index < len(inferred):
+            inferred[axis_index] = round(float(plane_value), 6)
+        return inferred
+
     def _project_point_to_target_face_2d(
         self,
         point: list[float] | None,
@@ -9461,7 +9916,7 @@ class SandboxMCPService:
                 if target_label is not None:
                     matches.append((face, target_label))
             if matches:
-                return matches
+                return self._prefer_largest_host_faces(matches)
         geometry_objects = snapshot.geometry_objects
         if geometry_objects is not None and geometry_objects.faces:
             matches = []
@@ -9478,7 +9933,7 @@ class SandboxMCPService:
                 if target_label is not None:
                     matches.append((face, target_label))
             if matches:
-                return matches
+                return self._prefer_largest_host_faces(matches)
         return []
 
     def _snapshot_feature_faces(
@@ -9584,6 +10039,7 @@ class SandboxMCPService:
             host_bbox = getattr(host_face, "bbox", None)
             if host_bbox is None:
                 continue
+            host_parent_solid_id = str(getattr(host_face, "parent_solid_id", "") or "").strip()
             axis_span = (
                 float(snapshot.geometry.bbox[axis_index])
                 if len(snapshot.geometry.bbox) >= 3
@@ -9592,6 +10048,15 @@ class SandboxMCPService:
             axis_tolerance = max(1e-4, abs(axis_span) * 0.03)
             for candidate in feature_edges:
                 if str(getattr(candidate, "geom_type", "")).strip().upper() != "CIRCLE":
+                    continue
+                candidate_parent_solid_id = str(
+                    getattr(candidate, "parent_solid_id", "") or ""
+                ).strip()
+                if (
+                    host_parent_solid_id
+                    and candidate_parent_solid_id
+                    and candidate_parent_solid_id != host_parent_solid_id
+                ):
                     continue
                 candidate_bbox = getattr(candidate, "bbox", None)
                 if candidate_bbox is None:
@@ -9700,7 +10165,15 @@ class SandboxMCPService:
     ) -> set[str]:
         if not geometry_objects.faces:
             return set()
-        boxes = [item.bbox for item in geometry_objects.faces if item.bbox is not None]
+        scope_faces = self._faces_for_parent_solid_scope(
+            geometry_objects.faces,
+            parent_solid_id=getattr(face, "parent_solid_id", None),
+        )
+        boxes = [
+            item.bbox
+            for item in (scope_faces or geometry_objects.faces)
+            if item.bbox is not None
+        ]
         if not boxes:
             return set()
         min_x = min(item.xmin for item in boxes)
@@ -9745,6 +10218,41 @@ class SandboxMCPService:
         if self._near_min(face.center[0], min_x, x_tol):
             labels.add("left")
         return labels
+
+    def _faces_for_parent_solid_scope(
+        self,
+        faces: list[Any] | tuple[Any, ...],
+        *,
+        parent_solid_id: Any,
+    ) -> list[Any]:
+        solid_id = str(parent_solid_id or "").strip()
+        if not solid_id:
+            return []
+        return [
+            face
+            for face in faces
+            if str(getattr(face, "parent_solid_id", "") or "").strip() == solid_id
+        ]
+
+    def _prefer_largest_host_faces(
+        self,
+        matches: list[tuple[Any, str]],
+    ) -> list[tuple[Any, str]]:
+        if len(matches) <= 1:
+            return matches
+        best_area_by_target: dict[str, float] = {}
+        for face, target_label in matches:
+            area = float(getattr(face, "area", 0.0) or 0.0)
+            current = best_area_by_target.get(target_label)
+            if current is None or area > current:
+                best_area_by_target[target_label] = area
+        filtered: list[tuple[Any, str]] = []
+        for face, target_label in matches:
+            area = float(getattr(face, "area", 0.0) or 0.0)
+            best_area = float(best_area_by_target.get(target_label, area))
+            if area >= max(1e-6, best_area * 0.98):
+                filtered.append((face, target_label))
+        return filtered or matches
 
     def _snapshot_has_direct_repeated_feature_pattern(
         self,
@@ -10814,6 +11322,34 @@ class SandboxMCPService:
             return False
         if bool(getattr(semantics, "mentions_multi_plane_additive_union", False)):
             return False
+        if any(
+            token in text
+            for token in (
+                "separate parts",
+                "two-part",
+                "two part",
+                "lid and base",
+                "top lid",
+                "bottom base",
+                "assembly",
+            )
+        ):
+            return False
+        if any(
+            token in text
+            for token in (
+                "boolean difference",
+                "cut-extrude",
+                "cut extrude",
+                "slot",
+                "notch",
+                "pocket",
+                "recess",
+                "hole",
+                "bore",
+            )
+        ):
+            return True
         if not any(
             token in text
             for token in (
@@ -10827,19 +11363,6 @@ class SandboxMCPService:
             if not requirement_suggests_axisymmetric_profile(
                 {"description": requirement_text or ""},
                 requirement_text,
-            ):
-                return False
-            if any(
-                token in text
-                for token in (
-                    "separate parts",
-                    "two-part",
-                    "two part",
-                    "lid and base",
-                    "top lid",
-                    "bottom base",
-                    "assembly",
-                )
             ):
                 return False
             if not any(
@@ -12107,6 +12630,12 @@ class SandboxMCPService:
                 "draw four points",
                 "draw points",
                 "position tab",
+                "sketch coordinates",
+                "sketch coordinate",
+                "face-sketch coordinates",
+                "face sketch coordinates",
+                "local face sketch coordinates",
+                "already-centered offsets",
             )
         ):
             return None
@@ -12222,6 +12751,8 @@ class SandboxMCPService:
         if not text:
             return None
         patterns = (
+            r"([0-9]+(?:\.[0-9]+)?)\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:millimeter|millimeters|mm)\s+(?:plate|block|box|slab|base)",
+            r"([0-9]+(?:\.[0-9]+)?)\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:millimeter|millimeters|mm)\s+(?:plate|block|box|slab|base)",
             r"draw\s+(?:a\s+)?([0-9]+(?:\.[0-9]+)?)\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:millimeter|millimeters|mm)\s+rectangle",
             r"draw\s+(?:a\s+)?rectangle[^0-9]{0,32}([0-9]+(?:\.[0-9]+)?)\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)",
             r"rectangle[^0-9]{0,24}([0-9]+(?:\.[0-9]+)?)\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)",
@@ -12250,6 +12781,20 @@ class SandboxMCPService:
         return (
             len(self._infer_centered_linear_pattern_centers_from_requirement(requirement_text))
             >= 2
+        )
+
+    def _requirement_requires_host_plane_open_spherical_recess(
+        self,
+        requirement_text: str | None,
+    ) -> bool:
+        text = str(requirement_text or "").strip().lower()
+        if not text or "diameter edge" not in text:
+            return False
+        return (
+            "coincides with the top face" in text
+            or "coincides with the face" in text
+            or "diameter edge lies on the top face" in text
+            or "diameter edge lies on the face" in text
         )
 
     def _action_uses_matching_edge_targets(
@@ -13778,9 +14323,15 @@ class SandboxMCPService:
             "            return (float(point.x), float(point.y), float(point.z))",
             "        except Exception:",
             "            try:",
-            "                return (float(point[0]), float(point[1]), float(point[2]))",
+            "                return (float(point.X), float(point.Y), float(point.Z))",
             "            except Exception:",
-            "                return None",
+            "                try:",
+            "                    return (float(point.X()), float(point.Y()), float(point.Z()))",
+            "                except Exception:",
+            "                    try:",
+            "                        return (float(point[0]), float(point[1]), float(point[2]))",
+            "                    except Exception:",
+            "                        return None",
             "",
             "    rv_points = []",
             "    rv_triangles = []",
@@ -15658,7 +16209,13 @@ class SandboxMCPService:
                 radius_ok = not isinstance(face_radius, (int, float)) or (
                     abs(float(face_radius) - expected_radius) <= radius_tolerance
                 )
-                reference_point = self._snapshot_feature_center_point(face)
+                reference_point = self._snapshot_infer_cylindrical_slot_reference_point(
+                    face=face,
+                    axis_index=axis_index,
+                    solid_bbox=solid_bbox,
+                    radius_value=face_radius if isinstance(face_radius, (int, float)) else expected_radius,
+                    requirement_text=requirement_text,
+                )
                 cross_offsets: list[float] = []
                 if reference_point is not None:
                     cross_offsets = [

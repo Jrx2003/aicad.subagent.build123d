@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -15,9 +15,48 @@ class BlockerTaxonomy:
     completeness_relevance: str
     severity: str
     recommended_repair_lane: str
+    observation_tags: list[str] = field(default_factory=list)
+    decision_hints: list[str] = field(default_factory=list)
 
 
 _FAMILY_SPECS: dict[str, dict[str, object]] = {
+    "core_geometry": {
+        "feature_ids": ["feature.core_geometry"],
+        "validation_check_ids": set(),
+        "recommended_tools": ["query_geometry", "query_kernel_state"],
+        "repair_lane": "probe_first",
+    },
+    "holes": {
+        "feature_ids": ["feature.explicit_anchor_hole", "feature.named_face_local_edit"],
+        "validation_check_ids": {
+            "feature_hole",
+            "feature_countersink",
+            "feature_hole_position_alignment",
+            "feature_local_anchor_alignment",
+        },
+        "recommended_tools": ["query_topology", "query_kernel_state"],
+        "repair_lane": "probe_first",
+    },
+    "slots": {
+        "feature_ids": ["feature.nested_hollow_section", "feature.named_face_local_edit"],
+        "validation_check_ids": {
+            "feature_notch_or_profile_cut",
+            "feature_notch_profile_alignment",
+            "feature_cylindrical_slot_alignment",
+        },
+        "recommended_tools": ["query_feature_probes", "query_kernel_state"],
+        "repair_lane": "probe_first",
+    },
+    "grooves": {
+        "feature_ids": ["feature.annular_groove", "feature.named_face_local_edit"],
+        "validation_check_ids": {
+            "feature_annular_groove",
+            "feature_revolved_groove_result",
+            "feature_target_face_subtractive_merge",
+        },
+        "recommended_tools": ["query_geometry", "query_kernel_state"],
+        "repair_lane": "probe_first",
+    },
     "annular_groove": {
         "feature_ids": ["feature.annular_groove", "feature.axisymmetric_profile"],
         "validation_check_ids": {
@@ -96,6 +135,7 @@ _FAMILY_SPECS: dict[str, dict[str, object]] = {
         "feature_ids": ["feature.named_face_local_edit"],
         "validation_check_ids": {
             "feature_target_face_edit",
+            "feature_target_face_subtractive_merge",
             "feature_target_face_additive_merge",
             "feature_fillet",
             "feature_chamfer",
@@ -120,6 +160,9 @@ _FAMILY_SPECS: dict[str, dict[str, object]] = {
 
 _FAMILY_ALIASES = {
     "nested_profile_hollow_section": "nested_hollow_section",
+    "hole": "holes",
+    "recess": "named_face_local_edit",
+    "pocket": "named_face_local_edit",
 }
 
 _SPECIAL_MULTI_FAMILY_BLOCKERS: dict[str, list[str]] = {
@@ -183,6 +226,15 @@ def classify_blocker_taxonomy(
     family_ids = _family_ids_for_blocker(normalized_blocker_id)
     feature_ids = _feature_ids_for_families(family_ids)
     primary_feature_id = feature_ids[0] if feature_ids else "feature.core_geometry"
+    observation_tags = _observation_tags_for_blocker(
+        normalized_blocker_id,
+        family_ids=family_ids,
+    )
+    decision_hints = _decision_hints_for_blocker(
+        normalized_blocker_id,
+        family_ids=family_ids,
+        observation_tags=observation_tags,
+    )
     recommended_repair_lane = _recommended_repair_lane(normalized_blocker_id, family_ids)
     return BlockerTaxonomy(
         blocker_id=blocker_id,
@@ -194,6 +246,8 @@ def classify_blocker_taxonomy(
         completeness_relevance=completeness_relevance,
         severity=_severity_for_completeness_relevance(completeness_relevance),
         recommended_repair_lane=recommended_repair_lane,
+        observation_tags=observation_tags,
+        decision_hints=decision_hints,
     )
 
 
@@ -240,6 +294,13 @@ def taxonomy_records_from_validation_payload(
                 for feature_id in (item.get("feature_ids") or [])
                 if isinstance(feature_id, str) and str(feature_id).strip()
             ]
+            observation_tags = _normalize_str_list(item.get("observation_tags"))
+            decision_hints = _normalize_str_list(item.get("decision_hints"))
+            incoming_lane = str(item.get("recommended_repair_lane") or "").strip()
+            recommended_repair_lane = incoming_lane or _recommended_repair_lane(
+                blocker_id,
+                family_ids,
+            )
             normalized.append(
                 BlockerTaxonomy(
                     blocker_id=blocker_id,
@@ -271,11 +332,9 @@ def taxonomy_records_from_validation_payload(
                         str(item.get("completeness_relevance") or "core").strip()
                         or "core"
                     ),
-                    recommended_repair_lane=str(
-                        item.get("recommended_repair_lane")
-                        or _recommended_repair_lane(blocker_id, family_ids)
-                    ).strip()
-                    or _recommended_repair_lane(blocker_id, family_ids),
+                    recommended_repair_lane=recommended_repair_lane,
+                    observation_tags=observation_tags,
+                    decision_hints=decision_hints,
                 )
             )
     if normalized:
@@ -407,7 +466,10 @@ def _feature_ids_for_families(family_ids: list[str]) -> list[str]:
     return feature_ids
 
 
-def _recommended_repair_lane(blocker_id: str, family_ids: list[str]) -> str:
+def _recommended_repair_lane(
+    blocker_id: str,
+    family_ids: list[str],
+) -> str:
     if blocker_id in {"feature_fillet", "feature_chamfer"}:
         return "local_finish"
     if "path_sweep" in family_ids:
@@ -419,6 +481,54 @@ def _recommended_repair_lane(blocker_id: str, family_ids: list[str]) -> str:
             if lane:
                 return lane
     return "code_repair"
+
+
+def _observation_tags_for_blocker(
+    blocker_id: str,
+    *,
+    family_ids: list[str],
+) -> list[str]:
+    lowered = str(blocker_id or "").strip().lower()
+    tags: list[str] = []
+    if lowered == "feature_path_sweep_frame" or (
+        lowered.endswith("_frame") and "path_sweep" in family_ids
+    ):
+        tags.extend(["insufficient_evidence", "path_frame_style"])
+    return _normalize_str_list(tags)
+
+
+def _decision_hints_for_blocker(
+    blocker_id: str,
+    *,
+    family_ids: list[str],
+    observation_tags: list[str],
+) -> list[str]:
+    hints: list[str] = []
+    if "path_frame_style" in observation_tags or (
+        str(blocker_id or "").strip().lower() == "feature_path_sweep_frame"
+        and "path_sweep" in family_ids
+    ):
+        hints.extend(
+            [
+                "query_feature_probes",
+                "refresh path-frame semantics before attempting more probe code",
+            ]
+        )
+    return _normalize_str_list(hints)
+
+
+def _normalize_str_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
 
 
 def _severity_for_completeness_relevance(completeness_relevance: str) -> str:

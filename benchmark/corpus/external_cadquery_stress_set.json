@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "source": "validation-generalization-phase1",
+  "description": "Stress subset chosen to probe generalization failure modes and prompt narrowing.",
+  "entries": [
+    {
+      "case_id": "external_plate_fillet_001",
+      "stressors": ["simple_to_exact_geometry", "outer_edge_fillet"],
+      "expected_failure_modes": ["overgeneralization", "premature_narrowing"]
+    },
+    {
+      "case_id": "external_recess_shell_001",
+      "stressors": ["multi_feature_context", "partial_evidence"],
+      "expected_failure_modes": ["insufficient_evidence", "coverage_gap"]
+    },
+    {
+      "case_id": "external_braille_plate_001",
+      "stressors": ["unicode_to_geometry", "dot_matrix_layout", "repeated_micro_features"],
+      "expected_failure_modes": ["character_parsing_error", "counting_drift", "layout_collisions"]
+    },
+    {
+      "case_id": "external_thread_helix_001",
+      "stressors": ["helical_sweep", "ruled_surfaces", "profile_transition"],
+      "expected_failure_modes": ["path_misinterpretation", "surface_topology_errors"]
+    },
+    {
+      "case_id": "external_selector_shell_001",
+      "stressors": ["advanced_selector_logic", "internal_edge_disambiguation"],
+      "expected_failure_modes": ["selector_narrowing_error", "missed_internal_edges"]
+    },
+    {
+      "case_id": "external_gridfinity_ruggedbox_001",
+      "stressors": ["feature_combinatorics", "assembly_scope", "optional_component_plumbing"],
+      "expected_failure_modes": ["state_loss_across_subparts", "feature_interaction_bugs", "prompt_overcompression"]
+    },
+    {
+      "case_id": "external_resin_mold_001",
+      "stressors": ["revolved_cavity", "corner_fasteners", "cross_axis_holes"],
+      "expected_failure_modes": ["path_misinterpretation", "hole_alignment_error", "coverage_gap"]
+    },
+    {
+      "case_id": "external_remote_enclosure_001",
+      "stressors": ["shelling", "lip_fit_geometry", "countersunk_face_holes"],
+      "expected_failure_modes": ["shell_thickness_error", "hole_orientation_error", "feature_interaction_bugs"]
+    },
+    {
+      "case_id": "external_extruder_support_001",
+      "stressors": ["selector_heavy_faces", "bridge_like_geometry", "mixed_hole_features"],
+      "expected_failure_modes": ["selector_narrowing_error", "topology_confusion", "prompt_overcompression"]
+    },
+    {
+      "case_id": "external_rod_clip_001",
+      "stressors": ["sweep_path", "open_profile", "fillet_ordering"],
+      "expected_failure_modes": ["path_misinterpretation", "surface_topology_errors", "edge_selection_drift"]
+    },
+    {
+      "case_id": "external_foot_block_001",
+      "stressors": ["lofted_transition", "optional_recess", "underside_countersinks"],
+      "expected_failure_modes": ["loft_interpolation_error", "coverage_gap", "hole_depth_miscalculation"]
+    },
+    {
+      "case_id": "external_xmount_wall_mount_001",
+      "stressors": ["angled_loft", "face_normal_holes", "multi_part_body"],
+      "expected_failure_modes": ["alignment_error", "hole_orientation_error", "state_loss_across_subparts"]
+    },
+    {
+      "case_id": "external_gf_baseplate_001",
+      "stressors": ["patterned_subtraction", "corner_fasteners", "repeated_units"],
+      "expected_failure_modes": ["pattern_counting_drift", "feature_interaction_bugs", "coverage_gap"]
+    },
+    {
+      "case_id": "external_gf_box_001",
+      "stressors": ["shell_plus_features", "divider_interactions", "scoops_and_lips"],
+      "expected_failure_modes": ["state_loss_across_subparts", "feature_interaction_bugs", "prompt_overcompression"]
+    }
+  ]
+}

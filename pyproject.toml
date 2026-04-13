@@ -1,5 +1,5 @@
 [project]
-name = "aicad-subagent-iteration"
+name = "aicad-subagent-build123d"
 version = "0.1.0"
 description = "Decoupled iterative CAD sub-agent runtime with MCP sandbox tooling"
 requires-python = ">=3.12,<4.0"
@@ -50,6 +50,7 @@ packages = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["src"]
+testpaths = ["tests/unit"]
 markers = [
   "integration: tests that call external systems such as real LLM APIs or Docker",
 ]

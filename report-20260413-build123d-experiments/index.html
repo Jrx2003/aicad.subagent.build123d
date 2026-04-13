@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Build123d Migration Experiments</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="hero" id="hero">
+      <div class="hero__eyebrow">AiCAD Runtime / 2026-04-13</div>
+      <div class="hero__grid">
+        <div>
+          <h1>Build123d migration has enough evidence to report.</h1>
+          <p class="hero__lede">
+            Today's scope is no longer "finish the whole migration at any cost". It is
+            to show, with real runs and small demos, why Build123d is a better runtime
+            surface for this repo than the old CadQuery contract.
+          </p>
+        </div>
+        <aside class="metric-stack">
+          <div class="metric-card">
+            <span class="metric-card__label">Best success case</span>
+            <strong>L2_172</strong>
+            <span>1 round / validation complete / passed</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-card__label">Builder repair case</span>
+            <strong>L1_218</strong>
+            <span>5 rounds / annular groove repaired with Build123d contract</span>
+          </div>
+          <div class="metric-card metric-card--warn">
+            <span class="metric-card__label">Open gap</span>
+            <strong>external enclosure</strong>
+            <span>structured failure, not silent sandbox chaos</span>
+          </div>
+        </aside>
+      </div>
+      <nav class="chapter-nav">
+        <a href="#architecture">Architecture</a>
+        <a href="#demos">Demos</a>
+        <a href="#negative-case">Negative Case</a>
+        <a href="#success-case">Success Case</a>
+        <a href="#artifact-chain">Artifact Chain</a>
+        <a href="#current-judgment">Judgment</a>
+        <a href="#next-plan">Next Plan</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="chapter" id="architecture" data-reveal>
+        <div class="chapter__head">
+          <span>01</span>
+          <h2>Why Build123d helps this runtime</h2>
+        </div>
+        <div class="card-grid card-grid--three">
+          <article class="card">
+            <h3>Explicit local frames</h3>
+            <p>
+              `Plane`, `Locations`, and centered-object geometry make it easier to map
+              requirement-local coordinates into stable model-space placements.
+            </p>
+            <p class="card__note">
+              This is exactly the contract that made `benchmark/runs/20260413_102600/L2_172`
+              converge in one round.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Builder-native booleans</h3>
+            <p>
+              `Mode.SUBTRACT` and `Mode.INTERSECT` keep half-shell and annular-band logic
+              inside one readable builder instead of depending on brittle chained state.
+            </p>
+            <p class="card__note">
+              This is the clean repair lane behind `L1_218` and the half-shell tightening for `L2_130`.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Safe staging</h3>
+            <p>
+              `Mode.PRIVATE` lets us stage cavity or lip solids inside a live builder without
+              mutating the host before we are ready.
+            </p>
+            <p class="card__note">
+              This matters for shelled boxes, lids, and feature families with opening-face semantics.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="chapter" id="demos" data-reveal>
+        <div class="chapter__head">
+          <span>02</span>
+          <h2>Three demos for a live walkthrough</h2>
+        </div>
+        <div class="demo-list">
+          <article class="demo-card">
+            <h3>Demo A: local-frame countersink plate</h3>
+            <p>
+              Path: <code>demos/build123d_foundations/demo_local_frame_countersink.py</code>
+            </p>
+            <ul>
+              <li>Shows corner-frame to centered-frame coordinate remapping.</li>
+              <li>Uses `Locations` to place repeated cutters cleanly.</li>
+              <li>Directly mirrors the successful `L2_172` pattern.</li>
+            </ul>
+          </article>
+          <article class="demo-card">
+            <h3>Demo B: half-shell with directional holes</h3>
+            <p>
+              Path: <code>demos/build123d_foundations/demo_half_shell_directional_holes.py</code>
+            </p>
+            <ul>
+              <li>Shows same-builder `Mode.INTERSECT` for half-shell trimming.</li>
+              <li>Shows `Plane.XZ.offset(0)` as the correct directional drilling frame.</li>
+              <li>Explains why the runtime now lints plane-offset coordinate mixups.</li>
+            </ul>
+          </article>
+          <article class="demo-card">
+            <h3>Demo C: shelled body and lip-fit lid</h3>
+            <p>
+              Path: <code>demos/build123d_foundations/demo_enclosure_body_lid.py</code>
+            </p>
+            <ul>
+              <li>Stages cavity and lip geometry with `Mode.PRIVATE`.</li>
+              <li>Keeps body and lid semantics separated and readable.</li>
+              <li>Gives a report-friendly contrast to the still-open enclosure gap.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="chapter" id="negative-case" data-reveal>
+        <div class="chapter__head">
+          <span>03</span>
+          <h2>Negative case: unknown enclosure prompt</h2>
+        </div>
+        <div class="split">
+          <article class="card">
+            <h3>Run</h3>
+            <p><code>test_runs/20260413_094502</code></p>
+            <p>
+              Prompt: compact enclosure with shelled body, lip-fit cover, countersunk fastener holes.
+            </p>
+          </article>
+          <article class="card card--warn">
+            <h3>What failed usefully</h3>
+            <p>
+              The first write did not disappear into a generic sandbox error. Preflight lint stopped a
+              legacy countersink helper immediately and emitted a structured repair recipe:
+              <code>explicit_anchor_hole_countersink_array_safe_recipe</code>.
+            </p>
+            <p class="card__note">
+              This is the kind of failure we can teach, validate, and generalize. It is a real product
+              improvement over opaque kernel-specific breakage.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="chapter" id="success-case" data-reveal>
+        <div class="chapter__head">
+          <span>04</span>
+          <h2>Success case: real runtime evidence</h2>
+        </div>
+        <div class="card-grid card-grid--two">
+          <article class="card media-card">
+            <div>
+              <h3>L2_172: one-round countersink plate</h3>
+              <p>
+                `benchmark/runs/20260413_102600/L2_172` finished in one planner round with
+                `first_write_tool=execute_build123d`, `validation_complete=true`, and evaluator pass.
+              </p>
+              <p class="card__note">
+                The winning move was explicit local-coordinate translation into a centered host frame.
+              </p>
+            </div>
+            <div class="media-pair">
+              <img src="assets/l2_172_generated_iso.png" alt="L2_172 generated iso view" />
+              <img src="assets/l2_172_ground_truth_iso.png" alt="L2_172 ground truth iso view" />
+            </div>
+          </article>
+          <article class="card media-card">
+            <div>
+              <h3>L1_218: annular groove repair lane</h3>
+              <p>
+                `benchmark/runs/20260413_141000/L1_218` converged after a Build123d repair path that
+                pulled the groove back into a more explicit band/subtract contract.
+              </p>
+              <p class="card__note">
+                This is a good reporting case because it shows a healthy loop, not only a one-shot success.
+              </p>
+            </div>
+            <div class="media-pair">
+              <img src="assets/l1_218_generated_iso.png" alt="L1_218 generated iso view" />
+              <img src="assets/l1_218_ground_truth_iso.png" alt="L1_218 ground truth iso view" />
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="chapter" id="artifact-chain" data-reveal>
+        <div class="chapter__head">
+          <span>05</span>
+          <h2>Artifact chain stays reportable</h2>
+        </div>
+        <div class="timeline">
+          <div class="timeline__item"><strong>prompts/</strong><span>What the model actually saw.</span></div>
+          <div class="timeline__item"><strong>plans/</strong><span>Why the model chose the next tool and what code it proposed.</span></div>
+          <div class="timeline__item"><strong>actions/</strong><span>Whether the Build123d write succeeded or hit a structured lint/repair surface.</span></div>
+          <div class="timeline__item"><strong>queries/</strong><span>Validator, kernel refresh, and probe evidence after the write.</span></div>
+          <div class="timeline__item"><strong>trace/</strong><span>Round-level decision chain and stop reason.</span></div>
+          <div class="timeline__item"><strong>outputs/ and evaluation/</strong><span>STEP artifacts and benchmark comparison evidence.</span></div>
+        </div>
+      </section>
+
+      <section class="chapter" id="current-judgment" data-reveal>
+        <div class="chapter__head">
+          <span>06</span>
+          <h2>Current judgment</h2>
+        </div>
+        <div class="judgment-band">
+          <p>
+            The migration already has enough substance for a report: Build123d is improving the runtime
+            in the exact places we care about most, namely explicit local frames, builder-visible booleans,
+            safe staging, and deterministic preflight repair surfaces.
+          </p>
+          <p>
+            The honest boundary is that the repo is not "done" just because benchmark anchors pass.
+            The enclosure family still needs more generalized body/lid/top-face reasoning.
+          </p>
+        </div>
+      </section>
+
+      <section class="chapter" id="next-plan" data-reveal>
+        <div class="chapter__head">
+          <span>07</span>
+          <h2>Next plan</h2>
+        </div>
+        <div class="card-grid card-grid--three">
+          <article class="card">
+            <h3>Keep the demos small</h3>
+            <p>Use the new demo suite as the stable explanation surface for Build123d adoption.</p>
+          </article>
+          <article class="card">
+            <h3>Generalize enclosure reasoning</h3>
+            <p>Focus on shell-opening semantics, lid/body decomposition, and top-face fastener placement.</p>
+          </article>
+          <article class="card">
+            <h3>Use benchmark as a signal, not a target</h3>
+            <p>Continue accepting only fixes that improve shared runtime contracts across multiple unseen prompts.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="chapter" id="key-evidence" data-reveal>
+        <div class="chapter__head">
+          <span>08</span>
+          <h2>Key evidence</h2>
+        </div>
+        <div class="evidence-grid">
+          <article class="code-card">
+            <h3>L2_172 decision summary</h3>
+            <pre><code>Translate corner-based sketch coordinates
+into the centered host frame, then write
+one Build123d script for the whole plate.</code></pre>
+          </article>
+          <article class="code-card">
+            <h3>External enclosure failure surface</h3>
+            <pre><code>failure_kind=execute_build123d_api_lint_failure
+rule=legacy_api.countersink_workplane_method
+recipe=explicit_anchor_hole_countersink_array_safe_recipe</code></pre>
+          </article>
+          <article class="code-card">
+            <h3>L2_130 contract lesson</h3>
+            <pre><code>Plane.XZ.offset(0) keeps the drilling frame honest.
+Local coordinates on that plane are (x, z),
+not (x, y) and not "offset by hole z".</code></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="main.js"></script>
+  </body>
+</html>

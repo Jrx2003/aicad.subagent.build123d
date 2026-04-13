@@ -196,11 +196,17 @@ class V2ContextManager:
         fresh_evidence, stale_evidence_invalidated = self._build_prompt_evidence_view(
             run_state
         )
+        raw_kernel_digest = (
+            build_domain_kernel_digest(run_state.feature_graph)
+            if run_state.feature_graph is not None
+            else {}
+        )
         runtime_skills = build_runtime_skill_pack(
             requirements=run_state.requirements,
             latest_validation=run_state.latest_validation,
             latest_write_health=latest_write_health,
             previous_tool_failure_summary=previous_tool_failure_summary,
+            domain_kernel_digest=raw_kernel_digest,
         )
         objective_health = self._build_objective_health(
             run_state,
@@ -216,11 +222,6 @@ class V2ContextManager:
         )
         evidence_conflict_detected = self._has_conflicting_stale_evidence(
             stale_evidence_invalidated
-        )
-        raw_kernel_digest = (
-            build_domain_kernel_digest(run_state.feature_graph)
-            if run_state.feature_graph is not None
-            else {}
         )
         kernel_digest = compact_jsonish(
             raw_kernel_digest,
@@ -349,6 +350,8 @@ class V2ContextManager:
             "recovery_bias",
             "recommended_next_steps",
             "recommended_next_tools",
+            "lint_hits",
+            "repair_recipe",
         ):
             if key in previous_tool_failure_summary:
                 compacted[key] = previous_tool_failure_summary.get(key)
@@ -1365,7 +1368,13 @@ class V2ContextManager:
         )
         if recent_failure_kinds:
             summary["recent_failure_kinds"] = recent_failure_kinds
-        failure_kind = _classify_write_failure(
+        payload_failure_kind = (
+            str(payload.get("failure_kind")).strip()
+            if isinstance(payload.get("failure_kind"), str)
+            and str(payload.get("failure_kind")).strip()
+            else None
+        )
+        failure_kind = payload_failure_kind or _classify_write_failure(
             tool_name=str(latest_write_turn.write_tool_name or "").strip(),
             error_text=error_text,
             stderr_text=stderr_text,
@@ -1497,7 +1506,14 @@ class V2ContextManager:
                 error_text = turn.error.strip()
             elif isinstance(payload, dict) and isinstance(payload.get("error_message"), str):
                 error_text = str(payload.get("error_message")).strip() or None
-            failure_kind = _classify_write_failure(
+            payload_failure_kind = (
+                str(payload.get("failure_kind")).strip()
+                if isinstance(payload, dict)
+                and isinstance(payload.get("failure_kind"), str)
+                and str(payload.get("failure_kind")).strip()
+                else None
+            )
+            failure_kind = payload_failure_kind or _classify_write_failure(
                 tool_name=str(turn.write_tool_name or "").strip(),
                 error_text=error_text,
                 stderr_text=stderr_text,
@@ -1569,8 +1585,30 @@ def _classify_write_failure(
     normalized_tool = tool_name.strip().lower()
     if normalized_tool == "execute_build123d":
         if (
+            "execute_build123d_python_syntax_failure" in lowered
+            or "syntaxerror" in lowered
+            or "indentationerror" in lowered
+            or "unterminated string literal" in lowered
+        ):
+            return "execute_build123d_python_syntax_failure"
+        if (
             "execute_build123d preflight lint failed" in lowered
             or "execute_build123d_api_lint_failure" in lowered
+        ):
+            return "execute_build123d_api_lint_failure"
+        if (
+            "typeerror" in lowered
+            and "unexpected keyword argument" in lowered
+            and any(
+                token in lowered
+                for token in (
+                    "rectangle.__init__",
+                    "circle.__init__",
+                    "box.__init__",
+                    "cylinder.__init__",
+                    "extrude(",
+                )
+            )
         ):
             return "execute_build123d_api_lint_failure"
         if "timeout" in lowered:
@@ -1613,6 +1651,12 @@ def _classify_write_failure(
         ):
             return "execute_build123d_boolean_shape_api_failure"
         if (
+            "typeerror" in lowered
+            and "unsupported operand type" in lowered
+            and any(token in lowered for token in ("'method' and 'cylinder'", "'method' and 'part'", "'method' and 'solid'"))
+        ):
+            return "execute_build123d_boolean_shape_api_failure"
+        if (
             "attributeerror" in lowered
             and "workplane" in lowered
             and "has no attribute" in lowered
@@ -1637,6 +1681,7 @@ def _classify_write_failure(
 
 
 _RETAINABLE_EXECUTE_CADQUERY_FAILURE_KINDS = {
+    "execute_build123d_python_syntax_failure",
     "execute_build123d_chain_context_failure",
     "execute_build123d_curve_api_failure",
     "execute_build123d_sweep_profile_recipe_failure",
@@ -1646,6 +1691,7 @@ _RETAINABLE_EXECUTE_CADQUERY_FAILURE_KINDS = {
 def _failure_recovery_bias(failure_kind: str) -> str:
     recovery_bias_map = {
         "execute_build123d_api_lint_failure": "repair_api_usage_before_retry",
+        "execute_build123d_python_syntax_failure": "repair_python_syntax_before_retry",
         "execute_build123d_timeout": "avoid_repeating_large_whole_part_code_retry",
         "execute_build123d_chain_context_failure": "repair_or_simplify_modeling_chain_before_retry",
         "execute_build123d_curve_api_failure": "repair_curve_api_usage_before_retry",
@@ -1659,9 +1705,17 @@ def _failure_recovery_bias(failure_kind: str) -> str:
 
 
 def _failure_recommended_next_steps(failure_kind: str) -> list[str]:
+    if failure_kind == "execute_build123d_python_syntax_failure":
+        return [
+            "Repair the Python syntax or indentation exactly before changing the modeling recipe again.",
+            "Keep the next execute_build123d retry materially identical in geometry intent; this failure is about script validity, not CAD semantics.",
+            "Prefer a shorter script with stable indentation and fewer comments/diagnostic strings until the script executes cleanly.",
+        ]
     if failure_kind == "execute_build123d_api_lint_failure":
         return [
             "Use the lint hits directly; do not retry the same unsupported legacy API surface inside execute_build123d.",
+            "For Build123d primitives and sketches, stay literal about supported constructor signatures: Rectangle is centered by default, and Cylinder does not accept axis=.",
+            "For explicit boolean cuts, orient and place the cutter with Rot(...) and Pos(...), then use an explicit solid boolean such as `result = host.part - cutter` instead of bare subtract()/rotate() helper guesses.",
             "For countersunk hole arrays, prefer BuildSketch plus Locations on the target Plane and subtract explicit hole/countersink cutters from the host part.",
         ]
     if failure_kind == "execute_build123d_timeout":
@@ -1708,6 +1762,8 @@ def _failure_recommended_next_steps(failure_kind: str) -> list[str]:
 
 
 def _failure_recommended_next_tools(failure_kind: str) -> list[str]:
+    if failure_kind == "execute_build123d_python_syntax_failure":
+        return ["execute_build123d", "query_kernel_state"]
     if failure_kind == "execute_build123d_api_lint_failure":
         return ["execute_build123d", "query_kernel_state"]
     if failure_kind == "execute_build123d_timeout":

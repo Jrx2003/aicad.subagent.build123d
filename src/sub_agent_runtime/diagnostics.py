@@ -86,10 +86,23 @@ def split_validation_feedback(payload: dict[str, Any] | None) -> tuple[dict[str,
                 for item in (payload.get("blockers") or [])
                 if isinstance(item, str) and str(item).strip()
             ]
-    is_complete = len(core_blockers) == 0 if core_checks or diagnostic_checks else bool(payload.get("is_complete"))
+    observation_tags = [
+        str(item).strip()
+        for item in (payload.get("observation_tags") or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    has_insufficient_evidence = bool(payload.get("insufficient_evidence")) or (
+        "insufficient_evidence" in observation_tags
+    )
+    if core_checks or diagnostic_checks:
+        is_complete = len(core_blockers) == 0 and not has_insufficient_evidence
+    else:
+        is_complete = bool(payload.get("is_complete")) and not has_insufficient_evidence
     summary = payload.get("summary")
     if core_blockers:
         summary = f"Requirement validation has {len(core_blockers)} core blocker(s)"
+    elif has_insufficient_evidence:
+        summary = "Requirement validation has insufficient evidence"
     elif diagnostic_blockers:
         summary = "Requirement validation has diagnostic-only blockers"
     elif not isinstance(summary, str) or not summary.strip():
@@ -105,6 +118,7 @@ def split_validation_feedback(payload: dict[str, Any] | None) -> tuple[dict[str,
         "failed_checks": failed_core_checks[:8],
         "core_check_count": len(core_checks),
         "diagnostic_check_count": len(diagnostic_checks),
+        "insufficient_evidence": has_insufficient_evidence,
     }
     core_taxonomy = _partition_blocker_taxonomy(
         payload,
@@ -144,6 +158,7 @@ def build_runtime_validation_payload(payload: dict[str, Any] | None) -> dict[str
     normalized["failed_checks"] = list(core.get("failed_checks") or [])
     normalized["core_check_count"] = core.get("core_check_count")
     normalized["diagnostic_check_count"] = core.get("diagnostic_check_count")
+    normalized["insufficient_evidence"] = bool(core.get("insufficient_evidence"))
     normalized["core_checks"] = [
         {
             "check_id": item.get("name"),

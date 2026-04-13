@@ -1,0 +1,69 @@
+{
+  "metadata": {
+    "date": "2026-04-13",
+    "owner": "codex",
+    "theme": "l1_l2_generalization_push",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "read_guidance",
+      "title": "Read CODEX, cad_iteration docs, and current work log/checklist conventions before changes",
+      "status": "done",
+      "notes": "Loaded CODEX.md, docs/cad_iteration/INDEX.md, SYSTEM_RECORD intent, and prior work log/checklist patterns."
+    },
+    {
+      "id": "sampled_l1_l2_baseline",
+      "title": "Run broader sampled L1/L2 benchmark as the main real generalization baseline",
+      "status": "in_progress",
+      "notes": "Started benchmark/runs/20260413_093734 with the full sampled 10-per-level L1/L2 set on kimi-k2.5-thinking. Added focused axisymmetric/generalization rerun benchmark/runs/20260413_121231 for L1_40,L1_79,L1_191,L2_88,L2_192 after landing local band grounding + procedural-clause demotion."
+    },
+    {
+      "id": "external_text_probes",
+      "title": "Run non-benchmark external text probes to test unseen prompt generalization",
+      "status": "in_progress",
+      "notes": "Started test_runs/20260413_094501 and test_runs/20260413_094502 from benchmark/corpus/external_cadquery_index.json prompts."
+    },
+    {
+      "id": "cluster_failure_modes",
+      "title": "Cluster failures by shared runtime or validation gap instead of by individual case",
+      "status": "in_progress",
+      "notes": "Current shared clusters: (1) Build123d guessed API surfaces on unknown prompts (`Box(..., depth=...)`, bare `shell(...)`, bare helper usage) from test_runs/20260413_094502; (2) validator false contradiction on local pattern dimensions vs whole-body bbox from test_runs/20260413_095100 and benchmark L1_101 artifacts; (3) explicit-anchor hole cases on centered hosts needed detached-solid rejection plus corner-frame -> centered-frame coordinate recovery instead of case-specific countersink hacks; (4) axisymmetric/tutorial-style prompts could leave geometry-correct runs incomplete because process/setup clauses (`units`, `default XY plane`, `half-sectional view`, `revolve`, `after closing profile`) were treated as unresolved coverage instead of non-blocking narration; (5) Build123d directional-drilling / half-shell prompts were still guessing workplane-origin and semi-profile APIs (`Plane.rotated(..., (0,0,0))`, `Circle(..., arc_size=...)`, `Semicircle(...)`) instead of using plane-normal translation and same-builder cylinder/intersect recipes."
+    },
+    {
+      "id": "generic_runtime_or_validation_fix",
+      "title": "Implement only generic fixes that can improve multiple cases or families",
+      "status": "done",
+      "notes": "Landed shared preflight lint for `Box(..., depth=...)` and bare `shell(...)`, synced prompt/skill/docs, fixed validation clause grounding so local pattern-layout dimensions reuse direct feature evidence instead of whole-body bbox, tightened host-face scoping so detached solids cannot satisfy plate-hole validation, exposed normalized local centers / corner-frame translations through query_feature_probes for explicit-anchor hole families, added axisymmetric cylindrical-band grounding for stepped/profile-point/plane-anchored disk clauses plus symmetric-extrude grounding, demoted tutorial-style process/setup revolve narration to non-blocking `process_setup` clauses, and added new Build123d contract guards for plane-normal offset semantics, `Plane.rotated(..., (0,0,0))` origin guesses, `Circle(..., arc_size=...)`, `Semicircle(...)`, plus a first-pass same-builder `Cylinder + SUBTRACT + INTERSECT` preference for explicit-radius half-shell families."
+    },
+    {
+      "id": "docs_sync",
+      "title": "Update CODEX-adjacent docs and cad_iteration records if runtime behavior changes",
+      "status": "done",
+      "notes": "Updated docs/cad_iteration/TOOL_SURFACE.md, ITERATION_PROTOCOL.md, SYSTEM_RECORD.json (now v3.1.18), and today's work log with the new preflight, axisymmetric grounding, symmetric-extrude grounding, process/setup-clause demotion, workplane-normal offset, plane-rotation-origin, and semi-profile Build123d contracts."
+    },
+    {
+      "id": "verification",
+      "title": "Re-run focused tests, at least one real probe, and broad benchmark evidence before claiming improvement",
+      "status": "in_progress",
+      "notes": "Latest verification passed on PATH=\"/opt/homebrew/bin:$PATH\" uv run pytest -q tests/unit/sub_agent_runtime/test_codegen_prompt_contract.py tests/unit/sub_agent_runtime/test_skill_pack.py tests/unit/sub_agent_runtime/test_tool_runtime_preflight_lint.py -> 65 passed. Fresh L1 anchor benchmark/runs/20260413_141000/L1_218 still passes. Fresh half-shell reruns are in progress at benchmark/runs/20260413_142430, benchmark/runs/20260413_142700, and test_runs/20260413_142701; the newest evidence shows failure mode quality improving from invalid API guesses to geometry-closure issues (`solids=0`), which is a healthier repair surface even before final convergence."
+    },
+    {
+      "id": "build123d_demo_pack",
+      "title": "Create a small Build123d demo and reporting package for migration-stage presentation",
+      "status": "done",
+      "notes": "Added demos/build123d_foundations with local-frame countersink, half-shell directional drilling, and shelled body/lid demos; generated STEP artifacts under demos/build123d_foundations/artifacts; added report-20260413-build123d-experiments plus docs/work_logs/2026-04-13_build123d迁移实验与演示说明.md."
+    },
+    {
+      "id": "rename_repo_build123d",
+      "title": "Rename repository identity from build123 to build123d and publish the latest migration experiment state",
+      "status": "in_progress",
+      "notes": "Updated pyproject package name, README, RUNBOOK paths, and report/demo references. Remote/API rename, local directory rename, commit, and push remain to be finalized."
+    }
+  ]
+}

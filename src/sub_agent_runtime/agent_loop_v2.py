@@ -69,6 +69,7 @@ _SUCCESSFUL_WRITE_INVALIDATED_EVIDENCE = [
 ]
 
 _TRANSIENT_MODEL_TIMEOUT_RETRY_COUNT = 1
+_RUNTIME_VALIDATION_TIMEOUT_SECONDS = 120
 _AUTHORITATIVE_KERNEL_QUERY_TOOL_NAMES = {"query_kernel_state"}
 _CANONICAL_OUTPUT_ARTIFACT_TOOL_NAMES = {
     "apply_cad_action",
@@ -189,10 +190,13 @@ class IterativeAgentLoopV2:
             )
             if turn_tool_policy is not None:
                 run_state.add_turn_tool_policy(turn_tool_policy)
-            allowed_tool_names = (
-                set(turn_tool_policy.allowed_tool_names)
-                if turn_tool_policy is not None
-                else None
+            allowed_tool_names = _filter_supported_round_tool_names(
+                run_state=run_state,
+                tool_names=(
+                    set(turn_tool_policy.allowed_tool_names)
+                    if turn_tool_policy is not None
+                    else set(self._tool_runtime.list_tool_names())
+                ),
             )
             llm_tools = self._tool_runtime.build_llm_tools(
                 allowed_tool_names=allowed_tool_names
@@ -648,7 +652,7 @@ class IterativeAgentLoopV2:
                     session_id=session_id,
                     requirements=requirements,
                     requirement_text=requirement_text,
-                    timeout=min(45, request.sandbox_timeout),
+                    timeout=min(_RUNTIME_VALIDATION_TIMEOUT_SECONDS, request.sandbox_timeout),
                     round_no=round_no,
                     trigger="post_write_probe",
                     queries_dir=queries_dir,
@@ -694,7 +698,7 @@ class IterativeAgentLoopV2:
                     session_id=session_id,
                     requirements=requirements,
                     requirement_text=requirement_text,
-                    timeout=min(45, request.sandbox_timeout),
+                    timeout=min(_RUNTIME_VALIDATION_TIMEOUT_SECONDS, request.sandbox_timeout),
                     round_no=round_no,
                     trigger="finish_run",
                     queries_dir=queries_dir,
@@ -703,9 +707,7 @@ class IterativeAgentLoopV2:
                     conversation_trace=conversation_trace,
                     query_filename=f"round_{round_no:02d}_validate_requirement_final.json",
                 )
-                if bool(validation_core.get("success")) and bool(
-                    validation_core.get("is_complete")
-                ):
+                if _is_successful_validation(validation_core):
                     converged = True
                     run_state.previous_error = None
                     run_state.add_turn_envelope(
@@ -767,7 +769,7 @@ class IterativeAgentLoopV2:
                     session_id=session_id,
                     requirements=requirements,
                     requirement_text=requirement_text,
-                    timeout=min(45, request.sandbox_timeout),
+                    timeout=min(_RUNTIME_VALIDATION_TIMEOUT_SECONDS, request.sandbox_timeout),
                     round_no=round_no,
                     trigger="non_progress",
                     queries_dir=queries_dir,
@@ -834,7 +836,7 @@ class IterativeAgentLoopV2:
                 session_id=session_id,
                 requirements=requirements,
                 requirement_text=requirement_text,
-                timeout=min(45, request.sandbox_timeout),
+                timeout=min(_RUNTIME_VALIDATION_TIMEOUT_SECONDS, request.sandbox_timeout),
                 round_no=None,
                 trigger="final_missing_validation",
                 queries_dir=queries_dir,
@@ -844,7 +846,7 @@ class IterativeAgentLoopV2:
                 query_filename="final_validate_requirement.json",
                 evidence_round_no=0,
             )
-            if bool(validation_core.get("success")) and bool(validation_core.get("is_complete")):
+            if _is_successful_validation(validation_core):
                 converged = True
                 run_state.previous_error = None
                 stop_reason = {
@@ -872,7 +874,7 @@ class IterativeAgentLoopV2:
             executed_action_count=run_state.executed_action_count,
             executed_action_types=run_state.executed_action_types,
             converged=converged,
-            validation_complete=bool(run_state.latest_validation and run_state.latest_validation.get("is_complete")),
+            validation_complete=_is_successful_validation(run_state.latest_validation),
             step_file_exists=step_file_exists,
             render_file_exists=render_file_exists,
             render_image_attached_for_prompt=False,
@@ -1058,10 +1060,10 @@ class IterativeAgentLoopV2:
                 },
             )
         )
-        run_state.latest_validation = validation_core
+        run_state.latest_validation = validation_runtime_payload
         run_state.evidence.update(
             tool_name="validate_requirement",
-            payload=validation_core,
+            payload=validation_runtime_payload,
             round_no=evidence_round_no if evidence_round_no is not None else round_no,
         )
         self._sync_feature_graph_from_runtime_payload(
@@ -1166,10 +1168,10 @@ class IterativeAgentLoopV2:
         }:
             run_state.latest_step_file = result.step_file
         if result.name == "validate_requirement":
-            validation_core, _validation_diagnostics = split_validation_feedback(
+            _validation_core, _validation_diagnostics = split_validation_feedback(
                 result.payload
             )
-            run_state.latest_validation = validation_core
+            run_state.latest_validation = build_runtime_validation_payload(result.payload)
         if result.name == "render_view":
             run_state.latest_render_view = result.payload
         if result.name in {
@@ -1186,9 +1188,7 @@ class IterativeAgentLoopV2:
         }:
             payload_for_loop = result.payload
             if result.name == "validate_requirement":
-                payload_for_loop, _validation_diagnostics = split_validation_feedback(
-                    result.payload
-                )
+                payload_for_loop = build_runtime_validation_payload(result.payload)
             run_state.evidence.update(
                 tool_name=result.name,
                 payload=payload_for_loop,
@@ -1604,6 +1604,8 @@ def _determine_turn_tool_policy(
             preferred_probe_families=[],
         )
 
+    preferred_probe_families = _preferred_probe_families_for_turn(run_state)
+
     incomplete_finish_round = _latest_incomplete_finish_round(run_state)
     if incomplete_finish_round is not None and not _has_tool_turn_since_round(
         run_state,
@@ -1616,10 +1618,6 @@ def _determine_turn_tool_policy(
         blocked_tool_names = [
             name for name in all_tool_names if name not in _GRAPH_REFRESH_TOOL_SET
         ]
-        preferred_probe_families = recommended_feature_probe_families(
-            requirements=run_state.requirements,
-            latest_validation=run_state.latest_validation,
-        )
         return TurnToolPolicy(
             round_no=round_no,
             policy_id="graph_refresh_after_incomplete_finish",
@@ -1642,10 +1640,6 @@ def _determine_turn_tool_policy(
         max_rounds=max_rounds,
     )
     if isinstance(post_solid_semantic_admission, dict):
-        preferred_probe_families = recommended_feature_probe_families(
-            requirements=run_state.requirements,
-            latest_validation=run_state.latest_validation,
-        )
         allowed_tool_names = [
             name for name in all_tool_names if name in _CODE_FIRST_ESCAPE_TOOL_SET
         ]
@@ -1696,10 +1690,6 @@ def _determine_turn_tool_policy(
             blocked_tool_names = [
                 name for name in all_tool_names if name not in _CODE_FIRST_ESCAPE_TOOL_SET
             ]
-            preferred_probe_families = recommended_feature_probe_families(
-                requirements=run_state.requirements,
-                latest_validation=run_state.latest_validation,
-            )
             return TurnToolPolicy(
                 round_no=round_no,
                 policy_id="code_first_after_semantic_refresh",
@@ -1738,10 +1728,6 @@ def _determine_turn_tool_policy(
         blocked_tool_names = [
             name for name in all_tool_names if name not in _CODE_FIRST_ESCAPE_TOOL_SET
         ]
-        preferred_probe_families = recommended_feature_probe_families(
-            requirements=run_state.requirements,
-            latest_validation=run_state.latest_validation,
-        )
         unsatisfied_feature_count = int(
             feature_chain_budget_risk.get("unsatisfied_feature_count", 0) or 0
         )
@@ -1775,6 +1761,113 @@ def _determine_turn_tool_policy(
         or latest_code_write_turn.write_tool_name != "execute_build123d"
     ):
         latest_code_write_turn = None
+
+    if (
+        latest_code_write_turn is not None
+        and not latest_validation_blockers
+        and not _is_successful_validation(latest_validation)
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and _latest_validation_prefers_semantic_refresh(latest_validation)
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={
+                "query_kernel_state",
+                "query_feature_probes",
+                "execute_build123d_probe",
+            },
+        )
+    ):
+        actionable_kernel_patch = _latest_actionable_kernel_patch(run_state)
+        if actionable_kernel_patch is not None:
+            return _turn_policy_from_actionable_kernel_patch(
+                round_no=round_no,
+                all_tool_names=all_tool_names,
+                policy_id="repair_from_actionable_kernel_patch_after_validation_assessment_gap",
+                reason=(
+                    "The fresh post-write validation surface is still incomplete without explicit "
+                    "family blockers, but the domain kernel already synthesized a concrete repair "
+                    "patch from the unresolved clause assessment. Repair directly instead of "
+                    "opening another semantic-refresh lane."
+                ),
+                patch=actionable_kernel_patch,
+            )
+        allowed_tool_names = [
+            name for name in all_tool_names if name in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+        ]
+        blocked_tool_names = [
+            name
+            for name in all_tool_names
+            if name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+        ]
+        preferred_tools = _preferred_validation_assessment_tools_for_turn(
+            run_state,
+            all_tool_names=allowed_tool_names,
+        )
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="semantic_refresh_after_validation_assessment_gap_from_code_write",
+            mode="graph_refresh",
+            reason=(
+                "The fresh post-write validation surface is still incomplete even though it has no "
+                "family blockers. Refresh evidence directly from the validation assessment instead "
+                "of drifting into generic geometry reads."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=preferred_tools,
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_code_write_turn is not None
+        and latest_validation_blockers
+        and not _is_successful_validation(latest_validation)
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and not _blockers_are_local_structured_tail(latest_validation_blockers)
+        and _latest_validation_prefers_semantic_refresh(latest_validation)
+        and not _latest_validation_has_actionable_single_blocker(latest_validation)
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={
+                "query_kernel_state",
+                "query_feature_probes",
+                "execute_build123d_probe",
+            },
+        )
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+        ]
+        blocked_tool_names = [
+            name
+            for name in all_tool_names
+            if name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="semantic_refresh_after_validation_evidence_gap_from_code_write",
+            mode="graph_refresh",
+            reason=(
+                "The fresh validation result still has blockers, but it also explicitly says "
+                "the current evidence is insufficient. Refresh semantic evidence before "
+                "another whole-part rewrite."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=[
+                "query_feature_probes",
+                "query_kernel_state",
+            ],
+            preferred_probe_families=preferred_probe_families,
+        )
 
     if (
         latest_code_write_turn is not None
@@ -1837,10 +1930,6 @@ def _determine_turn_tool_policy(
         blocked_tool_names = [
             name for name in all_tool_names if name not in set(allowed_tool_names)
         ]
-        preferred_probe_families = recommended_feature_probe_families(
-            requirements=run_state.requirements,
-            latest_validation=run_state.latest_validation,
-        )
         return TurnToolPolicy(
             round_no=round_no,
             policy_id="code_repair_under_budget_after_repeated_validation_blockers",
@@ -1905,10 +1994,6 @@ def _determine_turn_tool_policy(
             for name in all_tool_names
             if name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
         ]
-        preferred_probe_families = recommended_feature_probe_families(
-            requirements=run_state.requirements,
-            latest_validation=run_state.latest_validation,
-        )
         return TurnToolPolicy(
             round_no=round_no,
             policy_id="semantic_refresh_after_repeated_validation_blocker_from_code_write",
@@ -1965,10 +2050,6 @@ def _determine_turn_tool_policy(
         blocked_tool_names = [
             name for name in all_tool_names if name not in _CODE_FIRST_ESCAPE_TOOL_SET
         ]
-        preferred_probe_families = recommended_feature_probe_families(
-            requirements=run_state.requirements,
-            latest_validation=run_state.latest_validation,
-        )
         return TurnToolPolicy(
             round_no=round_no,
             policy_id="code_repair_after_validation_blocker_from_code_write",
@@ -2010,6 +2091,8 @@ def _determine_turn_tool_policy(
                 )
                 artifactless_failure = _latest_failed_code_sequence_is_artifactless(run_state)
                 concrete_code_failure_kinds = {
+                    "execute_build123d_api_lint_failure",
+                    "execute_build123d_python_syntax_failure",
                     "execute_build123d_curve_api_failure",
                     "execute_build123d_sweep_profile_recipe_failure",
                     "execute_build123d_boolean_shape_api_failure",
@@ -2031,10 +2114,6 @@ def _determine_turn_tool_policy(
                         for name in all_tool_names
                         if name not in set(allowed_tool_names)
                     ]
-                    preferred_probe_families = recommended_feature_probe_families(
-                        requirements=run_state.requirements,
-                        latest_validation=run_state.latest_validation,
-                    )
                     return TurnToolPolicy(
                         round_no=round_no,
                         policy_id="code_repair_after_repeated_concrete_code_failure",
@@ -2103,10 +2182,6 @@ def _determine_turn_tool_policy(
                         preferred_tool_names=preferred_tool_names,
                         preferred_probe_families=actionable_refresh["families"],
                     )
-                preferred_probe_families = recommended_feature_probe_families(
-                    requirements=run_state.requirements,
-                    latest_validation=run_state.latest_validation,
-                )
                 if (
                     artifactless_failure
                     and "path_sweep" in preferred_probe_families
@@ -2248,10 +2323,6 @@ def _determine_turn_tool_policy(
                 preferred_tool_names = ["execute_build123d", "query_kernel_state"]
             elif failure_kind == "execute_build123d_selector_failure":
                 preferred_tool_names = ["execute_build123d", "query_feature_probes"]
-            preferred_probe_families = recommended_feature_probe_families(
-                requirements=run_state.requirements,
-                latest_validation=run_state.latest_validation,
-            )
             return TurnToolPolicy(
                 round_no=round_no,
                 policy_id="code_recovery_after_failed_code_escape",
@@ -2283,10 +2354,6 @@ def _determine_turn_tool_policy(
         blocked_tool_names = [
             name for name in all_tool_names if name not in _GRAPH_REFRESH_TOOL_SET
         ]
-        preferred_probe_families = recommended_feature_probe_families(
-            requirements=run_state.requirements,
-            latest_validation=run_state.latest_validation,
-        )
         return TurnToolPolicy(
             round_no=round_no,
             policy_id="graph_refresh_after_read_stall",
@@ -2409,6 +2476,62 @@ def _latest_actionable_kernel_patch(
     graph = run_state.feature_graph
     if graph is None:
         return None
+    raw_patches = getattr(graph, "repair_patches", None)
+    if not isinstance(raw_patches, dict) or not raw_patches:
+        raw_patches = {}
+    feature_instances = getattr(graph, "feature_instances", {})
+    if not isinstance(feature_instances, dict):
+        feature_instances = {}
+
+    blocked_family_ids = {
+        str(getattr(feature_instance, "family_id", "") or "").strip()
+        for feature_instance in feature_instances.values()
+        if str(getattr(feature_instance, "status", "") or "").strip() == "blocked"
+        and str(getattr(feature_instance, "family_id", "") or "").strip()
+    }
+
+    best_patch: dict[str, Any] | None = None
+    for patch in reversed(list(raw_patches.values())):
+        if bool(getattr(patch, "stale", False)):
+            continue
+        repair_mode = str(getattr(patch, "repair_mode", "") or "").strip()
+        feature_instance_ids = [
+            str(item).strip()
+            for item in (getattr(patch, "feature_instance_ids", None) or [])
+            if isinstance(item, str) and str(item).strip()
+        ]
+        anchor_keys = [
+            str(item).strip()
+            for item in (getattr(patch, "anchor_keys", None) or [])
+            if isinstance(item, str) and str(item).strip()
+        ]
+        parameter_keys = [
+            str(item).strip()
+            for item in (getattr(patch, "parameter_keys", None) or [])
+            if isinstance(item, str) and str(item).strip()
+        ]
+        repair_intent = str(getattr(patch, "repair_intent", "") or "").strip()
+        if not repair_mode or not feature_instance_ids:
+            continue
+        if not (anchor_keys or parameter_keys):
+            continue
+        families: list[str] = []
+        for instance_id in feature_instance_ids:
+            feature_instance = feature_instances.get(instance_id)
+            family_id = str(getattr(feature_instance, "family_id", "") or "").strip()
+            if family_id and family_id not in families:
+                families.append(family_id)
+        best_patch = {
+            "repair_mode": repair_mode,
+            "feature_instance_ids": feature_instance_ids,
+            "anchor_keys": anchor_keys,
+            "parameter_keys": parameter_keys,
+            "repair_intent": repair_intent,
+            "families": families,
+        }
+        break
+
+    best_packet: dict[str, Any] | None = None
     raw_packets = getattr(graph, "repair_packets", None)
     if isinstance(raw_packets, dict) and raw_packets:
         for packet in reversed(list(raw_packets.values())):
@@ -2442,7 +2565,7 @@ def _latest_actionable_kernel_patch(
                     "repair_mode": repair_mode,
                 }
             )
-            return {
+            best_packet = {
                 "repair_mode": repair_mode,
                 "feature_instance_ids": [feature_instance_id],
                 "anchor_keys": anchor_keys,
@@ -2451,51 +2574,150 @@ def _latest_actionable_kernel_patch(
                 "families": families,
                 "repair_packet": packet_dict,
             }
-    raw_patches = getattr(graph, "repair_patches", None)
-    if not isinstance(raw_patches, dict) or not raw_patches:
-        return None
-    feature_instances = getattr(graph, "feature_instances", {})
-    if not isinstance(feature_instances, dict):
-        feature_instances = {}
-    for patch in reversed(list(raw_patches.values())):
-        if bool(getattr(patch, "stale", False)):
-            continue
-        repair_mode = str(getattr(patch, "repair_mode", "") or "").strip()
-        feature_instance_ids = [
-            str(item).strip()
-            for item in (getattr(patch, "feature_instance_ids", None) or [])
-            if isinstance(item, str) and str(item).strip()
-        ]
-        anchor_keys = [
-            str(item).strip()
-            for item in (getattr(patch, "anchor_keys", None) or [])
-            if isinstance(item, str) and str(item).strip()
-        ]
-        parameter_keys = [
-            str(item).strip()
-            for item in (getattr(patch, "parameter_keys", None) or [])
-            if isinstance(item, str) and str(item).strip()
-        ]
-        repair_intent = str(getattr(patch, "repair_intent", "") or "").strip()
-        if not repair_mode or not feature_instance_ids:
-            continue
-        if not (anchor_keys or parameter_keys):
-            continue
-        families: list[str] = []
-        for instance_id in feature_instance_ids:
-            feature_instance = feature_instances.get(instance_id)
-            family_id = str(getattr(feature_instance, "family_id", "") or "").strip()
-            if family_id and family_id not in families:
-                families.append(family_id)
-        return {
-            "repair_mode": repair_mode,
-            "feature_instance_ids": feature_instance_ids,
-            "anchor_keys": anchor_keys,
-            "parameter_keys": parameter_keys,
-            "repair_intent": repair_intent,
-            "families": families,
-        }
-    return None
+            break
+
+    if best_packet is None:
+        return best_patch
+    if best_patch is None:
+        return best_packet
+
+    packet_mode = str(best_packet.get("repair_mode") or "").strip()
+    patch_mode = str(best_patch.get("repair_mode") or "").strip()
+    if (
+        packet_mode == "local_edit"
+        and patch_mode in {"whole_part_rebuild", "subtree_rebuild"}
+        and (len(blocked_family_ids) > 1 or "general_geometry" in blocked_family_ids)
+    ):
+        return best_patch
+    return best_packet
+
+
+def _preferred_probe_families_for_turn(run_state: RunState) -> list[str]:
+    families: list[str] = []
+
+    def _append(raw_family_id: Any) -> None:
+        family_id = str(raw_family_id or "").strip()
+        if not family_id or family_id in families:
+            return
+        families.append(family_id)
+
+    graph = run_state.feature_graph
+    if graph is not None:
+        feature_probe_node = graph.nodes.get("evidence.feature_probes")
+        if feature_probe_node is not None:
+            detected_families = (
+                feature_probe_node.attributes.get("detected_families")
+                if isinstance(feature_probe_node.attributes, dict)
+                else None
+            )
+            if isinstance(detected_families, list):
+                for family_id in detected_families:
+                    _append(family_id)
+            if families:
+                return families
+        raw_packets = getattr(graph, "repair_packets", None)
+        if isinstance(raw_packets, dict):
+            for packet in reversed(list(raw_packets.values())):
+                if bool(getattr(packet, "stale", False)):
+                    continue
+                _append(getattr(packet, "family_id", ""))
+        raw_patches = getattr(graph, "repair_patches", None)
+        feature_instances = (
+            getattr(graph, "feature_instances", {})
+            if isinstance(getattr(graph, "feature_instances", {}), dict)
+            else {}
+        )
+        if isinstance(raw_patches, dict):
+            for patch in reversed(list(raw_patches.values())):
+                if bool(getattr(patch, "stale", False)):
+                    continue
+                for instance_id in getattr(patch, "feature_instance_ids", []) or []:
+                    feature_instance = feature_instances.get(instance_id)
+                    if feature_instance is None:
+                        continue
+                    _append(getattr(feature_instance, "family_id", ""))
+        for feature_instance in feature_instances.values():
+            status = str(getattr(feature_instance, "status", "") or "").strip()
+            if status not in {"active", "blocked", "observed"}:
+                continue
+            _append(getattr(feature_instance, "family_id", ""))
+        bindings = getattr(graph, "bindings", None)
+        if isinstance(bindings, dict):
+            for binding in reversed(list(bindings.values())):
+                if bool(getattr(binding, "stale", False)):
+                    continue
+                for family_id in getattr(binding, "family_ids", []) or []:
+                    _append(family_id)
+                if families:
+                    break
+        for node_id in getattr(graph, "active_node_ids", []) or []:
+            if not isinstance(node_id, str):
+                continue
+            if node_id.startswith("feature."):
+                _append(node_id.split(".", 1)[1])
+            elif node_id.startswith("feature:"):
+                _append(node_id.split(":", 1)[1])
+
+    latest_validation = run_state.latest_validation
+    for family_id in taxonomy_family_ids_from_validation_payload(latest_validation):
+        _append(family_id)
+
+    if not families:
+        families.extend(
+            recommended_feature_probe_families(
+                requirements=run_state.requirements,
+                latest_validation=run_state.latest_validation,
+            )
+        )
+    if not families:
+        families.append("general_geometry")
+    return families
+
+
+def _preferred_validation_assessment_tools_for_turn(
+    run_state: RunState,
+    *,
+    all_tool_names: list[str],
+) -> list[str]:
+    preferred_tools: list[str] = []
+
+    def _append(raw_tool_name: Any) -> None:
+        tool_name = str(raw_tool_name or "").strip()
+        if (
+            not tool_name
+            or tool_name in preferred_tools
+            or tool_name not in all_tool_names
+            or tool_name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+        ):
+            return
+        preferred_tools.append(tool_name)
+
+    graph = run_state.feature_graph
+    assessment = (
+        getattr(graph, "latest_validation_assessment", None)
+        if graph is not None
+        else None
+    )
+    if assessment is not None:
+        for tool_name in getattr(assessment, "recommended_next_tools", []) or []:
+            _append(tool_name)
+
+    if not preferred_tools:
+        latest_validation = run_state.latest_validation or {}
+        decision_hints = latest_validation.get("decision_hints")
+        if isinstance(decision_hints, list):
+            for hint in decision_hints:
+                normalized = str(hint or "").strip().lower()
+                if normalized == "inspect_more_evidence":
+                    _append("query_feature_probes")
+                    _append("query_kernel_state")
+                else:
+                    _append(normalized)
+
+    if not preferred_tools:
+        _append("query_feature_probes")
+        _append("query_kernel_state")
+    return preferred_tools
 
 
 def _turn_policy_from_actionable_kernel_patch(
@@ -2592,6 +2814,33 @@ def _has_recent_semantic_refresh_before_round(
     return False
 
 
+def _filter_supported_round_tool_names(
+    *,
+    run_state: RunState,
+    tool_names: set[str],
+) -> set[str]:
+    filtered = set(tool_names)
+    if "execute_repair_packet" not in filtered:
+        return filtered
+    graph = run_state.feature_graph
+    if graph is None:
+        filtered.discard("execute_repair_packet")
+        return filtered
+    raw_packets = getattr(graph, "repair_packets", None)
+    if not isinstance(raw_packets, dict) or not raw_packets:
+        filtered.discard("execute_repair_packet")
+        return filtered
+    latest_packet: dict[str, Any] | None = None
+    for packet in reversed(list(raw_packets.values())):
+        if bool(getattr(packet, "stale", False)):
+            continue
+        latest_packet = packet.to_dict() if hasattr(packet, "to_dict") else None
+        break
+    if not supports_runtime_repair_packet(latest_packet):
+        filtered.discard("execute_repair_packet")
+    return filtered
+
+
 def _has_tool_turn_since_round(
     run_state: RunState,
     *,
@@ -2639,6 +2888,137 @@ def _blockers_are_local_structured_tail(blockers: list[str]) -> bool:
     if not blocker_set:
         return False
     return blocker_set.issubset({"feature_fillet", "feature_chamfer"})
+
+
+def _latest_validation_prefers_semantic_refresh(
+    latest_validation: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(latest_validation, dict):
+        return False
+    if _latest_validation_has_actionable_geometry_contradiction(
+        latest_validation,
+        min_coverage=0.4,
+    ):
+        return False
+    if bool(latest_validation.get("insufficient_evidence")):
+        return True
+    observation_tags = {
+        str(item).strip().lower()
+        for item in (latest_validation.get("observation_tags") or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    if "insufficient_evidence" in observation_tags:
+        return True
+    decision_hints = {
+        str(item).strip().lower()
+        for item in (latest_validation.get("decision_hints") or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    if "inspect_more_evidence" in decision_hints:
+        return True
+    if any(
+        "inspect more" in hint and any(token in hint for token in ("evidence", "geometry", "topology"))
+        for hint in decision_hints
+    ):
+        return True
+    if any(hint.startswith("no explicit evidence for clause:") for hint in decision_hints):
+        return True
+    coverage_confidence = latest_validation.get("coverage_confidence")
+    return isinstance(coverage_confidence, (int, float)) and float(coverage_confidence) <= 0.25
+
+
+def _latest_validation_has_actionable_geometry_contradiction(
+    latest_validation: dict[str, Any] | None,
+    *,
+    min_coverage: float,
+    require_nonempty_evidence: bool = True,
+) -> bool:
+    if not isinstance(latest_validation, dict):
+        return False
+    coverage_confidence = latest_validation.get("coverage_confidence")
+    if not isinstance(coverage_confidence, (int, float)):
+        return False
+    if float(coverage_confidence) < float(min_coverage):
+        return False
+    clause_interpretations = latest_validation.get("clause_interpretations")
+    if not isinstance(clause_interpretations, list):
+        return False
+    process_only_evidence_markers = (
+        "no explicit evidence for clause:",
+        "no cutting action observed",
+        "no sweep action observed",
+        "no revolve action observed",
+        "no fillet action observed",
+        "no chamfer action observed",
+        "sketch-related evidence exists in the process history",
+        "setup/process clause is not directly verifiable",
+        "ui/navigation clause is not directly verifiable",
+        "construction-constraint clause is not directly verifiable",
+        "construction-method clause is not directly verifiable",
+    )
+    for clause in clause_interpretations:
+        if not isinstance(clause, dict):
+            continue
+        status = str(clause.get("status") or "").strip().lower()
+        if status != "contradicted":
+            continue
+        observation_tags = {
+            str(item).strip().lower()
+            for item in (clause.get("observation_tags") or [])
+            if isinstance(item, str) and str(item).strip()
+        }
+        if "clause:process_setup" in observation_tags:
+            continue
+        evidence = str(clause.get("evidence") or "").strip().lower()
+        if require_nonempty_evidence and not evidence:
+            continue
+        if evidence and any(marker in evidence for marker in process_only_evidence_markers):
+            continue
+        return True
+    return False
+
+
+def _latest_validation_has_actionable_single_blocker(
+    latest_validation: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(latest_validation, dict):
+        return False
+    blockers = [
+        str(item).strip()
+        for item in (latest_validation.get("blockers") or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    blocker_set = set(blockers)
+    if len(blocker_set) != 1:
+        return False
+    if blocker_set.isdisjoint(
+        {
+            "feature_countersink",
+            "feature_counterbore",
+            "feature_hole",
+            "feature_hole_exact_center_set",
+            "feature_hole_position_alignment",
+            "feature_local_anchor_alignment",
+            "feature_target_face_additive_merge",
+            "feature_target_face_subtractive_merge",
+        }
+    ):
+        return False
+    coverage_confidence = latest_validation.get("coverage_confidence")
+    if not isinstance(coverage_confidence, (int, float)):
+        return False
+    if float(coverage_confidence) < 0.5:
+        return False
+    decision_hints = {
+        str(item).strip().lower()
+        for item in (latest_validation.get("decision_hints") or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    if "inspect_more_evidence" in decision_hints:
+        return False
+    if any(hint.startswith("no explicit evidence for clause:") for hint in decision_hints):
+        return False
+    return True
 
 
 def _blockers_prefer_probe_first_after_code_write(blockers: list[str]) -> bool:

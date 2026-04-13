@@ -1,0 +1,2151 @@
+import math
+
+import pytest
+
+from sandbox_mcp_server.contracts import (
+    ActionHistoryEntry,
+    BoundingBox3D,
+    CADActionType,
+    CADStateSnapshot,
+    FaceEntity,
+    GeometryInfo,
+    GeometryObjectIndex,
+    QueryFeatureProbesInput,
+    RequirementCheck,
+    RequirementCheckStatus,
+    RequirementClauseStatus,
+    TopologyEdgeEntity,
+    TopologyFaceEntity,
+    TopologyObjectIndex,
+    ValidateRequirementInput,
+)
+from sandbox_mcp_server.service import SandboxMCPService
+from sandbox_mcp_server.validation_evidence import RequirementEvidenceBuilder
+from sandbox_mcp_server.validation_interpretation import interpret_requirement_clauses
+
+
+class _DummyRunner:
+    async def execute(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("not used in this test")
+
+
+def test_runtime_wrap_build123d_code_falls_back_to_empty_result_for_probe_analysis() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+
+    wrapped = service._runtime_wrap_build123d_code("x = 1")
+
+    assert "else:\n    result = Part()\n    __aicad_last_result = result\n" in wrapped
+
+
+def _bbox(
+    xmin: float,
+    xmax: float,
+    ymin: float,
+    ymax: float,
+    zmin: float,
+    zmax: float,
+) -> BoundingBox3D:
+    return BoundingBox3D(
+        xlen=xmax - xmin,
+        ylen=ymax - ymin,
+        zlen=zmax - zmin,
+        xmin=xmin,
+        xmax=xmax,
+        ymin=ymin,
+        ymax=ymax,
+        zmin=zmin,
+        zmax=zmax,
+    )
+
+
+def _topology_face(
+    *,
+    step: int,
+    face_id: str,
+    center: list[float],
+    normal: list[float],
+    bbox: BoundingBox3D,
+    geom_type: str = "PLANE",
+    radius: float | None = None,
+    axis_origin: list[float] | None = None,
+    axis_direction: list[float] | None = None,
+    area: float = 100.0,
+) -> TopologyFaceEntity:
+    return TopologyFaceEntity(
+        face_ref=f"face:{step}:{face_id}",
+        face_id=face_id,
+        step=step,
+        area=area,
+        center=center,
+        normal=normal,
+        axis_origin=axis_origin,
+        axis_direction=axis_direction,
+        radius=radius,
+        geom_type=geom_type,
+        bbox=bbox,
+        parent_solid_id="S1",
+        edge_refs=[],
+        adjacent_face_refs=[],
+    )
+
+
+def _geometry_face(
+    *,
+    face_id: str,
+    center: list[float],
+    normal: list[float],
+    bbox: BoundingBox3D,
+    geom_type: str = "PLANE",
+    radius: float | None = None,
+    axis_origin: list[float] | None = None,
+    axis_direction: list[float] | None = None,
+    area: float = 100.0,
+) -> FaceEntity:
+    return FaceEntity(
+        face_id=face_id,
+        area=area,
+        center=center,
+        normal=normal,
+        axis_origin=axis_origin,
+        axis_direction=axis_direction,
+        radius=radius,
+        geom_type=geom_type,
+        bbox=bbox,
+    )
+
+
+def _topology_edge(
+    *,
+    step: int,
+    edge_id: str,
+    center: list[float],
+    bbox: BoundingBox3D,
+    radius: float,
+    length: float,
+    axis_origin: list[float] | None = None,
+    axis_direction: list[float] | None = None,
+) -> TopologyEdgeEntity:
+    return TopologyEdgeEntity(
+        edge_ref=f"edge:{step}:{edge_id}",
+        edge_id=edge_id,
+        step=step,
+        length=length,
+        geom_type="CIRCLE",
+        center=center,
+        axis_origin=axis_origin,
+        axis_direction=axis_direction,
+        radius=radius,
+        bbox=bbox,
+        parent_solid_id="S1",
+        adjacent_face_refs=[],
+    )
+
+
+def _snapshot(
+    *,
+    step: int,
+    solids: int = 1,
+    faces: int = 6,
+    edges: int = 12,
+    volume: float = 100.0,
+    bbox: list[float] | None = None,
+    bbox_min: list[float] | None = None,
+    bbox_max: list[float] | None = None,
+    topology_index: TopologyObjectIndex | None = None,
+) -> CADStateSnapshot:
+    bbox_value = bbox or [10.0, 10.0, 10.0]
+    bbox_min_value = bbox_min or [0.0, 0.0, 0.0]
+    bbox_max_value = bbox_max or bbox_value
+    return CADStateSnapshot(
+        step=step,
+        features=[],
+        geometry=GeometryInfo(
+            solids=solids,
+            faces=faces,
+            edges=edges,
+            volume=volume,
+            bbox=bbox_value,
+            center_of_mass=[0.0, 0.0, 0.0],
+            surface_area=50.0,
+            bbox_min=bbox_min_value,
+            bbox_max=bbox_max_value,
+        ),
+        issues=[],
+        warnings=[],
+        blockers=[],
+        images=[],
+        sketch_state=None,
+        geometry_objects=None,
+        topology_index=topology_index,
+        success=True,
+        error=None,
+    )
+
+
+def test_interpretation_verifies_slot_cover_length_from_slot_alignment_check() -> None:
+    requirement_text = "length set to 110.0 to cover the entire length"
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=2, bbox=[100.0, 50.0, 20.0]),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_cylindrical_slot_alignment",
+                label="slot alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "axis=X, expected_radius=12.0, expected_centerline=[0.0, 0.0, 8.0], "
+                    "observed_axis_range=[-50.0, 50.0]"
+                ),
+            )
+        ],
+    )
+
+    assert summary.clause_interpretations[0].status == RequirementClauseStatus.VERIFIED
+    assert summary.insufficient_evidence == []
+
+
+def test_interpretation_does_not_confuse_along_with_long_for_pattern_direction() -> None:
+    requirement_text = "with direction 1 along the X-axis"
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=1, bbox=[50.0, 50.0, 15.0]),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_local_anchor_alignment",
+                label="local anchor alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="required_centers=[[-15.0, -15.0], ..., [15.0, 15.0]], realized_centers=[[-15.0, -15.0], ..., [15.0, 15.0]]",
+            ),
+            RequirementCheck(
+                check_id="feature_pattern",
+                label="pattern",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="execute_build123d_geometry_fallback=true, found repeated spherical recess pattern in final geometry",
+            ),
+        ],
+    )
+
+    assert summary.clause_interpretations[0].status == RequirementClauseStatus.VERIFIED
+
+
+def test_interpretation_verifies_vague_hole_pattern_clause_without_forcing_layout_unknown() -> None:
+    requirement_text = "Create a shelled block with a shallow top-face recess and a reference hole pattern."
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            bbox=[100.0, 80.0, 60.0],
+            bbox_min=[-50.0, -40.0, -30.0],
+            bbox_max=[50.0, 40.0, 30.0],
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_hole",
+                label="feature hole",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="found hole/recess-like subtractive geometry in final snapshot execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_pattern",
+                label="feature pattern",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="execute_build123d_geometry_fallback=true, found repeated direct feature pattern in final geometry",
+            ),
+        ],
+    )
+
+    clause_status = {
+        clause.clause_id: clause.status for clause in summary.clause_interpretations
+    }
+    assert clause_status["a_reference_hole_pattern"] == RequirementClauseStatus.VERIFIED
+    assert "a_reference_hole_pattern" not in summary.insufficient_evidence
+
+
+def test_interpretation_verifies_center_rectangle_clause_for_plane_anchored_base() -> None:
+    requirement_text = "Draw a center rectangle 100.0x50.0 in the XY plane"
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            bbox=[100.0, 50.0, 20.0],
+            bbox_min=[-50.0, -25.0, 0.0],
+            bbox_max=[50.0, 25.0, 20.0],
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_named_plane_positive_extrude_span",
+                label="plane anchored positive extrude",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "plane=XY, axis=Z, required_lower_bound=0.0, "
+                    "required_minimum_extent=20.0, require_positive_direction=True, "
+                    "observed_range=[0.0, 20.0]"
+                ),
+            )
+        ],
+    )
+
+    assert summary.clause_interpretations[0].status == RequirementClauseStatus.VERIFIED
+
+
+def test_interpretation_verifies_symmetric_extrude_clause_for_centered_block() -> None:
+    requirement_text = (
+        "extrude it symmetrically by 15.0 millimeters to make a 60x40x30 block centered about the XY plane"
+    )
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            bbox=[60.0, 40.0, 30.0],
+            bbox_min=[-30.0, -20.0, -15.0],
+            bbox_max=[30.0, 20.0, 15.0],
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    assert summary.clause_interpretations[0].status == RequirementClauseStatus.VERIFIED
+
+
+def test_interpretation_verifies_triangle_pocket_and_named_fillet_clauses_from_local_feature_evidence() -> None:
+    requirement_text = (
+        "Create a 60.0x40.0 millimeter rectangle on the XY plane and extrude it symmetrically "
+        "by 15.0 millimeters to make a 60x40x30 block centered about the XY plane. "
+        "Select the top face and sketch an isosceles triangular pocket centered on the top surface "
+        "with vertices at (-10.0, 0.0), (10.0, 0.0), and (0.0, 10.0). "
+        "Cut-extrude this triangle downward by 10.0 millimeters. "
+        "Fillet the two bottom outer edges that run parallel to the Y axis with a radius of 1.0 millimeter."
+    )
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_top",
+                center=[0.0, 0.0, 15.0],
+                normal=[0.0, 0.0, 1.0],
+                bbox=_bbox(-30.0, 30.0, -20.0, 20.0, 15.0, 15.0),
+                area=2300.0,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_triangle_floor",
+                center=[0.0, 3.333, 5.0],
+                normal=[0.0, 0.0, 1.0],
+                bbox=_bbox(-10.0, 10.0, 0.0, 10.0, 5.0, 5.0),
+                area=100.0,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_fillet_left",
+                center=[-29.707, 0.0, -14.707],
+                normal=[-0.707, 0.0, -0.707],
+                bbox=_bbox(-30.0, -29.0, -20.0, 20.0, -15.0, -14.0),
+                geom_type="CYLINDER",
+                radius=1.0,
+                axis_origin=[-29.0, -20.0, -14.0],
+                axis_direction=[0.0, 1.0, 0.0],
+                area=62.832,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_fillet_right",
+                center=[29.707, 0.0, -14.707],
+                normal=[0.707, 0.0, -0.707],
+                bbox=_bbox(29.0, 30.0, -20.0, 20.0, -15.0, -14.0),
+                geom_type="CYLINDER",
+                radius=1.0,
+                axis_origin=[29.0, -20.0, -14.0],
+                axis_direction=[0.0, 1.0, 0.0],
+                area=62.832,
+            ),
+        ],
+        edges=[],
+        faces_total=4,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    topology_index.faces[1].edge_refs = [
+        "edge:1:E_tri_1",
+        "edge:1:E_tri_2",
+        "edge:1:E_tri_3",
+    ]
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            faces=12,
+            edges=27,
+            volume=70982.83185307187,
+            bbox=[60.0, 40.0, 30.0],
+            bbox_min=[-30.0, -20.0, -15.0],
+            bbox_max=[30.0, 20.0, 15.0],
+            topology_index=topology_index,
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_target_face_edit",
+                label="target face edit",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="face_targets=['top'], execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_target_face_subtractive_merge",
+                label="target face subtractive merge",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="face_targets=['top'] merged_subtractive_feature execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="pre_solid_profile_shape_alignment",
+                label="pre-solid profile shape alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="required_pre_solid_shapes=['triangle', 'rectangle'], observed_pre_solid_shapes=['polygon', 'rectangle']",
+            ),
+            RequirementCheck(
+                check_id="feature_profile_shape_alignment",
+                label="profile shape alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="required_shapes=['triangle'], observed_snapshot_profile_shapes=['polygon', 'rectangle', 'triangle'], execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_fillet",
+                label="feature fillet",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="execute_build123d_geometry_fallback=true, feature=fillet, labels=['back', 'bottom', 'front', 'left', 'outer', 'y_parallel'], radius=1.0",
+            ),
+        ],
+    )
+
+    clause_status = {
+        clause.clause_id: clause.status for clause in summary.clause_interpretations
+    }
+    assert (
+        clause_status["create_a_60_0x40_0_millimeter_rectangle_on_the_xy_plane"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status[
+            "sketch_an_isosceles_triangular_pocket_centered_on_the_top_surface_with_vertices_at_10_0_0_0"
+        ]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert clause_status["10_0_0_0"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert clause_status["0_0_10_0"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status["cut_extrude_this_triangle_downward_by_10_0_millimeters"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status[
+            "fillet_the_two_bottom_outer_edges_that_run_parallel_to_the_y_axis_with_a_radius_of_1_0_millimeter"
+        ]
+        == RequirementClauseStatus.VERIFIED
+    )
+
+
+def test_interpretation_verifies_triangle_pocket_depth_when_topology_edge_refs_only_exist_in_topology_index() -> None:
+    requirement_text = (
+        "Create a 60.0x40.0 millimeter rectangle on the XY plane and extrude it symmetrically "
+        "by 15.0 millimeters to make a 60x40x30 block centered about the XY plane. "
+        "Select the top face and sketch an isosceles triangular pocket centered on the top surface "
+        "with vertices at (-10.0, 0.0), (10.0, 0.0), and (0.0, 10.0). "
+        "Cut-extrude this triangle downward by 10.0 millimeters."
+    )
+    geometry_objects = GeometryObjectIndex(
+        solids=[],
+        faces=[
+            _geometry_face(
+                face_id="F_top",
+                center=[0.0, 0.0, 15.0],
+                normal=[0.0, 0.0, 1.0],
+                bbox=_bbox(-30.0, 30.0, -20.0, 20.0, 15.0, 15.0),
+                area=2300.0,
+            ),
+            _geometry_face(
+                face_id="F_triangle_floor",
+                center=[0.0, 3.333, 5.0],
+                normal=[0.0, 0.0, 1.0],
+                bbox=_bbox(-10.0, 10.0, 0.0, 10.0, 5.0, 5.0),
+                area=100.0,
+            ),
+        ],
+        edges=[],
+        faces_total=2,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_top",
+                center=[0.0, 0.0, 15.0],
+                normal=[0.0, 0.0, 1.0],
+                bbox=_bbox(-30.0, 30.0, -20.0, 20.0, 15.0, 15.0),
+                area=2300.0,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_triangle_floor",
+                center=[0.0, 3.333, 5.0],
+                normal=[0.0, 0.0, 1.0],
+                bbox=_bbox(-10.0, 10.0, 0.0, 10.0, 5.0, 5.0),
+                area=100.0,
+            ),
+        ],
+        edges=[],
+        faces_total=2,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    topology_index.faces[1].edge_refs = [
+        "edge:1:E_tri_1",
+        "edge:1:E_tri_2",
+        "edge:1:E_tri_3",
+    ]
+    snapshot = _snapshot(
+        step=1,
+        solids=1,
+        faces=12,
+        edges=27,
+        volume=70982.83185307187,
+        bbox=[60.0, 40.0, 30.0],
+        bbox_min=[-30.0, -20.0, -15.0],
+        bbox_max=[30.0, 20.0, 15.0],
+        topology_index=topology_index,
+    )
+    snapshot.geometry_objects = geometry_objects
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=snapshot,
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_target_face_edit",
+                label="target face edit",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="face_targets=['top'], execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_target_face_subtractive_merge",
+                label="target face subtractive merge",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="face_targets=['top'] merged_subtractive_feature execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_profile_shape_alignment",
+                label="profile shape alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="required_shapes=['triangle'], observed_snapshot_profile_shapes=['polygon', 'rectangle', 'triangle'], execute_build123d_geometry_fallback=true",
+            ),
+        ],
+    )
+
+    clause_status = {
+        clause.clause_id: clause.status for clause in summary.clause_interpretations
+    }
+    assert (
+        clause_status["cut_extrude_this_triangle_downward_by_10_0_millimeters"]
+        == RequirementClauseStatus.VERIFIED
+    )
+
+
+def test_interpretation_verifies_axisymmetric_segment_clause_from_cylindrical_bands() -> None:
+    requirement_text = (
+        "Define the radii along the axial direction from 0 to 60.0 mm as follows: "
+        "end radius 15 mm (length 20.0 mm) -> middle section radius 7.5 mm (length 20.0 mm) "
+        "-> end radius 15 mm (length 20.0 mm)"
+    )
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_outer_low",
+                center=[-15.0, 0.0, 10.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-15.0, 15.0, -15.0, 15.0, 0.0, 20.0),
+                geom_type="CYLINDER",
+                radius=15.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1884.955592154,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_mid",
+                center=[-7.5, 0.0, 30.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-7.5, 7.5, -7.5, 7.5, 20.0, 40.0),
+                geom_type="CYLINDER",
+                radius=7.5,
+                axis_origin=[0.0, 0.0, 20.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=942.477796077,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_outer_high",
+                center=[-15.0, 0.0, 50.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-15.0, 15.0, -15.0, 15.0, 40.0, 60.0),
+                geom_type="CYLINDER",
+                radius=15.0,
+                axis_origin=[0.0, 0.0, 40.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1884.955592154,
+            ),
+        ],
+        edges=[],
+        faces_total=3,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            faces=7,
+            edges=9,
+            volume=31808.625617596772,
+            bbox=[30.0, 30.0, 60.0],
+            bbox_min=[-15.0, -15.0, 0.0],
+            bbox_max=[15.0, 15.0, 60.0],
+            topology_index=topology_index,
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    assert summary.clause_interpretations[0].status == RequirementClauseStatus.VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_accepts_axisymmetric_revolve_setup_prompt_without_clause_gaps() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-axisymmetric-revolve-setup"
+    service._session_manager.clear_session(session_id)
+
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_outer_low",
+                center=[-15.0, 0.0, 10.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-15.0, 15.0, -15.0, 15.0, 0.0, 20.0),
+                geom_type="CYLINDER",
+                radius=15.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1884.955592154,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_mid",
+                center=[-7.5, 0.0, 30.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-7.5, 7.5, -7.5, 7.5, 20.0, 40.0),
+                geom_type="CYLINDER",
+                radius=7.5,
+                axis_origin=[0.0, 0.0, 20.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=942.477796077,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_outer_high",
+                center=[-15.0, 0.0, 50.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-15.0, 15.0, -15.0, 15.0, 40.0, 60.0),
+                geom_type="CYLINDER",
+                radius=15.0,
+                axis_origin=[0.0, 0.0, 40.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1884.955592154,
+            ),
+        ],
+        edges=[],
+        faces_total=3,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=7,
+                edges=9,
+                volume=31808.625617596772,
+                bbox=[30.0, 30.0, 60.0],
+                bbox_min=[-15.0, -15.0, 0.0],
+                bbox_max=[15.0, 15.0, 60.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "First, create a new part file and set the units to millimeters (mm). "
+        "Establish a global coordinate system: use the origin (0,0,0) as the reference, "
+        "with the default XY plane as the base sketch plane and the Z-axis pointing upwards. "
+        "Draw a half-sectional view of the stepped shaft in the XZ plane and revolve it around the Z-axis. "
+        "Define the radii along the axial direction from 0 to 60.0 mm as follows: "
+        "end radius 15 mm (length 20.0 mm) -> middle section radius 7.5 mm (length 20.0 mm) "
+        "-> end radius 15 mm (length 20.0 mm). After closing the profile, perform a 360° revolution "
+        "to generate the double-ended stud."
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert result.is_complete is True
+    assert result.insufficient_evidence is False
+    clause_status = {
+        clause.clause_id: clause.status for clause in result.clause_interpretations
+    }
+    assert clause_status["set_the_units_to_millimeters_mm"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status[
+            "establish_a_global_coordinate_system_use_the_origin_0_0_0_as_the_reference"
+        ]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+    assert (
+        clause_status["with_the_default_xy_plane_as_the_base_sketch_plane"]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+    assert clause_status["the_z_axis_pointing_upwards"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status["draw_a_half_sectional_view_of_the_stepped_shaft_in_the_xz_plane"]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+    assert clause_status["revolve_it_around_the_z_axis"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert clause_status["after_closing_the_profile"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status["perform_a_360_revolution_to_generate_the_double_ended_stud"]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_accepts_axisymmetric_directional_profile_prompt_without_clause_gaps() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-axisymmetric-directional-profile"
+    service._session_manager.clear_session(session_id)
+
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_outer_base",
+                center=[-25.0, 0.0, 7.5],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-25.0, 25.0, -25.0, 25.0, 0.0, 15.0),
+                geom_type="CYLINDER",
+                radius=25.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=2356.19,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_outer_step",
+                center=[-20.0, 0.0, 17.5],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-20.0, 20.0, -20.0, 20.0, 15.0, 20.0),
+                geom_type="CYLINDER",
+                radius=20.0,
+                axis_origin=[0.0, 0.0, 15.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=628.319,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_inner_bore",
+                center=[-10.0, 0.0, 10.0],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(-10.0, 10.0, -10.0, 10.0, 0.0, 20.0),
+                geom_type="CYLINDER",
+                radius=10.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1256.637,
+            ),
+        ],
+        edges=[],
+        faces_total=3,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=6,
+                edges=9,
+                volume=29452.431127404176,
+                bbox=[50.0, 50.0, 20.0],
+                bbox_min=[-25.0, -25.0, 0.0],
+                bbox_max=[25.0, 25.0, 20.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Initialize the modeling environment and select the Front plane as the sketch plane. "
+        "To create an efficient revolved structure, draw a vertical centerline through the origin as the axis of rotation. "
+        "Next, draw the cross-sectional profile: start from point (10.0, 0) [corresponding to inner diameter R10], "
+        "draw horizontally outward to (25.0, 0) [corresponding to outer diameter R25], "
+        "draw vertically upward to (25.0, 15.0) [base thickness], "
+        "draw horizontally inward to (20.0, 15.0) [step R20], "
+        "draw vertically upward to (20.0, 20.0) [total height], "
+        "and finally draw horizontally inward to (10.0, 20.0) and close the profile by drawing vertically downward to the starting point. "
+        "After completing the sketch, use the revolved boss command to rotate 360 degrees around the center axis to generate the solid, "
+        "completing the spring seat construction."
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert result.is_complete is True
+    assert result.insufficient_evidence is False
+    clause_status = {
+        clause.clause_id: clause.status for clause in result.clause_interpretations
+    }
+    assert (
+        clause_status["to_create_an_efficient_revolved_structure"]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+    assert (
+        clause_status["draw_a_vertical_centerline_through_the_origin_as_the_axis_of_rotation"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["draw_horizontally_inward_to_20_0_15_0_step_r20"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["draw_horizontally_inward_to_10_0_20_0"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["close_the_profile_by_drawing_vertically_downward_to_the_starting_point"]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+    assert (
+        clause_status[
+            "use_the_revolved_boss_command_to_rotate_360_degrees_around_the_center_axis_to_generate_the_solid"
+        ]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+    assert (
+        clause_status["completing_the_spring_seat_construction"]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_blocks_multi_solid_result_for_explicit_boolean_difference_slot() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-single-body-slot"
+    service._session_manager.clear_session(session_id)
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=2,
+                faces=13,
+                edges=27,
+                volume=59717.03711648648,
+                bbox=[100.0, 50.0, 20.0],
+                bbox_min=[-50.0, -25.0, 0.0],
+                bbox_max=[50.0, 25.0, 20.0],
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a new part with units in millimeters. Draw a center rectangle 100.0×50.0 in the XY plane "
+        "and extrude it by 20.0 to form a block. Create a cutting cylinder: radius 12.0, axis along the X-axis, "
+        "cylinder centerline placed at (0,0,8.0), length set to 110.0 to cover the entire length. "
+        "Perform a Boolean difference: the block as the target body and the cylinder as the tool body, "
+        "resulting in a semicircular slot on the top surface."
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert "feature_merged_body_result" in result.blockers
+
+
+def test_interpretation_accepts_axisymmetric_bolt_circle_through_hole_clauses_without_gaps() -> None:
+    bolt_radius = 27.5
+    bolt_faces: list[TopologyFaceEntity] = []
+    for index in range(6):
+        angle = math.radians(index * 60.0)
+        cx = round(bolt_radius * math.cos(angle), 6)
+        cy = round(bolt_radius * math.sin(angle), 6)
+        bolt_faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_bolt_{index}",
+                center=[cx + 3.0 * math.cos(angle + math.pi), cy + 3.0 * math.sin(angle + math.pi), -7.5],
+                normal=[math.cos(angle + math.pi), math.sin(angle + math.pi), 0.0],
+                bbox=_bbox(cx - 3.0, cx + 3.0, cy - 3.0, cy + 3.0, -15.0, 0.0),
+                geom_type="CYLINDER",
+                radius=3.0,
+                axis_origin=[cx, cy, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=282.743,
+            )
+        )
+
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_outer_cap",
+                center=[-35.0, 0.0, -2.5],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-35.0, 35.0, -35.0, 35.0, -5.0, 0.0),
+                geom_type="CYLINDER",
+                radius=35.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1099.557,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_outer_boss",
+                center=[-25.0, 0.0, -10.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-25.0, 25.0, -25.0, 25.0, -15.0, -5.0),
+                geom_type="CYLINDER",
+                radius=25.0,
+                axis_origin=[0.0, 0.0, -5.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1570.796,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_center_hole",
+                center=[-12.5, 0.0, -7.5],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(-12.5, 12.5, -12.5, 12.5, -15.0, 0.0),
+                geom_type="CYLINDER",
+                radius=12.5,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1178.097,
+            ),
+            *bolt_faces,
+        ],
+        edges=[],
+        faces_total=9,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+
+    requirement_text = (
+        "Create a circular end cap by extruding a 70.0 millimeter diameter disk downward by 5.0 millimeters, "
+        "then add a concentric 50.0 millimeter diameter boss that extends a further 10.0 millimeters downward "
+        "from the disk bottom face. On the same top-face sketch, draw one concentric 25.0 millimeter center hole "
+        "and six 6.0 millimeter bolt holes on a 55.0 millimeter pitch circle, with one bolt-hole center on the "
+        "positive X axis (the 3 o'clock seed position). Use a single cut-extrude downward by 15.0 millimeters so "
+        "both the center hole and the six bolt-circle holes cut through the full flange-plus-boss thickness in one operation."
+    )
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            faces=17,
+            edges=60,
+            volume=30601.74392805413,
+            bbox=[70.0, 70.0, 15.0],
+            bbox_min=[-35.0, -35.0, -15.0],
+            bbox_max=[35.0, 35.0, 0.0],
+            topology_index=topology_index,
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_hole",
+                label="feature hole",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="found hole/recess-like subtractive geometry in final snapshot execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_local_anchor_alignment",
+                label="local anchor alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "required_centers=[[27.5, 0.0], [13.75, 23.815699], [-13.75, 23.815699], "
+                    "[-27.5, 0.0], [-13.75, -23.815699], [13.75, -23.815699]], "
+                    "realized_centers=[[-13.75, -23.815699], [13.75, -23.815699], [-27.5, 0.0], "
+                    "[-13.75, 23.815699], [27.5, 0.0], [13.75, 23.815699]]"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_profile_shape_alignment",
+                label="profile shape alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="required_shapes=['circle'], observed_snapshot_profile_shapes=['polygon', 'circle', 'triangle'], execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_pattern",
+                label="feature pattern",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="execute_build123d_geometry_fallback=true, found repeated direct feature pattern in final geometry",
+            ),
+            RequirementCheck(
+                check_id="feature_merged_body_result",
+                label="merged body",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="final_solids=1, requires_merged_body=True",
+            ),
+        ],
+    )
+
+    assert summary.insufficient_evidence == []
+    clause_status = {
+        clause.clause_id: clause.status for clause in summary.clause_interpretations
+    }
+    assert clause_status["on_the_same_top_face_sketch"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status[
+            "the_six_bolt_circle_holes_cut_through_the_full_flange_plus_boss_thickness_in_one_operation"
+        ]
+        == RequirementClauseStatus.VERIFIED
+    )
+
+
+@pytest.mark.parametrize(
+    ("requirement_text", "expected_fragment"),
+    [
+        (
+            "draw horizontally outward to (25.0, 0) [corresponding to outer diameter R25]",
+            "matched_axisymmetric_point=[25.0, 0.0]",
+        ),
+        (
+            "draw vertically upward to (25.0, 15.0) [base thickness]",
+            "matched_axisymmetric_point=[25.0, 15.0]",
+        ),
+        (
+            "draw vertically upward to (20.0, 20.0) [total height]",
+            "matched_axisymmetric_point=[20.0, 20.0]",
+        ),
+    ],
+)
+def test_interpretation_verifies_axisymmetric_profile_point_clauses(
+    requirement_text: str,
+    expected_fragment: str,
+) -> None:
+    combined_requirement = (
+        f"revolve the cross-sectional profile around the Z-axis. {requirement_text}"
+    )
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_inner",
+                center=[-10.0, 0.0, 10.0],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(-10.0, 10.0, -10.0, 10.0, 0.0, 20.0),
+                geom_type="CYLINDER",
+                radius=10.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1256.637061436,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_outer",
+                center=[-25.0, 0.0, 7.5],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-25.0, 25.0, -25.0, 25.0, 0.0, 15.0),
+                geom_type="CYLINDER",
+                radius=25.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=2356.1944901921893,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_step",
+                center=[-20.0, 0.0, 17.5],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-20.0, 20.0, -20.0, 20.0, 15.0, 20.0),
+                geom_type="CYLINDER",
+                radius=20.0,
+                axis_origin=[0.0, 0.0, 15.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=628.318530718,
+            ),
+        ],
+        edges=[],
+        faces_total=3,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            faces=6,
+            edges=9,
+            volume=29452.431127404176,
+            bbox=[50.0, 50.0, 20.0],
+            bbox_min=[-25.0, -25.0, 0.0],
+            bbox_max=[25.0, 25.0, 20.0],
+            topology_index=topology_index,
+        ),
+        history=[],
+        requirements={"description": combined_requirement},
+        requirement_text=combined_requirement,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": combined_requirement},
+        requirement_text=combined_requirement,
+    )
+
+    matched_clause = next(
+        item
+        for item in summary.clause_interpretations
+        if item.clause_text == requirement_text
+    )
+    assert matched_clause.status == RequirementClauseStatus.VERIFIED
+    assert expected_fragment in str(matched_clause.evidence)
+
+
+def test_interpretation_verifies_downward_disk_clause_from_axisymmetric_band() -> None:
+    requirement_text = (
+        "Create a circular end cap by extruding a 70.0 millimeter diameter disk downward by 5.0 millimeters"
+    )
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_flange",
+                center=[-35.0, 0.0, -2.5],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-35.0, 35.0, -35.0, 35.0, -5.0, 0.0),
+                geom_type="CYLINDER",
+                radius=35.0,
+                axis_origin=[0.0, 0.0, -5.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1099.5574287565,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_boss",
+                center=[-25.0, 0.0, -10.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(-25.0, 25.0, -25.0, 25.0, -15.0, -5.0),
+                geom_type="CYLINDER",
+                radius=25.0,
+                axis_origin=[0.0, 0.0, -15.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=1570.796326795,
+            ),
+        ],
+        edges=[],
+        faces_total=2,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            faces=17,
+            edges=60,
+            volume=30601.743928055705,
+            bbox=[70.0, 70.0, 15.0],
+            bbox_min=[-35.0, -35.0, -15.0],
+            bbox_max=[35.0, 35.0, 0.0],
+            topology_index=topology_index,
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    assert summary.clause_interpretations[0].status == RequirementClauseStatus.VERIFIED
+
+
+def test_interpretation_verifies_mixed_nested_section_and_annular_groove_clauses_from_passed_checks() -> None:
+    requirement_text = (
+        "Select the XY plane, draw a circle with a diameter of 50.0 mm and a square with a side "
+        "length of 25.0 mm centered. Extrude the section by 60.0 mm. Select the front view plane, "
+        "at a height of 30.0 mm, draw a 5.0 mm x 2.0 mm rectangle aligned with the edge, and use "
+        "a revolved cut to create an annular groove."
+    )
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            faces=9,
+            edges=18,
+            volume=78801.76003589762,
+            bbox=[50.0, 50.0, 60.0],
+            bbox_min=[-25.0, -25.0, 0.0],
+            bbox_max=[25.0, 25.0, 60.0],
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_named_plane_positive_extrude_span",
+                label="positive extrude span",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "plane=XY, axis=Z, required_lower_bound=0.0, required_minimum_extent=60.0, "
+                    "require_positive_direction=True, observed_range=[0.0, 60.0]"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_inner_void_cutout",
+                label="mixed nested section",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "execute_build123d_geometry_fallback=true, outer_diameter=50.0, "
+                    "inner_dims=[25.0, 25.0], outer_cylindrical_faces=2, inner_planar_faces=4, "
+                    "outer_axis_coverage=60.0"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_profile_shape_alignment",
+                label="profile shape alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "required_shapes=['circle', 'rectangle'], observed_snapshot_profile_shapes="
+                    "['circle', 'rectangle'], execute_build123d_geometry_fallback=true"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_revolved_groove_alignment",
+                label="groove alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "execute_build123d_geometry_fallback=true, outer_radius=25.0, groove_dims=[5.0, 2.0], "
+                    "candidate_radius=23.0, axial_window=[25.0, 30.0], height_match_mode=world_space:top_edge"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_revolved_groove_result",
+                label="groove result",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "execute_build123d_geometry_fallback=true, outer_radius=25.0, groove_dims=[5.0, 2.0], "
+                    "candidate_radius=23.0, axial_window=[25.0, 30.0], height_match_mode=world_space:top_edge"
+                ),
+            ),
+        ],
+    )
+
+    clause_status = {
+        clause.clause_text: clause.status for clause in summary.clause_interpretations
+    }
+    assert (
+        clause_status["draw a circle with a diameter of 50.0 mm"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["a square with a side length of 25.0 mm centered"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["Extrude the section by 60.0 mm"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["at a height of 30.0 mm"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["draw a 5.0 mm x 2.0 mm rectangle aligned with the edge"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert summary.insufficient_evidence == []
+
+
+def test_cylindrical_slot_alignment_recovers_centerline_from_top_surface_and_radius() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    requirement_text = (
+        "Create a block by drawing a 100.0x50.0 rectangle in the XY plane and extruding it by 20.0. "
+        "Create a cutting cylinder with radius 12.0, axis along the X-axis, and cylinder centerline placed at (0,0,8.0), "
+        "with length set to 110.0 to cover the entire length. Perform a Boolean difference: the block as the target body "
+        "and the cylinder as the tool body, resulting in a semicircular slot on the top surface."
+    )
+    top_face = _topology_face(
+        step=1,
+        face_id="F_top",
+        center=[0.0, 0.0, 20.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-50.0, 50.0, -25.0, 25.0, 20.0, 20.0),
+        area=5000.0,
+    )
+    slot_face = _topology_face(
+        step=1,
+        face_id="F_slot",
+        center=[1.5, 0.0, 12.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-47.0, 50.0, -12.0, 12.0, 0.0, 20.0),
+        geom_type="CYLINDER",
+        radius=12.0,
+        axis_origin=[-47.0, 0.0, 0.0],
+        axis_direction=[1.0, 0.0, 0.0],
+        area=2500.0,
+    )
+    snapshot = _snapshot(
+        step=1,
+        solids=1,
+        faces=7,
+        edges=15,
+        volume=90952.21315766168,
+        bbox=[100.0, 50.0, 20.0],
+        bbox_min=[-50.0, -25.0, 0.0],
+        bbox_max=[50.0, 25.0, 20.0],
+        topology_index=TopologyObjectIndex(
+            faces=[top_face, slot_face],
+            edges=[],
+            faces_total=2,
+            edges_total=0,
+            max_items_per_type=20,
+        ),
+    )
+
+    checks = service._build_cylindrical_slot_alignment_checks(
+        snapshot=snapshot,
+        requirement_text=requirement_text,
+    )
+
+    assert len(checks) == 1
+    assert checks[0].status == RequirementCheckStatus.PASS
+    assert "observed_reference_point=[1.5, 0.0, 8.0]" in str(checks[0].evidence)
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_accepts_snapshot_only_spherical_recess_pattern_with_bbox_inferred_centers() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-snapshot-spherical-recess-bbox-centers"
+    service._session_manager.clear_session(session_id)
+
+    top_face = _topology_face(
+        step=1,
+        face_id="F_top",
+        center=[0.0, 0.0, 15.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-25.0, 25.0, -25.0, 25.0, 15.0, 15.0),
+        area=2500.0,
+    )
+    sphere_faces = [
+        _topology_face(
+            step=1,
+            face_id=f"F_sphere_{index}",
+            center=[float(x), float(y), 12.5],
+            normal=[1.0, 0.0, 0.0],
+            bbox=_bbox(float(x) - 5.0, float(x) + 5.0, float(y) - 5.0, float(y) + 5.0, 10.0, 15.0),
+            geom_type="SPHERE",
+            area=math.pi * 50.0,
+        )
+        for index, (x, y) in enumerate(
+            (
+                (-15.0, -15.0),
+                (-15.0, 0.0),
+                (-15.0, 15.0),
+                (0.0, -15.0),
+                (0.0, 0.0),
+                (0.0, 15.0),
+                (15.0, -15.0),
+                (15.0, 0.0),
+                (15.0, 15.0),
+            ),
+            start=1,
+        )
+    ]
+    circle_edges = [
+        _topology_edge(
+            step=1,
+            edge_id=f"E_open_{index}",
+            center=[float(x), float(y), 15.0],
+            bbox=_bbox(float(x) - 5.0, float(x) + 5.0, float(y) - 5.0, float(y) + 5.0, 15.0, 15.0),
+            radius=5.0,
+            length=2.0 * math.pi * 5.0,
+            axis_origin=[float(x), float(y), 15.0],
+            axis_direction=[0.0, 0.0, 1.0],
+        )
+        for index, (x, y) in enumerate(
+            (
+                (-15.0, -15.0),
+                (-15.0, 0.0),
+                (-15.0, 15.0),
+                (0.0, -15.0),
+                (0.0, 0.0),
+                (0.0, 15.0),
+                (15.0, -15.0),
+                (15.0, 0.0),
+                (15.0, 15.0),
+            ),
+            start=1,
+        )
+    ]
+    topology_index = TopologyObjectIndex(
+        faces=[top_face, *sphere_faces],
+        edges=circle_edges,
+        faces_total=len([top_face, *sphere_faces]),
+        edges_total=len(circle_edges),
+        max_items_per_type=20,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=15,
+                edges=30,
+                volume=34000.0,
+                bbox=[50.0, 50.0, 15.0],
+                bbox_min=[-25.0, -25.0, 0.0],
+                bbox_max=[25.0, 25.0, 15.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Draw a 50.0x50.0mm square in the XY plane and extrude it by 15.0mm to create the base. "
+        "Select the top face as the reference and create a sketch for positioning the center of the recess. "
+        "Draw the center point and use it as a reference to create an auxiliary plane perpendicular to the top face. "
+        "On the auxiliary plane, draw a semicircle with a radius of 5.0mm (the diameter edge coincides with the top face) "
+        "and use the revolve cut command to generate the first hemispherical recess. Then use the linear pattern command, "
+        "with direction 1 along the X-axis, spacing 15.0mm, and quantity 3; direction 2 along the Y-axis, spacing 15.0mm, "
+        "and quantity 3. Select \"Center the pattern\" or pre-calculate the starting position to ensure that the nine holes "
+        "are completely symmetrically centered on the 50x50 face, completing the construction of the shock absorber pad."
+    )
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert result.coverage_confidence == pytest.approx(1.0)
+    assert result.insufficient_evidence is False
+    assert "feature_local_anchor_alignment" not in result.blockers
+    assert "feature_pattern" not in result.blockers
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_rejects_buried_full_sphere_void_pattern_without_host_plane_openings() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-buried-spherical-void-pattern"
+    service._session_manager.clear_session(session_id)
+
+    top_face = _topology_face(
+        step=1,
+        face_id="F_top",
+        center=[0.0, 0.0, 15.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-25.0, 25.0, -25.0, 25.0, 15.0, 15.0),
+        area=2500.0,
+    )
+    sphere_faces = [
+        _topology_face(
+            step=1,
+            face_id=f"F_sphere_{index}",
+            center=[float(x), float(y), 10.0],
+            normal=[1.0, 0.0, 0.0],
+            bbox=_bbox(float(x) - 5.0, float(x) + 5.0, float(y) - 5.0, float(y) + 5.0, 5.0, 15.0),
+            geom_type="SPHERE",
+            area=math.pi * 100.0,
+        )
+        for index, (x, y) in enumerate(
+            (
+                (-15.0, -15.0),
+                (-15.0, 0.0),
+                (-15.0, 15.0),
+                (0.0, -15.0),
+                (0.0, 0.0),
+                (0.0, 15.0),
+                (15.0, -15.0),
+                (15.0, 0.0),
+                (15.0, 15.0),
+            ),
+            start=1,
+        )
+    ]
+    topology_index = TopologyObjectIndex(
+        faces=[top_face, *sphere_faces],
+        edges=[],
+        faces_total=len([top_face, *sphere_faces]),
+        edges_total=0,
+        max_items_per_type=20,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=15,
+                edges=21,
+                volume=32787.61101961529,
+                bbox=[50.0, 50.0, 15.0],
+                bbox_min=[-25.0, -25.0, 0.0],
+                bbox_max=[25.0, 25.0, 15.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Draw a 50.0x50.0mm square in the XY plane and extrude it by 15.0mm to create the base. "
+        "Select the top face as the reference and create a sketch for positioning the center of the recess. "
+        "Draw the center point and use it as a reference to create an auxiliary plane perpendicular to the top face. "
+        "On the auxiliary plane, draw a semicircle with a radius of 5.0mm (the diameter edge coincides with the top face) "
+        "and use the revolve cut command to generate the first hemispherical recess. Then use the linear pattern command, "
+        "with direction 1 along the X-axis, spacing 15.0mm, and quantity 3; direction 2 along the Y-axis, spacing 15.0mm, "
+        "and quantity 3. Select \"Center the pattern\" or pre-calculate the starting position to ensure that the nine holes "
+        "are completely symmetrically centered on the 50x50 face, completing the construction of the shock absorber pad."
+    )
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert "feature_spherical_recess_host_plane_opening" in result.blockers
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_rejects_detached_countersink_solids_as_plate_holes() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-detached-countersink-solids"
+    service._session_manager.clear_session(session_id)
+
+    plate_top = _topology_face(
+        step=1,
+        face_id="F_plate_top",
+        center=[0.0, 0.0, 4.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-50.0, 50.0, -30.0, 30.0, 4.0, 4.0),
+        area=6000.0,
+    )
+
+    detached_faces: list[TopologyFaceEntity] = []
+    for index, (x, y) in enumerate(((25.0, 15.0), (25.0, 45.0), (75.0, 15.0), (75.0, 45.0)), start=1):
+        solid_id = f"S_detached_{index}"
+        detached_top = _topology_face(
+            step=1,
+            face_id=f"F_detached_top_{index}",
+            center=[x, y, 8.0],
+            normal=[0.0, 0.0, 1.0],
+            bbox=_bbox(x - 6.0, x + 6.0, y - 6.0, y + 6.0, 8.0, 8.0),
+            area=113.097,
+        ).model_copy(update={"parent_solid_id": solid_id})
+        detached_cone = _topology_face(
+            step=1,
+            face_id=f"F_detached_cone_{index}",
+            center=[x - 4.5, y, 6.5],
+            normal=[-0.70710678, 0.0, -0.70710678],
+            bbox=_bbox(x - 6.0, x + 6.0, y - 6.0, y + 6.0, 5.0, 8.0),
+            geom_type="CONE",
+            area=119.958,
+        ).model_copy(update={"parent_solid_id": solid_id})
+        detached_cyl = _topology_face(
+            step=1,
+            face_id=f"F_detached_cyl_{index}",
+            center=[x - 3.0, y, -0.5],
+            normal=[-1.0, 0.0, 0.0],
+            bbox=_bbox(x - 3.0, x + 3.0, y - 3.0, y + 3.0, -6.0, 5.0),
+            geom_type="CYLINDER",
+            radius=3.0,
+            axis_origin=[x, y, -6.0],
+            axis_direction=[0.0, 0.0, 1.0],
+            area=207.345,
+        ).model_copy(update={"parent_solid_id": solid_id})
+        detached_faces.extend([detached_top, detached_cone, detached_cyl])
+
+    topology_index = TopologyObjectIndex(
+        faces=[plate_top, *detached_faces],
+        edges=[],
+        faces_total=1 + len(detached_faces),
+        edges_total=0,
+        max_items_per_type=40,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=5,
+                faces=1 + len(detached_faces),
+                edges=24,
+                volume=49809.55736846801,
+                bbox=[131.0, 81.0, 14.0],
+                bbox_min=[-50.0, -30.0, -6.0],
+                bbox_max=[81.0, 51.0, 8.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Select the top reference plane, draw a 100.0x60.0 millimeter rectangle and extrude it by 8.0 millimeters. "
+        "Select the plate surface, and use the sketch to draw four points with coordinates (25,15), (25,45), (75,15), and (75,45). "
+        "Exit the sketch, and activate the Hole Wizard or the revolved cut tool. If using the Hole Wizard: select \"Countersink,\" "
+        "set the standard, head diameter 12.0 millimeters, cone angle 90 degrees, through-hole diameter 6.0 millimeters, and in the "
+        "position tab, select the four points drawn earlier. If using manual modeling: at each point, first cut a through-hole with "
+        "a diameter of 6.0 millimeters, then cut a conical recess with an upper diameter of 12.0 millimeters and a cone angle of "
+        "90 degrees (pay attention to depth control to ensure the countersink face matches), and complete the operation."
+    )
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert "feature_hole" in result.blockers
+    assert "feature_countersink" in result.blockers
+    assert "feature_hole_position_alignment" in result.blockers
+
+
+@pytest.mark.asyncio
+async def test_query_feature_probes_surfaces_centered_host_translation_hints_for_corner_based_points() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-query-feature-probes-corner-frame-translation"
+    service._session_manager.clear_session(session_id)
+
+    plate_top = _topology_face(
+        step=1,
+        face_id="F_plate_top",
+        center=[0.0, 0.0, 4.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-50.0, 50.0, -30.0, 30.0, 4.0, 4.0),
+        area=6000.0,
+    )
+    hole_cone = _topology_face(
+        step=1,
+        face_id="F_hole_cone",
+        center=[21.75, 15.0, 3.75],
+        normal=[-0.70710678, 0.0, -0.70710678],
+        bbox=_bbox(21.5, 28.5, 11.5, 18.5, 3.5, 4.0),
+        geom_type="CONE",
+        area=60.0,
+    )
+    hole_cyl = _topology_face(
+        step=1,
+        face_id="F_hole_cyl",
+        center=[22.0, 15.0, 1.75],
+        normal=[-1.0, 0.0, 0.0],
+        bbox=_bbox(22.0, 28.0, 12.0, 18.0, -4.0, 3.5),
+        geom_type="CYLINDER",
+        radius=3.0,
+        axis_origin=[25.0, 15.0, -4.0],
+        axis_direction=[0.0, 0.0, 1.0],
+        area=120.0,
+    )
+    hole_floor = _topology_face(
+        step=1,
+        face_id="F_hole_floor",
+        center=[25.0, 15.0, -4.0],
+        normal=[0.0, 0.0, -1.0],
+        bbox=_bbox(22.0, 28.0, 12.0, 18.0, -4.0, -4.0),
+        area=28.274,
+    )
+    topology_index = TopologyObjectIndex(
+        faces=[plate_top, hole_cone, hole_cyl, hole_floor],
+        edges=[],
+        faces_total=4,
+        edges_total=0,
+        max_items_per_type=40,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=4,
+                edges=17,
+                volume=47883.00185359251,
+                bbox=[100.0, 60.0, 8.0],
+                bbox_min=[-50.0, -30.0, -4.0],
+                bbox_max=[50.0, 30.0, 4.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Select the top reference plane, draw a 100.0x60.0 millimeter rectangle and extrude it by 8.0 millimeters. "
+        "Select the plate surface, and use the sketch to draw four points with coordinates (25,15), (25,45), (75,15), and (75,45). "
+        "Exit the sketch, and activate the Hole Wizard or the revolved cut tool. If using the Hole Wizard: select \"Countersink,\" "
+        "set the standard, head diameter 12.0 millimeters, cone angle 90 degrees, through-hole diameter 6.0 millimeters, and in the "
+        "position tab, select the four points drawn earlier. If using manual modeling: at each point, first cut a through-hole with "
+        "a diameter of 6.0 millimeters, then cut a conical recess with an upper diameter of 12.0 millimeters and a cone angle of "
+        "90 degrees (pay attention to depth control to ensure the countersink face matches), and complete the operation."
+    )
+    result = await service.query_feature_probes(
+        QueryFeatureProbesInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+            families=["explicit_anchor_hole"],
+        )
+    )
+
+    assert result.success is True
+    assert len(result.probes) == 1
+    probe = result.probes[0]
+    assert probe.family == "explicit_anchor_hole"
+    assert probe.signals["realized_centers"] == [[25.0, 15.0]]
+    assert probe.signals["normalized_local_centers"] == [
+        [-25.0, -15.0],
+        [-25.0, 15.0],
+        [25.0, -15.0],
+        [25.0, 15.0],
+    ]
+    assert probe.signals["host_frame_translation_from_corner"] == [-50.0, -30.0]
+    assert probe.signals["host_frame_dimensions"] == [100.0, 60.0]
+    assert "centered host frame suggests normalized centers" in probe.summary
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_accepts_face_sketch_coordinate_translation_for_centered_hosts() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-face-sketch-coordinate-translation"
+    service._session_manager.clear_session(session_id)
+
+    plate_top = _topology_face(
+        step=1,
+        face_id="F_plate_top",
+        center=[0.0, 0.0, 4.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-50.0, 50.0, -30.0, 30.0, 4.0, 4.0),
+        area=6000.0,
+    )
+    hole_faces: list[TopologyFaceEntity] = []
+    for index, (x, y) in enumerate(((-25.0, -15.0), (-25.0, 15.0), (25.0, -15.0), (25.0, 15.0)), start=1):
+        hole_faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_hole_cone_{index}",
+                center=[x + 4.5, y, 2.3],
+                normal=[-0.70710678, 0.0, 0.70710678],
+                bbox=_bbox(x - 6.0, x + 6.0, y - 6.0, y + 6.0, 0.5, 4.0),
+                geom_type="CONE",
+                area=120.0,
+            )
+        )
+        hole_faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_hole_cyl_{index}",
+                center=[x + 3.0, y, -0.5],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(x - 3.0, x + 3.0, y - 3.0, y + 3.0, -4.0, 3.5),
+                geom_type="CYLINDER",
+                radius=3.0,
+                axis_origin=[x, y, -4.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=200.0,
+            )
+        )
+
+    topology_index = TopologyObjectIndex(
+        faces=[plate_top, *hole_faces],
+        edges=[],
+        faces_total=1 + len(hole_faces),
+        edges_total=0,
+        max_items_per_type=40,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=1 + len(hole_faces),
+                edges=32,
+                volume=46574.806908831764,
+                bbox=[100.0, 60.0, 8.0],
+                bbox_min=[-50.0, -30.0, -4.0],
+                bbox_max=[50.0, 30.0, 4.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a 100x60x8 mm plate. On the top face, place four countersunk through holes at "
+        "sketch coordinates (25,15), (25,45), (75,15), and (75,45). Treat those coordinates as "
+        "face-sketch coordinates, not already-centered offsets."
+    )
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert result.is_complete is True
+    assert result.insufficient_evidence is False
+    assert "feature_countersink" not in result.blockers
+    assert "feature_hole_position_alignment" not in result.blockers
+    assert "feature_hole_exact_center_set" not in result.blockers
+    assert "feature_local_anchor_alignment" not in result.blockers
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_accepts_centered_stud_array_without_clause_gaps() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-centered-stud-array"
+    service._session_manager.clear_session(session_id)
+
+    base_top = _topology_face(
+        step=1,
+        face_id="F_base_top",
+        center=[0.0, 0.0, 10.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-8.0, 8.0, -8.0, 8.0, 10.0, 10.0),
+        area=256.0,
+    )
+    base_top.edge_refs = ["E_base_top_1", "E_base_top_2", "E_base_top_3", "E_base_top_4"]
+    base_bottom = _topology_face(
+        step=1,
+        face_id="F_base_bottom",
+        center=[0.0, 0.0, 0.0],
+        normal=[0.0, 0.0, -1.0],
+        bbox=_bbox(-8.0, 8.0, -8.0, 8.0, 0.0, 0.0),
+        area=256.0,
+    )
+    base_bottom.edge_refs = [
+        "E_base_bottom_1",
+        "E_base_bottom_2",
+        "E_base_bottom_3",
+        "E_base_bottom_4",
+    ]
+    base_side_x_pos = _topology_face(
+        step=1,
+        face_id="F_base_side_x_pos",
+        center=[8.0, 0.0, 5.0],
+        normal=[1.0, 0.0, 0.0],
+        bbox=_bbox(8.0, 8.0, -8.0, 8.0, 0.0, 10.0),
+        area=160.0,
+    )
+    base_side_x_neg = _topology_face(
+        step=1,
+        face_id="F_base_side_x_neg",
+        center=[-8.0, 0.0, 5.0],
+        normal=[-1.0, 0.0, 0.0],
+        bbox=_bbox(-8.0, -8.0, -8.0, 8.0, 0.0, 10.0),
+        area=160.0,
+    )
+    base_side_y_pos = _topology_face(
+        step=1,
+        face_id="F_base_side_y_pos",
+        center=[0.0, 8.0, 5.0],
+        normal=[0.0, 1.0, 0.0],
+        bbox=_bbox(-8.0, 8.0, 8.0, 8.0, 0.0, 10.0),
+        area=160.0,
+    )
+    base_side_y_neg = _topology_face(
+        step=1,
+        face_id="F_base_side_y_neg",
+        center=[0.0, -8.0, 5.0],
+        normal=[0.0, -1.0, 0.0],
+        bbox=_bbox(-8.0, 8.0, -8.0, -8.0, 0.0, 10.0),
+        area=160.0,
+    )
+
+    stud_faces: list[TopologyFaceEntity] = []
+    for index, (x, y) in enumerate(((4.0, 4.0), (4.0, -4.0), (-4.0, 4.0), (-4.0, -4.0)), start=1):
+        stud_faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_stud_top_{index}",
+                center=[x, y, 12.0],
+                normal=[0.0, 0.0, 1.0],
+                bbox=_bbox(x - 2.5, x + 2.5, y - 2.5, y + 2.5, 12.0, 12.0),
+                area=19.635,
+            )
+        )
+        stud_faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_stud_cyl_{index}",
+                center=[x + 2.5, y, 11.0],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(x - 2.5, x + 2.5, y - 2.5, y + 2.5, 10.0, 12.0),
+                geom_type="CYLINDER",
+                radius=2.5,
+                axis_origin=[x, y, 10.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=31.416,
+            )
+        )
+
+    topology_index = TopologyObjectIndex(
+        faces=[
+            base_top,
+            base_bottom,
+            base_side_x_pos,
+            base_side_x_neg,
+            base_side_y_pos,
+            base_side_y_neg,
+            *stud_faces,
+        ],
+        edges=[],
+        faces_total=6 + len(stud_faces),
+        edges_total=0,
+        max_items_per_type=40,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=6 + len(stud_faces),
+                edges=24,
+                volume=2717.0796326794934,
+                bbox=[16.0, 16.0, 12.0],
+                bbox_min=[-8.0, -8.0, 0.0],
+                bbox_max=[8.0, 8.0, 12.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "First, draw a 16x16mm square in the XY plane and extrude it 10.0mm to create the base. "
+        "Select the top surface of the base as the sketch plane, and draw four circles with a diameter of 5.0mm. "
+        "Constrain the centers of these four circles to form a square array with a side length of 8.0mm, and ensure that "
+        "the center of this array coincides with the center of the base (i.e., each circle's center is 4mm from the center "
+        "in the X/Y direction). Select the profiles of these four circles and extrude them upward by 2.0mm to create the "
+        "stud features on the top."
+    )
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert result.is_complete is True
+    assert result.insufficient_evidence is False
+    clause_status = {
+        clause.clause_id: clause.status for clause in result.clause_interpretations
+    }
+    assert clause_status["first"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status["extrude_it_10_0mm_to_create_the_base"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["draw_four_circles_with_a_diameter_of_5_0mm"]
+        == RequirementClauseStatus.VERIFIED
+    )

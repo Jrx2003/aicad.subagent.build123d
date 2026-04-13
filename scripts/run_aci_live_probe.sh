@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI_LLM_REASONING_PROVIDER="${LLM_REASONING_PROVIDER-}"
 CLI_LLM_REASONING_MODEL="${LLM_REASONING_MODEL-}"
 CLI_AICAD_TEST_RUNS_ROOT="${AICAD_TEST_RUNS_ROOT-}"
+CLI_AICAD_TEST_RUN_DIR="${AICAD_TEST_RUN_DIR-}"
 
 if [[ -f "$ROOT_DIR/.env" ]]; then
   set -a
@@ -21,6 +22,9 @@ if [[ -n "$CLI_LLM_REASONING_MODEL" ]]; then
 fi
 if [[ -n "$CLI_AICAD_TEST_RUNS_ROOT" ]]; then
   export AICAD_TEST_RUNS_ROOT="$CLI_AICAD_TEST_RUNS_ROOT"
+fi
+if [[ -n "$CLI_AICAD_TEST_RUN_DIR" ]]; then
+  export AICAD_TEST_RUN_DIR="$CLI_AICAD_TEST_RUN_DIR"
 fi
 
 RUNS_ROOT="${AICAD_TEST_RUNS_ROOT:-$ROOT_DIR/test_runs}"
@@ -40,6 +44,15 @@ ARGS=(
   --max-rounds "${AICAD_PROBE_MAX_ROUNDS:-8}"
   --sandbox-timeout "${AICAD_PROBE_SANDBOX_TIMEOUT:-180}"
 )
+
+if [[ -n "${AICAD_TEST_RUN_DIR-}" ]]; then
+  EXPLICIT_RUN_DIR="${AICAD_TEST_RUN_DIR}"
+  if [[ "$EXPLICIT_RUN_DIR" != /* ]]; then
+    EXPLICIT_RUN_DIR="$ROOT_DIR/$EXPLICIT_RUN_DIR"
+  fi
+  mkdir -p "$EXPLICIT_RUN_DIR"
+  ARGS+=(--run-dir "$EXPLICIT_RUN_DIR")
+fi
 
 if [[ -n "${AICAD_PROBE_REQUIREMENTS_FILE-}" ]]; then
   ARGS+=(--requirements-file "$AICAD_PROBE_REQUIREMENTS_FILE")
@@ -71,7 +84,11 @@ fi
   uv run aicad-iter-run "${ARGS[@]}"
 )
 
-RUN_DIR="$RUNS_ROOT/$RUN_ID"
+if [[ -n "${AICAD_TEST_RUN_DIR-}" ]]; then
+  RUN_DIR="$EXPLICIT_RUN_DIR"
+else
+  RUN_DIR="$RUNS_ROOT/$RUN_ID"
+fi
 ln -sfn "$RUN_DIR" "$RUNS_ROOT/latest"
 
 echo "[aci-live] run_dir: $RUN_DIR"

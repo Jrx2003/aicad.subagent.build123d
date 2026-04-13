@@ -51,6 +51,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-id", type=str, default=None)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--runs-root", type=str, default="test_runs")
+    parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument("--provider", type=str, default=None)
     parser.add_argument("--model", type=str, default=None)
     return parser
@@ -83,6 +84,7 @@ def main() -> None:
             request=request,
             runs_root=runs_root,
             run_id=args.run_id,
+            run_dir=Path(args.run_dir).expanduser() if args.run_dir else None,
         )
     )
     payload = {

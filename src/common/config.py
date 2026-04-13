@@ -18,6 +18,28 @@ class SandboxType(str, Enum):
     MCP = "mcp"
 
 
+def _discover_env_file(start_dir: Path | str | None = None) -> str | None:
+    """Locate the nearest .env from the active workspace or source tree.
+
+    This keeps copied repos and local worktree-style layouts usable without
+    duplicating provider credentials into every checkout.
+    """
+    requested_root = Path(start_dir) if start_dir is not None else Path.cwd()
+    search_roots = [requested_root, Path(__file__).resolve().parent]
+    seen: set[Path] = set()
+
+    for root in search_roots:
+        resolved_root = root.resolve()
+        for candidate_dir in (resolved_root, *resolved_root.parents):
+            if candidate_dir in seen:
+                continue
+            seen.add(candidate_dir)
+            env_path = candidate_dir / ".env"
+            if env_path.is_file():
+                return str(env_path)
+    return None
+
+
 def _discover_repo_root() -> str:
     """Locate monorepo root by searching upwards for .git first."""
     parents = Path(__file__).resolve().parents
@@ -40,7 +62,10 @@ class Settings(BaseSettings):
     # to be loaded from .env without explicit field definitions.
     # Access via settings.model_extra["newprovider_api_key"]
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="allow"
+        env_file=_discover_env_file(),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="allow",
     )
 
     # Environment

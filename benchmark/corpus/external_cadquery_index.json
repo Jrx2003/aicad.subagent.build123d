@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "source": "validation-generalization-phase1",
+  "description": "Initial external CadQuery benchmark index for generalization-oriented coverage.",
+  "entries": [
+    {
+      "case_id": "external_plate_fillet_001",
+      "family": "plate",
+      "prompt": "Create a 40x20x10 mm plate and add 2 mm fillets to all outer edges.",
+      "tags": ["baseline", "solid", "fillet"]
+    },
+    {
+      "case_id": "external_slot_bracket_001",
+      "family": "bracket",
+      "prompt": "Model an L-bracket with a centered through-slot and consistent wall thickness.",
+      "tags": ["baseline", "slot", "support"]
+    },
+    {
+      "case_id": "external_recess_shell_001",
+      "family": "recess",
+      "prompt": "Create a shelled block with a shallow top-face recess and a reference hole pattern.",
+      "tags": ["baseline", "recess", "pattern"]
+    },
+    {
+      "case_id": "external_braille_plate_001",
+      "family": "text_plate",
+      "prompt": "Create an embossed braille nameplate on a rectangular base, with multiple lines of Unicode braille dots laid out at fixed spacing.",
+      "tags": ["cadquery-contrib", "examples/Braille.py", "embossing", "text", "repeated_features"]
+    },
+    {
+      "case_id": "external_enclosure_boss_001",
+      "family": "enclosure",
+      "prompt": "Model a rounded electronics enclosure with a base, lid lip, filleted outer edges, and four screw-post bosses for fasteners.",
+      "tags": ["cadquery-contrib", "examples/Parametric_Enclosure.py", "enclosure", "bosses", "fasteners"]
+    },
+    {
+      "case_id": "external_thread_helix_001",
+      "family": "thread",
+      "prompt": "Build a cylindrical core with a parametric helical thread formed from ruled surfaces around the bore.",
+      "tags": ["cadquery-contrib", "examples/Thread.py", "helical", "ruled_surface", "compound"]
+    },
+    {
+      "case_id": "external_selector_shell_001",
+      "family": "shell",
+      "prompt": "Create a shelled cube and chamfer only the interior top edges using logical selector expressions.",
+      "tags": ["cadquery-contrib", "examples/Shelled_Cube_Inside_Chamfer_With_Logical_Selector_Operators.py", "selectors", "shell", "chamfer"]
+    },
+    {
+      "case_id": "external_arcblock_sweep_001",
+      "family": "sweep",
+      "prompt": "Create an arc-shaped mount block by sweeping a rectangular profile along a radius arc and add counterbored mounting holes.",
+      "tags": ["cadquery-models", "arcblock/arc_block.py", "sweep", "arc", "counterbore"]
+    },
+    {
+      "case_id": "external_latchmount_assembly_001",
+      "family": "mount",
+      "prompt": "Model a two-part latch mount with an offset baseplate and counterplate, chamfers, grooves, and aligned through-holes.",
+      "tags": ["cadquery-models", "latchmount/latch_mount.py", "assembly", "offset", "holes"]
+    },
+    {
+      "case_id": "external_gridfinity_ruggedbox_001",
+      "family": "container",
+      "prompt": "Generate a rugged Gridfinity storage box with lid, optional handles, clasps, hinges, and separate accessory parts.",
+      "tags": ["cq-gridfinity", "cqgridfinity/gf_ruggedbox.py", "gridfinity", "assembly", "optional_features"]
+    },
+    {
+      "case_id": "external_resin_mold_001",
+      "family": "mold",
+      "prompt": "Create a rectangular casting mold with a revolved internal cavity, corner mounting holes, and transverse fill or vent holes.",
+      "tags": ["cadquery-contrib", "examples/Resin_Mold.py", "revolved_cavity", "mount_holes", "transverse_holes"]
+    },
+    {
+      "case_id": "external_remote_enclosure_001",
+      "family": "enclosure",
+      "prompt": "Model a compact enclosure with a shelled body, a lip-fit cover, and countersunk button or fastener holes on the top face.",
+      "tags": ["cadquery-contrib", "examples/Remote_Enclosure.py", "shell", "countersunk_holes", "cover_lip"]
+    },
+    {
+      "case_id": "external_extruder_support_001",
+      "family": "support",
+      "prompt": "Create a multi-wing support bracket with a bridge, selector-driven cutouts, and a mix of drilled and counterbored mounting holes.",
+      "tags": ["cadquery-contrib", "examples/3D_Printer_Extruder_Support.py", "selectors", "bridge", "holes"]
+    },
+    {
+      "case_id": "external_rod_clip_001",
+      "family": "clip",
+      "prompt": "Model a swept rod clip with a curved hook section, a filleted base, and drilled plus countersunk mounting holes.",
+      "tags": ["cadquery-models", "cadquery-models/rodclip/rod_clip.py", "sweep", "fillet", "countersunk_holes"]
+    },
+    {
+      "case_id": "external_foot_block_001",
+      "family": "block",
+      "prompt": "Create a lofted spacer block with an optional recessed top and underside countersunk mounting holes.",
+      "tags": ["cadquery-models", "cadquery-models/footblock/foot_block.py", "loft", "recess", "countersunk_holes"]
+    },
+    {
+      "case_id": "external_xmount_wall_mount_001",
+      "family": "mount",
+      "prompt": "Model an angled wall mount built from a lofted base and drill face-normal countersunk mounting holes through the body.",
+      "tags": ["cadquery-models", "cadquery-models/xmount/wall_mount.py", "loft", "angled_face", "countersunk_holes"]
+    },
+    {
+      "case_id": "external_gf_baseplate_001",
+      "family": "baseplate",
+      "prompt": "Create a Gridfinity baseplate with patterned underside cuts and corner countersunk mounting tabs.",
+      "tags": ["cq-gridfinity", "cqgridfinity/gf_baseplate.py", "patterned_cuts", "corner_screws", "countersunk_holes"]
+    },
+    {
+      "case_id": "external_gf_box_001",
+      "family": "container",
+      "prompt": "Model a Gridfinity box with a shell, bottom mounting holes, internal dividers, interior scoops, and label flanges.",
+      "tags": ["cq-gridfinity", "cqgridfinity/gf_box.py", "shell", "bottom_holes", "dividers", "scoops", "flanges"]
+    }
+  ]
+}

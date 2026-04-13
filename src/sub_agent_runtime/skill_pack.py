@@ -4,47 +4,134 @@ import json
 import re
 from typing import Any
 
-from common.blocker_taxonomy import taxonomy_family_ids_from_validation_payload
+from common.blocker_taxonomy import (
+    taxonomy_family_ids_from_validation_payload,
+    taxonomy_records_from_validation_payload,
+)
 from sandbox_mcp_server.registry import (
     analyze_requirement_semantics,
     infer_requirement_probe_families,
 )
 
 
-def requirement_prefers_code_first_family(
+def _kernel_validation_assessment(
+    domain_kernel_digest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(domain_kernel_digest, dict):
+        return {}
+    assessment = domain_kernel_digest.get("latest_validation_assessment")
+    return assessment if isinstance(assessment, dict) else {}
+
+
+def _validation_has_insufficient_evidence_guidance(
+    latest_validation: dict[str, Any] | None,
     *,
-    requirements: dict[str, Any],
-    latest_validation: dict[str, Any] | None = None,
+    domain_kernel_digest: dict[str, Any] | None = None,
 ) -> bool:
-    requirement_text = _requirements_text(requirements)
-    requirement_lower = requirement_text.lower()
-    semantics = analyze_requirement_semantics(requirements, requirement_text)
-    blockers = {
-        str(item)
-        for item in (latest_validation or {}).get("blockers", [])
-        if isinstance(item, str)
+    kernel_assessment = _kernel_validation_assessment(domain_kernel_digest)
+    assessment_tags = {
+        str(tag).strip().lower()
+        for tag in (kernel_assessment.get("observation_tags") or [])
+        if isinstance(tag, str) and str(tag).strip()
     }
-    taxonomy_families = set(
-        taxonomy_family_ids_from_validation_payload(latest_validation)
-    )
-    annular_blockers = {
-        "feature_annular_groove",
-        "feature_revolved_groove_setup",
-        "feature_revolved_groove_alignment",
-        "feature_revolved_groove_result",
+    assessment_hints = {
+        str(hint).strip().lower()
+        for hint in (kernel_assessment.get("decision_hints") or [])
+        if isinstance(hint, str) and str(hint).strip()
     }
-    annular_blockers_active = bool(blockers.intersection(annular_blockers)) or (
-        "annular_groove" in taxonomy_families
-    )
+    if (
+        bool(kernel_assessment.get("insufficient_evidence"))
+        or "insufficient_evidence" in assessment_tags
+        or "inspect_more_evidence" in assessment_hints
+    ):
+        return True
+    if not isinstance(latest_validation, dict):
+        return False
+    top_level_tags = {
+        str(tag).strip().lower()
+        for tag in (latest_validation.get("observation_tags") or [])
+        if isinstance(tag, str) and str(tag).strip()
+    }
+    top_level_hints = {
+        str(hint).strip().lower()
+        for hint in (latest_validation.get("decision_hints") or [])
+        if isinstance(hint, str) and str(hint).strip()
+    }
+    if (
+        bool(latest_validation.get("insufficient_evidence"))
+        or "insufficient_evidence" in top_level_tags
+        or "inspect_more_evidence" in top_level_hints
+    ):
+        return True
+    for record in taxonomy_records_from_validation_payload(latest_validation):
+        observation_tags = {
+            str(tag).strip().lower()
+            for tag in getattr(record, "observation_tags", [])
+            if isinstance(tag, str) and str(tag).strip()
+        }
+        decision_hints = {
+            str(hint).strip().lower()
+            for hint in getattr(record, "decision_hints", [])
+            if isinstance(hint, str) and str(hint).strip()
+        }
+        if (
+            "insufficient_evidence" in observation_tags
+            or "inspect_more_evidence" in decision_hints
+            or str(getattr(record, "recommended_repair_lane", "") or "").strip().lower()
+            == "inspect_more_evidence"
+        ):
+            return True
+    return False
+
+
+def _failure_lint_ids(previous_tool_failure_summary: dict[str, Any] | None) -> set[str]:
+    if not isinstance(previous_tool_failure_summary, dict):
+        return set()
+    lint_hits = previous_tool_failure_summary.get("lint_hits")
+    if not isinstance(lint_hits, list):
+        return set()
+    return {
+        str(item.get("rule_id") or "").strip()
+        for item in lint_hits
+        if isinstance(item, dict) and str(item.get("rule_id") or "").strip()
+    }
+
+
+def _skill_pack_prefers_code_first(
+    *,
+    requirement_lower: str,
+    semantics: Any,
+    latest_validation: dict[str, Any] | None,
+    domain_kernel_digest: dict[str, Any] | None,
+) -> bool:
+    kernel_assessment = _kernel_validation_assessment(domain_kernel_digest)
+    latest_patch_repair_mode = str(
+        (domain_kernel_digest or {}).get("latest_patch_repair_mode") or ""
+    ).strip()
+    latest_packet_repair_mode = str(
+        (domain_kernel_digest or {}).get("latest_repair_packet_repair_mode") or ""
+    ).strip()
+    if latest_patch_repair_mode in {"whole_part_rebuild", "subtree_rebuild"}:
+        return True
+    if latest_packet_repair_mode and latest_packet_repair_mode != "local_edit":
+        return True
+    if kernel_assessment and kernel_assessment.get("contradicted_clause_ids"):
+        return True
+    taxonomy_families = set(taxonomy_family_ids_from_validation_payload(latest_validation))
+    if taxonomy_families.intersection(
+        {
+            "annular_groove",
+            "axisymmetric_profile",
+            "nested_hollow_section",
+            "orthogonal_union",
+            "path_sweep",
+            "spherical_recess",
+            "pattern_distribution",
+        }
+    ):
+        return True
     return (
-        annular_blockers_active
-        or "axisymmetric_profile" in taxonomy_families
-        or "nested_hollow_section" in taxonomy_families
-        or "orthogonal_union" in taxonomy_families
-        or "path_sweep" in taxonomy_families
-        or "spherical_recess" in taxonomy_families
-        or "pattern_distribution" in taxonomy_families
-        or bool(getattr(semantics, "mentions_revolved_groove_cut", False))
+        bool(getattr(semantics, "mentions_revolved_groove_cut", False))
         or bool(getattr(semantics, "mentions_nested_profile_cutout", False))
         or bool(getattr(semantics, "mentions_profile_region_frame", False))
         or bool(getattr(semantics, "mentions_multi_plane_additive_union", False))
@@ -62,10 +149,28 @@ def requirement_prefers_code_first_family(
     )
 
 
+def requirement_prefers_code_first_family(
+    *,
+    requirements: dict[str, Any],
+    latest_validation: dict[str, Any] | None = None,
+    domain_kernel_digest: dict[str, Any] | None = None,
+) -> bool:
+    requirement_text = _requirements_text(requirements)
+    requirement_lower = requirement_text.lower()
+    semantics = analyze_requirement_semantics(requirements, requirement_text)
+    return _skill_pack_prefers_code_first(
+        requirement_lower=requirement_lower,
+        semantics=semantics,
+        latest_validation=latest_validation,
+        domain_kernel_digest=domain_kernel_digest,
+    )
+
+
 def recommended_feature_probe_families(
     *,
     requirements: dict[str, Any],
     latest_validation: dict[str, Any] | None = None,
+    domain_kernel_digest: dict[str, Any] | None = None,
 ) -> list[str]:
     requirement_text = _requirements_text(requirements)
     requirement_lower = requirement_text.lower()
@@ -78,6 +183,32 @@ def recommended_feature_probe_families(
     taxonomy_families = taxonomy_family_ids_from_validation_payload(latest_validation)
     taxonomy_present = bool(taxonomy_families)
     families: list[str] = []
+
+    def _append(raw_family_id: Any) -> None:
+        family_id = str(raw_family_id or "").strip()
+        if family_id:
+            families.append(family_id)
+
+    active_feature_instances = (
+        (domain_kernel_digest or {}).get("active_feature_instances")
+        if isinstance(domain_kernel_digest, dict)
+        else None
+    )
+    if isinstance(active_feature_instances, list):
+        for item in active_feature_instances:
+            if isinstance(item, dict):
+                _append(item.get("family_id"))
+    _append((domain_kernel_digest or {}).get("latest_repair_packet_family_id"))
+    latest_patch_feature_instances = (
+        (domain_kernel_digest or {}).get("latest_patch_feature_instances")
+        if isinstance(domain_kernel_digest, dict)
+        else None
+    )
+    if isinstance(latest_patch_feature_instances, list):
+        for item in latest_patch_feature_instances:
+            if isinstance(item, dict):
+                _append(item.get("family_id"))
+
     families.extend(taxonomy_families)
     families.extend(
         infer_requirement_probe_families(
@@ -123,6 +254,7 @@ def build_runtime_skill_pack(
     latest_validation: dict[str, Any] | None,
     latest_write_health: dict[str, Any] | None,
     previous_tool_failure_summary: dict[str, Any] | None = None,
+    domain_kernel_digest: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     requirement_text = _requirements_text(requirements)
     requirement_lower = requirement_text.lower()
@@ -157,12 +289,18 @@ def build_runtime_skill_pack(
         or (previous_tool_failure_summary or {}).get("failure_kind")
         or ""
     ).strip()
+    previous_failure_lint_ids = _failure_lint_ids(previous_tool_failure_summary)
     same_tool_failure_count = int(
         (previous_tool_failure_summary or {}).get("same_tool_failure_count") or 0
+    )
+    insufficient_evidence_guidance = _validation_has_insufficient_evidence_guidance(
+        latest_validation,
+        domain_kernel_digest=domain_kernel_digest,
     )
     code_first_family = requirement_prefers_code_first_family(
         requirements=requirements,
         latest_validation=latest_validation,
+        domain_kernel_digest=domain_kernel_digest,
     )
 
     skills: list[dict[str, Any]] = []
@@ -175,9 +313,52 @@ def build_runtime_skill_pack(
                 "Keep execute_build123d scripts minimal and builder-first: use BuildPart for the host solid, BuildSketch for sections, BuildLine for rails, and assign the final geometry explicitly to result.",
                 "Do not add print statements, f-strings, or temporary string-formatting diagnostics unless the runtime explicitly asks for them; they increase syntax-risk without improving the benchmark feedback loop.",
                 "Prefer short named constants plus explicit Plane, Axis, Pos, Rot, and Locations placement over clever inline helpers or implicit origin assumptions.",
+                "Keep primitive signatures literal: for boxes use `Box(length, width, height)` or the matching keyword names, and do not invent aliases such as `depth=`.",
+                "Remember that `Box(length, width, height)` is centered at the origin by default; on a centered box the top-face plane is at `+height/2`, not `+height`.",
+                "If the requirement explicitly says to sketch on `Plane.XY` and extrude upward, preserve that sketch-plus-positive-extrude contract instead of silently swapping in a centered `Box(...)` whose base no longer sits on the named plane.",
+                "For shelled bodies, stay on Build123d shell/offset semantics or an explicit inner-solid subtraction; do not invent a bare `shell(...)` helper.",
+                "For boolean cuts, build explicit solid cutters and combine them with supported solid booleans or builder subtractive modes; do not invent bare `subtract(...)` or bare `rotate(...)` helpers.",
+                "When filtering ShapeLists by axis direction, use `filter_by(Axis.X/Y/Z)` or an explicit predicate; there is no `filter_by_direction(...)` helper.",
+                "For axis-parallel selection, do not call `edge.is_parallel(Axis.Y)` or similar guessed edge-instance helpers; filter the source ShapeList with `edges.filter_by(Axis.Y)` or use an explicit predicate.",
+                "If you close a `BuildLine` wire and need a face from it, use lowercase `make_face()`; do not invent `MakeFace()`.",
+                "For Build123d countersinks, use the exact helper/keyword contract `CounterSinkHole(radius=..., counter_sink_radius=..., depth=..., counter_sink_angle=...)`; do not invent `CountersinkHole(...)`, `CounterSink(...)`, or `countersink_radius=` aliases.",
+                "`CounterSinkHole(...)` belongs in `BuildPart`, not `BuildSketch`; if the requirement names a top/front/side host face, place the hole tool on that actual face plane instead of leaving it on the default XY mid-plane.",
+                "`Plane.rotated(rotation, ordering=...)` only changes orientation; it does not relocate the workplane.",
+                "The plane origin stays where it was after `Plane.rotated(...)`; if you need translation, use `Plane.offset(...)` along the plane normal or place the feature/cutter with `Pos(...)`.",
+                "Do not instantiate a detached `Cylinder(...)` cutter inside an active `BuildPart` and then do `result = part.part - cutter`; that primitive is already added to the builder. Build the host in one `BuildPart`, close it, then create the cutter outside the active builder before the explicit boolean.",
+                "Every primitive constructor inside an active `BuildPart` mutates that host immediately. Do not use temporary solid arithmetic staging values there such as `outer_cyl = Cylinder(...)`, `inner_cyl = Cylinder(...)`, or `half_space_box = Box(...)` and then reuse them in later boolean/intersection expressions; close the host builder before doing explicit solid arithmetic, or encode the shape through one builder-native sketch/profile recipe.",
+                "If you truly need a temporary staging solid inside an active `BuildPart`, create it with `mode=Mode.PRIVATE` so it stays out of the host until the later explicit boolean.",
+                "Do not assign back into `part.solid`; inside `BuildPart` prefer builder-native subtraction, and if you need an explicit boolean after the builder, subtract from `part.part` instead.",
+                "Do not open a nested `BuildPart()` cutter inside an active `BuildPart` and then mutate `part.part -= cutter.part`; repeated placements can collapse into one origin-centered boolean instead of preserving the intended feature locations.",
             ],
         }
     )
+
+    if latest_tool == "execute_build123d" and previous_failure_lint_ids:
+        skills.append(
+            {
+                "skill_id": "execute_build123d_api_lint_repair_first",
+                "when_relevant": "Use when preflight lint already identified a concrete unsupported Build123d API or keyword surface.",
+                "guidance": [
+                    "Treat lint hits as authoritative repair targets; do not retry the same execute_build123d pattern unchanged.",
+                    "If a repair_recipe is available in previous_tool_failure_summary, follow that recipe before opening new generic read turns.",
+                    "Keep the next write materially simpler than the rejected one and stay on supported builder-first Build123d surfaces.",
+                ],
+            }
+        )
+
+    if insufficient_evidence_guidance:
+        skills.append(
+            {
+                "skill_id": "insufficient_evidence_query_before_repair",
+                "when_relevant": "Use when validation explicitly says evidence is insufficient or the blocker taxonomy carries evidence-gap hints.",
+                "guidance": [
+                    "Treat insufficient_evidence observation_tags as a stop signal for family-specific repair guidance.",
+                    "Query more evidence first with query_feature_probes, query_geometry, or query_kernel_state before rewriting the geometry.",
+                    "If the validation record already includes decision_hints such as inspect_more_evidence, follow that evidence-gathering lane before another repair attempt.",
+                ],
+            }
+        )
 
     if code_first_family:
         skills.append(
@@ -265,6 +446,23 @@ def build_runtime_skill_pack(
             }
         )
 
+    if _requirement_mentions_shelled_host_with_named_face_feature(
+        requirement_lower,
+        semantics=semantics,
+    ):
+        skills.append(
+            {
+                "skill_id": "shelled_host_preserves_named_feature_face",
+                "when_relevant": "Use when a shelled body also needs a named-face recess, hole set, or other local feature on that same host.",
+                "guidance": [
+                    "If a shelled body will later receive a named-face local feature, do not open or remove that same target face while creating the shell.",
+                    "When the opening face is unspecified, preserve the named feature face and open the opposite face by default.",
+                    "For explicit inner-solid subtraction shells, keep the inner cutout extent and offset chosen so the target face still has material for the later edit.",
+                    "For vague reference layouts on a shelled host, keep the recesses, holes, or reference pattern on surviving host material instead of placing them in the hollow void.",
+                ],
+            }
+        )
+
     if "feature_named_plane_positive_extrude_span" in blockers:
         skills.append(
             {
@@ -308,6 +506,7 @@ def build_runtime_skill_pack(
                 "guidance": [
                     "Treat named local coordinates like (30, 0) as explicit feature anchors, not as optional hints.",
                     "On an XY-aligned top face, local sketch X/Y normally align with global X/Y; place the feature explicitly with Locations((x, y)) or an equivalent Plane/Pos mapping before hole/cut calls.",
+                    "When the prompt says to draw points with coordinates on a rectangular host face or plate surface, keep that sketch frame literal; those coordinates may be corner-based within the face sketch rather than already centered around the body origin.",
                     "Do not rely on the default workplane origin for explicit hole centers or local anchor features.",
                 ],
             }
@@ -396,13 +595,18 @@ def build_runtime_skill_pack(
                 "skill_id": "half_shell_profile_from_semicircle_section",
                 "when_relevant": "Use when the requirement is a split bearing housing or other half-cylindrical shell with a flat split surface.",
                 "guidance": [
-                    "Build the base shell from one closed semicircular or semi-annular 2D section on the named profile plane, then extrude it along the housing length.",
-                    "Do not start from a full circle/full cylinder and try to split the solid later; that frequently preserves the wrong full-diameter envelope.",
-                    "Treat the split surface as the flat closing edge of the semicircle profile, and keep the shell, pad, and lugs in the same half-plane as that semicircular material instead of extending them past the split line.",
-                    "For split-shell housings, the pad/lugs should widen the orthogonal axis along the split surface, not increase the split-axis depth beyond the outer radius.",
-                    "If the semicircle is drawn in the positive half-plane of the sketch, keep the pad/lugs in that same positive half-plane instead of mirroring them into the opposite half-plane.",
-                    "Treat the bore/clearance cut as a subtractive operation on the combined shell/pad host after those bodies are merged.",
+                "Build the base shell from one closed semicircular or semi-annular 2D section on the named profile plane, then extrude it along the housing length.",
+                "Do not start from a full cylinder and split it later; that frequently preserves the wrong full-diameter envelope.",
+                "If the radii are already explicit, prefer the lower-risk same-builder cylinder-subtract-then-intersect recipe on the first pass: create the outer cylinder, subtract the inner cylinder with `mode=Mode.SUBTRACT`, then intersect or trim to the required half-plane before downstream pad/lug edits.",
+                "Do not guess `Circle(..., arc_size=180)` for the semicircular section. In Build123d, `Circle(...)` is always full-circle geometry.",
+                "`Semicircle(...)` is not a Build123d helper; if you need a true half-profile, use `CenterArc(...)` or `RadiusArc(...)` inside `BuildLine`, close the split edge, and convert it with `make_face()`.",
+                "Treat the split surface as the flat closing edge of the semicircle profile, and keep the shell, pad, and lugs in the same half-plane as that semicircular material instead of extending them past the split line.",
+                "For split-shell housings, the pad/lugs should widen the orthogonal axis along the split surface, not increase the split-axis depth beyond the outer radius.",
+                "If the semicircle is drawn in the positive half-plane of the sketch, keep the pad/lugs in that same positive half-plane instead of mirroring them into the opposite half-plane.",
+                "Treat the bore/clearance cut as a subtractive operation on the combined shell/pad host after those bodies are merged.",
                     "Run that merged-host bore cut so it will leave side lugs outside the bore instead of recreating a full-width pad or cutting the lugs away.",
+                    "When the bore and lug holes are subtractive, keep those cutters in the same active `BuildPart` with supported subtractive modes instead of nesting cutter parts or calling bare `subtract(...)` helpers.",
+                    "For Y-direction lug holes at explicit X/Z anchors, a safe whole-part pattern is `with Locations((x, 0, z)): Cylinder(radius, extent, rotation=(90, 0, 0), mode=Mode.SUBTRACT)` after the host solid already exists.",
                     "On the first whole-part write, expect one radial bbox span to stay near the outer radius while the orthogonal axis shell-plus-lug span stays near or above the outer diameter.",
                 ],
             }
@@ -575,6 +779,7 @@ def build_runtime_skill_pack(
                     "For the first whole-part code build, the default first-pass whole-part pattern should already be annular-band subtraction rather than a literal revolve-cut recreation.",
                     "Build the hollow base first, then construct an annular band on the same main axis using the outer radius, inner radius, and requested axial window, and subtract that band from the base.",
                     "For cylindrical parts, a typical pattern is: build the outer solid, subtract the inner void, then create a coaxial annular band whose axial span matches the requested groove height/window and cut it from the base.",
+                    "Do not open a nested `BuildPart()` just to make the groove band while the host `BuildPart` is still active; either keep the groove subtraction in the same active `BuildPart` or close the host and subtract the annular groove band once.",
                     "Do not treat raw sketch-plane revolve as a co-equal repair recipe once execute_build123d is already the active repair path; only return to revolve if the axis/workplane semantics are explicitly proven and the band subtraction route is impossible.",
                     "After the repair write, verify the outer bbox stays stable while the local ring cut appears at the requested axial location.",
                 ],
@@ -597,11 +802,18 @@ def build_runtime_skill_pack(
                 "skill_id": "positioned_holes_on_face_workplanes",
                 "when_relevant": "Use for hole/recess features with explicit local coordinates or a stated drill direction, regardless of whether the next repair stays structured or switches to whole-part Build123d.",
                 "guidance": [
-                    "On a face workplane, hole() at the workplane origin will place the feature at local (0, 0).",
-                    "For explicit coordinates, place the feature explicitly with Locations((x, y)), GridLocations(...), or a plane-local Pos transform instead of relying on implicit cursor state.",
-                    "Choose the workplane whose normal matches the requested drill direction: XY drills along Z, XZ drills along Y, and YZ drills along X.",
-                    "For XY-based top faces, local workplane X/Y usually match the requirement's X/Y coordinates directly; for XZ or YZ workplanes, remap the stated coordinates into that plane before drilling.",
-                    "If the requirement names one center such as (30, 0), encode that coordinate explicitly in the Build123d geometry placement instead of relying on defaults.",
+                "On a face workplane, hole() at the workplane origin will place the feature at local (0, 0).",
+                "For explicit coordinates, place the feature explicitly with Locations((x, y)), GridLocations(...), or a plane-local Pos transform instead of relying on implicit cursor state.",
+                "Choose the workplane whose normal matches the requested drill direction: XY drills along Z, XZ drills along Y, and YZ drills along X.",
+                "For XY-based top faces, local workplane X/Y usually match the requirement's X/Y coordinates directly; for XZ or YZ workplanes, remap the stated coordinates into that plane before drilling.",
+                "If the requirement says the holes run in the Y direction and gives `x` plus `z` coordinates, use the XZ workplane so the local coordinates are `(x, z)` before drilling along Y.",
+                "Use `Plane.offset(...)` only for plane-normal translation: `Plane.XY.offset(d)` shifts along Z, `Plane.XZ.offset(d)` shifts along Y, and `Plane.YZ.offset(d)` shifts along X.",
+                "For Y-direction drilling on the XZ workplane, `Plane.XZ.offset(d)` shifts along Y, not Z, so do not encode a Z coordinate with `Plane.XZ.offset(z0)`.",
+                "If the named workplane already has the correct normal for the drill direction, keep it as-is instead of calling `Plane.rotated(...)` again; `Plane.rotated(rotation, ordering=...)` changes orientation only and leaves the origin unchanged.",
+                "If the host solid was created centered about the origin but the requirement's point coordinates came from a rectangular face sketch, translate those corner-based sketch coordinates into the centered host frame before placing the holes.",
+                "For `CounterSinkHole(...)`, keep the operation in `BuildPart` and include the host-face plane translation in the placement itself, for example `Locations((x, y, top_z), ...)` on a centered top face.",
+                "For repeated holes or countersinks, keep the cutters in the same active `BuildPart` with supported subtractive placement, or close the host builder before doing an explicit solid boolean; do not create a nested `BuildPart()` cutter at each location and mutate `part.part -= cutter.part` inside the loop.",
+                "If the requirement names one center such as (30, 0), encode that coordinate explicitly in the Build123d geometry placement instead of relying on defaults.",
                 ],
             }
         )
@@ -617,6 +829,8 @@ def build_runtime_skill_pack(
                 "guidance": [
                     "Treat the centered face-array layout as an explicit center set, not as a vague pattern hint.",
                     f"For this requirement the local centers are {centered_face_array_centers} (equivalently (±4, ±4) when the side length is 8 mm).",
+                    "These centers are face-local coordinates around the host-face center/origin, not corner-based global offsets.",
+                    "For default centered Rectangle(...) or Box(...) hosts, keep the centered array anchored around (0, 0) on that face unless the host was explicitly translated first.",
                     "On a face workplane, prefer one explicit pushPoints([...]) or rarray(...) layout over chained relative center(...) calls.",
                     "Do not derive later pattern members by repeatedly moving the current cursor with center(...); those moves are relative and often drift the full array into one quadrant.",
                     "After the write, the realized stud/hole/recess centers should still match the centered local layout before you consider the pattern complete.",
@@ -635,10 +849,14 @@ def build_runtime_skill_pack(
                 "guidance": [
                     "Treat this as a spherical-recess pattern family and prefer one whole-part sphere-subtraction build over a literal revolve recreation on the first pass.",
                     "Build the host solid first, identify the host face plane, and place the sphere centers on that host face plane when the prompt says the diameter edge coincides with the face.",
+                    "For a hemispherical recess whose diameter edge lies on the top face, set `sphere_center_z = top_face_z`, not `top_face_z - radius`.",
+                    "If the host comes from a default centered Rectangle(...) sketch or an origin-centered Box(...), the host-face center stays at local (0, 0); do not translate a centered pattern by (+width/2, +height/2).",
                     "Create spheres with Build123d solid primitives, place them at the explicit center set, then subtract them from the host body.",
+                    "For the first pass, prefer one explicit builder recipe such as `with Locations((x, y, top_z), ...): Sphere(radius=..., mode=Mode.SUBTRACT)` inside the same `BuildPart`.",
                     "Enumerate the full repeated center set explicitly for centered 3x3 or linear-pattern layouts instead of deriving one seed recess and hoping later turns recover the array.",
                     "If the prompt mentions revolve, treat that as descriptive user intent for a hemispherical recess, not as a mandatory first-pass modeling recipe when direct sphere subtraction is lower risk.",
                     "Use only valid Build123d sphere-construction helpers; do not invent alternate top-level sphere constructors.",
+                    "Do not subtract by mutating `part.solid`; stay in the builder with `mode=Mode.SUBTRACT`, or subtract from `part.part` only after the builder closes.",
                 ],
             }
         )
@@ -782,7 +1000,9 @@ def build_runtime_skill_pack(
                 "when_relevant": "Use when an explicit cutting-cylinder slot is aligned correctly in principle but still produces the wrong cylindrical-face topology.",
                 "guidance": [
                     "When the requirement already defines a cutting cylinder, model the host block and one tool cylinder directly, then perform a single boolean difference.",
-                    "In Build123d, prefer a single `Cylinder(radius, length)` positioned with `Pos(...)` and `Rot(...)` so the requested axis and centerline are literal, instead of rebuilding the slot from stacked partial cuts or improvised profile fragments.",
+                    "In Build123d, prefer a single `Cylinder(radius, length, align=(Align.CENTER, Align.CENTER, Align.CENTER))` positioned with `Pos(...)` and `Rot(...)` so the requested axis and centerline are literal, instead of rebuilding the slot from stacked partial cuts or improvised profile fragments.",
+                    "Do not build this cutter by sketching a circle on the YZ plane and extruding it both ways when validator is already reporting fragmented cylindrical wall faces; that repair pattern tends to preserve the same broken slot topology.",
+                    "For an X-axis slot with centerline `(0, 0, z0)`, the default safe pattern is `cutter = Pos(0, 0, z0) * (Rot(Y=90) * Cylinder(...))`, then `result = host.part - cutter`.",
                     "Avoid repair writes that create extra cylindrical wall fragments on one side of the slot; the target should keep one clean cylindrical wall per side, or one continuous trough face when the topology stays connected.",
                     "After the cut, verify the cylindrical wall faces are minimal and symmetric rather than split into multiple same-side patches.",
                 ],
@@ -959,23 +1179,26 @@ def _skill_priority(
         return priorities.get(skill_id, 10)
     general_priorities = {
         "execute_build123d_minimal_script_hygiene": 0,
-        "recover_from_failed_whole_part_retry": 1,
-        "explicit_revolve_profile_recipe": 2,
-        "axisymmetric_segmented_primitives_preferred_over_revolve": 3,
-        "half_shell_profile_envelope_repair": 4,
-        "half_shell_profile_from_semicircle_section": 5,
-        "path_sweep_wire_profile_frame_repair": 6,
-        "named_face_local_feature_sequence": 7,
-        "flange_boss_pattern_hole_host_thickness": 8,
-        "explicit_centered_face_array_centers": 9,
-        "nested_regular_polygon_frame_code_first": 10,
-        "named_axis_axisymmetric_pose_alignment_repair": 11,
-        "regular_polygon_side_length_build123d_semantics": 12,
-        "positive_extrude_from_named_plane_is_not_centered": 13,
-        "positive_extrude_bbox_alignment_repair": 14,
-        "whole_part_additive_features_must_merge_into_single_body": 15,
-        "named_plane_profile_to_global_box_mapping": 16,
-        "whole_part_union_from_global_axis_primitives": 17,
+        "spherical_recess_pattern_code_first": 1,
+        "explicit_centered_face_array_centers": 2,
+        "spherical_recess_pattern_code_repair": 3,
+        "recover_from_failed_whole_part_retry": 4,
+        "clean_cylindrical_slot_boolean": 5,
+        "explicit_revolve_profile_recipe": 6,
+        "axisymmetric_segmented_primitives_preferred_over_revolve": 7,
+        "half_shell_profile_envelope_repair": 8,
+        "half_shell_profile_from_semicircle_section": 9,
+        "path_sweep_wire_profile_frame_repair": 10,
+        "named_face_local_feature_sequence": 11,
+        "flange_boss_pattern_hole_host_thickness": 12,
+        "nested_regular_polygon_frame_code_first": 13,
+        "named_axis_axisymmetric_pose_alignment_repair": 14,
+        "regular_polygon_side_length_build123d_semantics": 15,
+        "positive_extrude_from_named_plane_is_not_centered": 16,
+        "positive_extrude_bbox_alignment_repair": 17,
+        "whole_part_additive_features_must_merge_into_single_body": 18,
+        "named_plane_profile_to_global_box_mapping": 19,
+        "whole_part_union_from_global_axis_primitives": 20,
     }
     if skill_id in general_priorities:
         return general_priorities[skill_id]
@@ -1141,6 +1364,31 @@ def _requirement_mentions_half_shell_with_split_surface(
             "bore",
             "lug",
             "flange",
+        )
+    )
+
+
+def _requirement_mentions_shelled_host_with_named_face_feature(
+    requirement_lower: str,
+    *,
+    semantics: Any,
+) -> bool:
+    if not requirement_lower:
+        return False
+    if not any(
+        token in requirement_lower
+        for token in ("shell", "shelled", "hollow enclosure", "hollow body")
+    ):
+        return False
+    if not bool(getattr(semantics, "face_targets", ())):
+        return False
+    return bool(
+        getattr(semantics, "mentions_hole", False)
+        or getattr(semantics, "mentions_pattern", False)
+        or getattr(semantics, "mentions_spherical_recess", False)
+        or any(
+            token in requirement_lower
+            for token in ("recess", "pocket", "groove", "slot", "notch")
         )
     )
 
@@ -1508,5 +1756,39 @@ def _infer_centered_square_or_rectangular_array_centers(
                 [-half, half],
                 [-half, -half],
             ]
+
+    x_axis_pattern = re.search(
+        r"x-axis[^.;]{0,120}?spacing\s+([0-9]+(?:\.[0-9]+)?)\s*mm?[^.;]{0,80}?quantity\s+([0-9]+)",
+        text,
+        re.IGNORECASE,
+    )
+    y_axis_pattern = re.search(
+        r"y-axis[^.;]{0,120}?spacing\s+([0-9]+(?:\.[0-9]+)?)\s*mm?[^.;]{0,80}?quantity\s+([0-9]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if x_axis_pattern is not None and y_axis_pattern is not None:
+        try:
+            x_spacing = float(x_axis_pattern.group(1))
+            x_count = int(x_axis_pattern.group(2))
+            y_spacing = float(y_axis_pattern.group(1))
+            y_count = int(y_axis_pattern.group(2))
+        except Exception:
+            x_spacing = 0.0
+            x_count = 0
+            y_spacing = 0.0
+            y_count = 0
+        if (
+            x_spacing > 0.0
+            and y_spacing > 0.0
+            and x_count > 1
+            and y_count > 1
+            and (x_count * y_count) <= 25
+        ):
+            x_mid = (x_count - 1) / 2.0
+            y_mid = (y_count - 1) / 2.0
+            x_positions = [round((index - x_mid) * x_spacing, 4) for index in range(x_count)]
+            y_positions = [round((index - y_mid) * y_spacing, 4) for index in range(y_count)]
+            return [[x_pos, y_pos] for x_pos in x_positions for y_pos in y_positions]
 
     return []

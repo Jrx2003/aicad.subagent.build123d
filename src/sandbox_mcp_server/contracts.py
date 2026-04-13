@@ -1458,6 +1458,37 @@ class RequirementCheckStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
+class RequirementClauseStatus(str, Enum):
+    VERIFIED = "verified"
+    CONTRADICTED = "contradicted"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class RequirementClauseInterpretation(BaseModel):
+    """Evidence-first interpretation of one requirement clause."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clause_id: str = Field(..., description="Stable clause identifier.")
+    clause_text: str = Field(..., description="Original requirement clause text.")
+    status: RequirementClauseStatus = Field(
+        ..., description="Interpretation outcome for the clause."
+    )
+    evidence: str = Field(
+        default="",
+        description="Compact evidence summary supporting the interpretation.",
+    )
+    observation_tags: list[str] = Field(
+        default_factory=list,
+        description="Normalized observation tags used during interpretation.",
+    )
+    decision_hints: list[str] = Field(
+        default_factory=list,
+        description="Short hints that explain the next validation step.",
+    )
+
+
 class RequirementCheck(BaseModel):
     """Single requirement check result."""
 
@@ -1535,6 +1566,14 @@ class BlockerTaxonomyRecord(BaseModel):
         default="code_repair",
         description="Suggested runtime repair lane for this blocker family.",
     )
+    observation_tags: list[str] = Field(
+        default_factory=list,
+        description="Normalized observation tags derived from blocker classification.",
+    )
+    decision_hints: list[str] = Field(
+        default_factory=list,
+        description="Short follow-up hints for the runtime and diagnostics surfaces.",
+    )
 
 
 class ValidateRequirementOutput(BaseModel):
@@ -1575,6 +1614,28 @@ class ValidateRequirementOutput(BaseModel):
     diagnostic_checks: list[RequirementCheck] = Field(
         default_factory=list,
         description="Diagnostics-only validation checks kept for artifacts and debugging.",
+    )
+    clause_interpretations: list[RequirementClauseInterpretation] = Field(
+        default_factory=list,
+        description="Evidence-first clause interpretations used to derive legacy checks.",
+    )
+    coverage_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence that the available evidence covers the requested clauses.",
+    )
+    insufficient_evidence: bool = Field(
+        default=False,
+        description="Whether any key requirement clause remained unresolved due to insufficient evidence.",
+    )
+    observation_tags: list[str] = Field(
+        default_factory=list,
+        description="Normalized observation tags extracted from the evidence bundle.",
+    )
+    decision_hints: list[str] = Field(
+        default_factory=list,
+        description="High-level follow-up hints derived from interpretation.",
     )
     blocker_taxonomy: list[BlockerTaxonomyRecord] = Field(
         default_factory=list,

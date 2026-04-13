@@ -1146,7 +1146,8 @@ def _aicad_apply_extrude(current_result, sketch_state, distance, both=False, rev
     else:
         direction = plane.z_dir
         sign = -1.0 if reverse else 1.0
-        direction = Vector(sign * _aicad_to_float(direction.x), sign * _aicad_to_float(direction.y), sign * _aicad_to_float(direction.z))
+        dx, dy, dz = _aicad_vec3(direction)
+        direction = Vector(sign * dx, sign * dy, sign * dz)
         feature = extrude(profile, amount=amount, dir=direction)
     new_result = feature if not _aicad_result_has_positive_solid(current_result) else _aicad_part_union(current_result, feature)
     return new_result, feature

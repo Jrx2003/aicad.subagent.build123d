@@ -3,7 +3,7 @@
 ## 1. Setup
 
 ```bash
-cd ~/code/aicad.subagent.iteration
+cd ~/code/aicad.subagent.build123d
 cp .env.example .env
 # fill at least one provider key, e.g. GLM_API_KEY or KIMI_API_KEY
 uv sync
@@ -12,8 +12,8 @@ uv sync
 Quick credential sanity check (no secret printing):
 
 ```bash
-cd ~/code/aicad.subagent.iteration
-python - <<'PY'
+cd ~/code/aicad.subagent.build123d
+uv run python - <<'PY'
 from common.config import settings
 print("provider=", settings.llm_reasoning_provider)
 print("model=", settings.llm_reasoning_model)
@@ -22,10 +22,18 @@ print("has_glm_key=", bool(settings.glm_api_key))
 PY
 ```
 
+Build123d demo suite:
+
+```bash
+cd ~/code/aicad.subagent.build123d
+uv run python demos/build123d_foundations/run_all.py
+cat demos/build123d_foundations/artifacts/summary.json
+```
+
 ## 2. Live iterative probe (LLM + MCP tools)
 
 ```bash
-cd ~/code/aicad.subagent.iteration
+cd ~/code/aicad.subagent.build123d
 LLM_REASONING_PROVIDER=kimi \
 LLM_REASONING_MODEL=moonshot-v1-128k \
 LLM_TIMEOUT_SECONDS=180 \
@@ -83,7 +91,7 @@ Render planning intent:
 ## 3. Stage1 tool probe (no planner loop changes, direct tool visibility)
 
 ```bash
-cd ~/code/aicad.subagent.iteration
+cd ~/code/aicad.subagent.build123d
 scripts/run_stage1_manual_probe.sh
 ```
 
@@ -93,7 +101,7 @@ This probe builds a completed 3D model first, then calls `render_view` with mult
 continuous camera parameters (`azimuth/elevation/zoom`) plus optional focused render.
 
 ```bash
-cd ~/code/aicad.subagent.iteration
+cd ~/code/aicad.subagent.build123d
 scripts/run_render_view_multiview_probe.sh
 ```
 
@@ -108,7 +116,7 @@ Key outputs:
 Run one benchmark case:
 
 ```bash
-cd ~/code/aicad.subagent.iteration
+cd ~/code/aicad.subagent.build123d
 ./benchmark/run_prompt_benchmark.sh \
   --cases L1_20 \
   --reasoning-provider kimi \
@@ -118,7 +126,7 @@ cd ~/code/aicad.subagent.iteration
 Run with explicit provider/model:
 
 ```bash
-cd ~/code/aicad.subagent.iteration
+cd ~/code/aicad.subagent.build123d
 ./benchmark/run_prompt_benchmark.sh \
   --cases L1_20 \
   --reasoning-provider kimi \
@@ -154,13 +162,27 @@ Benchmark outputs:
 6. `benchmark/runs/<timestamp>/<case_id>/evaluation/{ground_truth_preview_iso,ground_truth_preview_front,ground_truth_preview_right,ground_truth_preview_top}.png`
 7. `benchmark/runs/<timestamp>/brief_report.md`
 8. `benchmark/runs/<timestamp>/run_diagnostics.md`
-8. `benchmark/runs/<timestamp>/brief_report.md`
 
 Image semantics:
 
 1. `generated_preview_*.png` and `ground_truth_preview_*.png` are for manual side-by-side review.
 2. Benchmark automatic score uses STEP geometric signatures only (no image similarity, no LLM).
 3. `render_view` is runtime evidence for the iterative planner and is separate from benchmark evaluation images.
+
+Historical run archive maintenance:
+
+```bash
+cd ~/code/aicad.subagent.build123d
+PATH="/opt/homebrew/bin:$PATH" uv run python scripts/archive_historical_runs.py --cutoff 2026-04-12
+```
+
+Archive behavior:
+
+1. Active timestamp runs stay at the top level of `benchmark/runs/` and `test_runs/`.
+2. Older run directories move under `archive/pre_<YYYYMMDD>/`.
+3. `benchmark/runs/by_practice/` keeps only active links; older links move under the matching archive root.
+4. The archive script repairs archived `by_practice` links that still reference legacy repository paths.
+5. Use `uv run python ...` rather than bare system `python3`; some system interpreters are too old for the repository runtime.
 
 ## 6. Main adjustable parameters
 
@@ -217,7 +239,7 @@ On-demand tool policy:
 Replay any recorded action request:
 
 ```bash
-cd ~/code/aicad.subagent.iteration
+cd ~/code/aicad.subagent.build123d
 uv run python scripts/replay_action_sequence.py \
   --request-file test_runs/<timestamp>/actions/round_01_action_01_request.json
 ```

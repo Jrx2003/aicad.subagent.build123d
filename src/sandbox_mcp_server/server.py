@@ -46,6 +46,7 @@ from sandbox_mcp_server.rubric_loader import RubricLoader
 from sandbox_mcp_server.rule_evaluator import RuleEvaluator
 from sandbox_mcp_server.score_merger import ScoreMerger
 from sandbox_mcp_server.service import SandboxMCPService
+from sandbox_mcp_server.validation_llm import ValidationLLMAdjudicator
 
 logger = get_logger(__name__)
 
@@ -389,6 +390,7 @@ def create_mcp_server(runner: SandboxRunner | None = None) -> Server:
         logger.info("ground_truth_benchmark_evaluator_disabled")
 
     evaluation_orchestrator = EvaluationOrchestrator()
+    validation_adjudicator: ValidationLLMAdjudicator | None = None
     if settings.sandbox_mcp_llm_judge_enabled:
         try:
             rubric_loader = RubricLoader(settings.sandbox_mcp_llm_judge_rubric_path)
@@ -438,10 +440,27 @@ def create_mcp_server(runner: SandboxRunner | None = None) -> Server:
             )
     else:
         logger.info("llm_judge_evaluator_disabled")
+    try:
+        validation_adjudicator = ValidationLLMAdjudicator(
+            llm_client=create_tiered_llm_client(LLMTier.REASONING, settings),
+            max_prompt_chars=settings.sandbox_mcp_llm_judge_max_prompt_chars,
+        )
+        logger.info(
+            "validation_llm_adjudicator_enabled",
+            judge_provider=settings.llm_reasoning_provider,
+            judge_model=settings.llm_reasoning_model,
+        )
+    except Exception as exc:
+        logger.warning(
+            "validation_llm_adjudicator_disabled_due_to_init_error",
+            reason=str(exc),
+            exc_info=True,
+        )
 
     service = SandboxMCPService(
         runner=sandbox_runner,
         evaluation_orchestrator=evaluation_orchestrator,
+        validation_adjudicator=validation_adjudicator,
     )
 
     server = Server("aicad-sandbox")

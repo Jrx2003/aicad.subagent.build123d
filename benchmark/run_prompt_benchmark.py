@@ -2196,8 +2196,7 @@ def main() -> int:
     aggregate_cases: list[dict[str, Any]] = []
     for idx, case in enumerate(selected, start=1):
         print(f"[benchmark] ({idx}/{len(selected)}) running {case.case_id}")
-        case_run_id = f"{args.run_id}/{case.case_id}"
-        case_dir = runs_root / case_run_id
+        case_dir = run_root / case.case_id
         case_dir.mkdir(parents=True, exist_ok=True)
 
         (case_dir / "prompt.txt").write_text(case.prompt + "\n", encoding="utf-8")
@@ -2207,7 +2206,8 @@ def main() -> int:
         _write_json(case_dir / "benchmark_case.json", _build_case_meta(case=case, case_dir=case_dir))
 
         env = os.environ.copy()
-        env["AICAD_TEST_RUNS_ROOT"] = str(runs_root)
+        env["AICAD_TEST_RUNS_ROOT"] = str(run_root)
+        env["AICAD_TEST_RUN_DIR"] = str(case_dir)
         env["AICAD_PROBE_REQUIREMENT"] = case.prompt
         env["AICAD_PROBE_SESSION_ID"] = f"bench-{case.case_id}-{uuid4().hex[:8]}"
         if args.reasoning_provider.strip():
@@ -2226,7 +2226,7 @@ def main() -> int:
         timeout_message = ""
         try:
             result = subprocess.run(
-                [str(runner_script), case_run_id],
+                [str(runner_script), args.run_id],
                 cwd=repo_root,
                 env=env,
                 capture_output=True,
@@ -2242,7 +2242,7 @@ def main() -> int:
             stdout_value = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or "")
             stderr_value = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or "")
             result = subprocess.CompletedProcess(
-                args=[str(runner_script), case_run_id],
+                args=[str(runner_script), args.run_id],
                 returncode=124,
                 stdout=stdout_value,
                 stderr=f"{stderr_value}{timeout_message}",

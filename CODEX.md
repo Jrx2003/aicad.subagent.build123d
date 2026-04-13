@@ -160,6 +160,15 @@ Each run keeps:
 12. Keep `apply_cad_action` and `execute_cadquery` as peer write tools so the model can choose the simpler or more reliable path, but keep `execute_cadquery` first in model-facing catalog order.
 13. Split validation feedback into loop-safe core facts vs diagnostics-only explanations.
 
+## Current Focus (2026-04-13)
+
+1. Harden the Build123d contract around workplane orientation and semi-profile APIs so directional-drilling and half-shell prompts fail as deterministic repair surfaces instead of opaque sandbox errors.
+2. Prefer builder-native first-pass recipes when Build123d already provides a lower-risk path:
+   - same-builder `Mode.SUBTRACT`
+   - same-builder `Mode.INTERSECT`
+   - explicit `Mode.PRIVATE` staging only when truly needed
+3. Keep expanding generic runtime/skill/prompt repairs only when they are justified by fresh benchmark or external probe evidence, not by one-case aesthetics.
+
 ## Update 2026-04-05 (V2 skeleton landed)
 
 1. Landed:
