@@ -43,9 +43,14 @@ result = part.part
 - `with BuildSketch(Plane.XY): Circle(radius)` - Sketch a circle
 - `Circle(radius)` always creates a full circle. Do not invent `Circle(..., arc_size=...)` for a semicircle or arc profile.
 - If you need a semicircle or circular arc profile, there is no `Semicircle(...)` helper; use `CenterArc(...)` or `RadiusArc(...)` inside `BuildLine`, then close the section and call `make_face()`.
+- For Build123d angle parameters, pass plain degree numbers such as `start_angle=-90` and `arc_size=90` directly; do not multiply them by `DEGREE` or `DEGREES`.
+- For explicit circular elbows with a named radius or quarter-turn, prefer `CenterArc(...)` with `start_angle=` and `arc_size=`; only reach for `TangentArc(...)` or `JernArc(...)` when the requirement truly gives a tangent-construction recipe and you are not guessing the elbow endpoint or turn center.
 - `extrude(amount=depth)` - Extrude the active sketch/profile inside `BuildPart`
 - When turning a closed `BuildLine` wire into a face, use lowercase `make_face()`. Do not invent `MakeFace()`
+- Curve helpers such as `Polyline(...)`, `Line(...)`, `CenterArc(...)`, and `RadiusArc(...)` belong inside `BuildLine`, not directly inside `BuildSketch`
+- `revolve(...)` uses `revolution_arc=` for an explicit sweep amount; do not invent `angle=...`. A safe builder-first pattern is `with BuildLine(): ...`, then `make_face()`, then `revolve(axis=Axis.Z)` or `revolve(axis=Axis.Z, revolution_arc=360)`
 - If the requirement explicitly says to draw a profile on `Plane.XY` / the XY plane and extrude it upward by `d`, preserve that contract literally with `BuildSketch(Plane.XY)` plus `extrude(amount=d)` or an equivalent translated solid. Do not silently replace it with a centered `Box(...)` whose body spans `[-d/2, +d/2]` unless the requirement explicitly wants a centered solid about the origin.
+- If the requirement says to draw multiple closed section elements on a named plane and then `extrude the section/profile`, keep that named-plane section literal. For outer-circle plus inner-square/rectangle families, sketch/extrude from the named plane and subtract the inner profile through the same positive span instead of swapping in a default centered `Cylinder(...)` or other centered primitive.
 - Use `align=...`, `Pos(...)`, `Rot(...)`, and `Locations(...)` for placement. Do not invent legacy workplane-style `centered=` keyword arguments.
 - `Rectangle(width, height) is centered on the sketch origin by default`, so a face-centered pattern on that host usually stays around local `(0, 0)` unless you explicitly moved the host.
 - If the requirement says to center a face pattern, do not shift the pattern by `(+width/2, +height/2)` unless the host was intentionally positioned from a corner datum.
@@ -68,6 +73,7 @@ result = part.part
 - If you truly need a temporary staging solid inside an active `BuildPart`, create it with `mode=Mode.PRIVATE` so it does not mutate the host before the later boolean.
 - Do not open a nested `BuildPart()` cutter inside an active `BuildPart` and then mutate `part.part -= cutter.part`; repeated placements can collapse into one origin-centered boolean instead of preserving the intended feature locations
 - Do not open a nested `BuildPart()` just to create an annular groove band cutter inside the host builder; keep the groove subtraction in the same active `BuildPart`, or close the host and subtract the groove band once
+- There is no `Ring(...)` helper in Build123d. For annular bands or grooves, realize the band as an outer coaxial solid/profile minus the inner coaxial solid/profile instead of guessing a ring primitive.
 - Do not assign back into `part.solid`; inside a builder use subtractive modes, and if you need an explicit post-builder boolean, subtract from `part.part`
 - For repeated holes, countersinks, recesses, or similar cutters, keep the subtractive primitives in the same active `BuildPart`, or close the host builder before doing one explicit `result = host.part - cutter` boolean
 - For simple shelled boxes or enclosures, default to explicit inner-solid subtraction on the first pass; only use `offset(amount=..., openings=...)` when the opening-face semantics are already explicit and low-risk
@@ -75,6 +81,10 @@ result = part.part
 - For vague reference patterns on a shelled host, choose a conservative symmetric layout that stays on surviving host material; do not place the pattern in the hollow void just because the requirement omitted exact offsets.
 - For split bearing housings or half-shell bodies, do not start from a full cylinder and split it later; either build one closed semi-annulus profile and extrude it, or keep the outer cylinder, inner cylinder, and half-space trim in one builder-native construction
 - When a half-shell requirement already gives explicit outer radius, inner radius, and straight length, prefer the lower-risk same-builder `Cylinder(...)` + `mode=Mode.SUBTRACT` + `mode=Mode.INTERSECT` path on the first pass instead of hand-building an arc-wire semi-profile unless the profile path is genuinely simpler.
+- For explicit-radius half-shells with downstream pads, lugs, bores, or lug holes, keep the first-pass whole-part order explicit: `outer cylinder -> subtract inner cylinder -> intersect/trim to the half-plane -> add pad/lugs -> cut the bore -> drill the lug holes`.
+- For split-shell housings, merge the pad/lugs, then run the bore cut on that combined host so the lugs remain outside the bore instead of being recreated afterward.
+- Do not write `outer_cyl = Cylinder(...)`, `inner_cyl = Cylinder(...)`, or `half_space = Box(...)` inside the active half-shell `BuildPart` and then combine those temporary solids with `-` / `&` / `+`; that exact pattern is a rejected temporary-solid anti-pattern in this runtime.
+- A safe first-pass half-shell skeleton is: `Cylinder(outer_radius, length)` -> `Cylinder(inner_radius, length, mode=Mode.SUBTRACT)` -> `Box(..., mode=Mode.INTERSECT)` -> merge pad/lugs in the same builder -> subtract the bore -> place Y-axis lug-hole cutters with `mode=Mode.SUBTRACT)`.
 - For half-shell lug holes that drill along Y, keep the Y-axis hole cutters in the same active `BuildPart` with supported subtractive placement instead of opening nested cutter parts or falling back to bare subtract helpers
 
 ### Positioning
@@ -85,12 +95,16 @@ result = part.part
 
 ### Holes and Features
 - `Hole(radius=..., depth=...)` inside a face-local sketch/build context
+- Use capitalized `Hole(...)`, not lowercase `hole(...)`.
 - `CounterBoreHole(...)` for counterbore holes
 - `CounterSinkHole(radius=..., counter_sink_radius=..., depth=..., counter_sink_angle=...)` for countersink holes
+- There is no `Workplanes(...)` helper in Build123d. Use the target plane directly with `BuildSketch(plane)` or place the feature on that face/workplane with `Locations(...)`.
 - Do not invent `CountersinkHole(...)`, `CounterSink(...)`, `countersink_radius=...`, or `countersink_angle=...`; Build123d uses `CounterSinkHole`, `counter_sink_radius`, and `counter_sink_angle`
 - `CounterSinkHole(...)` is a `BuildPart` operation, not a `BuildSketch` entity. Do not call it inside `BuildSketch(...)`.
 - If the requirement places countersunk holes on a specific host face such as the top face of a centered plate, include the face-plane translation in the placement itself, for example `top_z = thickness / 2` then `with Locations((x, y, top_z), ...): CounterSinkHole(...)`
 - For face-sketch coordinates on a centered host, do both steps: translate corner-based sketch coordinates into the centered local frame and place the hole tool on the actual host-face plane. Do not leave `CounterSinkHole(...)` on the default XY mid-plane.
+- For explicit countersink arrays on a planar host face where the requirement already gives the through-hole diameter, head diameter, and cone angle, prefer one `CounterSinkHole(...)` pass on the first attempt with the exact helper contract and explicit host-face placement.
+- Only fall back to manual cylinder+cone or revolved cutters when `CounterSinkHole(...)` is unavailable for the geometry family, or when prior validation/evaluation evidence shows the helper contract is not preserving the required head/shaft dimensions in that case.
 - For directional drilling, map coordinates onto the plane perpendicular to the drill axis: XY drills along Z, XZ drills along Y, and YZ drills along X.
 - If the prompt says to drill in the Y direction at `z = 20` and `x = ±22.25`, the hole centers live in the XZ workplane as `(x, z)`; do not misread those values as XY coordinates on the split plane.
 - `Plane.XY.offset(d)` shifts along Z, `Plane.XZ.offset(d)` shifts along Y, and `Plane.YZ.offset(d)` shifts along X. Use `offset(...)` only for plane-normal translation, not to encode an in-plane coordinate.

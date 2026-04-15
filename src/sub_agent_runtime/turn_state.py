@@ -356,7 +356,7 @@ def _geometry_has_stable_solid(geometry: dict[str, Any] | None) -> bool:
     if not isinstance(geometry, dict):
         return False
     solids = int(geometry.get("solids", 0) or 0)
-    volume = float(geometry.get("volume", 0.0) or 0.0)
+    volume = abs(float(geometry.get("volume", 0.0) or 0.0))
     bbox = geometry.get("bbox")
     return solids > 0 and volume > 0.0 and isinstance(bbox, list) and len(bbox) >= 3
 

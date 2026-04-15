@@ -1771,6 +1771,48 @@ def _determine_turn_tool_policy(
             write_round=latest_code_write_turn.round_no,
         )
         and _latest_validation_prefers_semantic_refresh(latest_validation)
+        and _has_repeated_validation_without_new_evidence_after_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+            min_validations=2,
+        )
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+        ]
+        blocked_tool_names = [
+            name
+            for name in all_tool_names
+            if name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+        ]
+        preferred_tools = _preferred_validation_assessment_tools_for_turn(
+            run_state,
+            all_tool_names=allowed_tool_names,
+        )
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="semantic_refresh_after_repeated_validation_without_new_evidence",
+            mode="graph_refresh",
+            reason=(
+                "The last successful execute_build123d write already triggered repeated "
+                "incomplete validation checks without any new kernel or probe evidence. "
+                "Force a semantic refresh instead of allowing validation ping-pong."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=preferred_tools,
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_code_write_turn is not None
+        and not latest_validation_blockers
+        and not _is_successful_validation(latest_validation)
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and _latest_validation_prefers_semantic_refresh(latest_validation)
         and not _has_tool_turn_since_round(
             run_state,
             after_round=latest_code_write_turn.round_no,
@@ -1819,6 +1861,52 @@ def _determine_turn_tool_policy(
             allowed_tool_names=allowed_tool_names,
             blocked_tool_names=blocked_tool_names,
             preferred_tool_names=preferred_tools,
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_code_write_turn is not None
+        and not latest_validation_blockers
+        and not _is_successful_validation(latest_validation)
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and _latest_validation_prefers_semantic_refresh(latest_validation)
+        and _has_successful_semantic_refresh_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"validate_requirement", "finish_run"},
+        )
+    ):
+        allowed_tool_names = [
+            name
+            for name in all_tool_names
+            if name in {"validate_requirement", "finish_run", "query_kernel_state"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="closure_validation_after_semantic_refresh_from_code_write",
+            mode="completion_judge",
+            reason=(
+                "A successful execute_build123d write already produced a solid, and the "
+                "post-write semantic refresh completed without introducing new blockers. "
+                "Close the evidence gap with validation instead of reopening generic reads."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=[
+                name
+                for name in ("validate_requirement", "finish_run", "query_kernel_state")
+                if name in allowed_tool_names
+            ],
             preferred_probe_families=preferred_probe_families,
         )
 
@@ -2214,6 +2302,39 @@ def _determine_turn_tool_policy(
                         ],
                         preferred_probe_families=preferred_probe_families,
                     )
+                remaining_rounds = max(max_rounds - len(run_state.turns), 0)
+                if (
+                    artifactless_failure
+                    and remaining_rounds <= 1
+                    and _has_successful_probe_turn_since_failed_write(
+                        run_state,
+                        failed_write_round=latest_code_write_turn.round_no,
+                    )
+                ):
+                    allowed_tool_names = [
+                        name for name in all_tool_names if name in _CODE_FIRST_ESCAPE_TOOL_SET
+                    ]
+                    blocked_tool_names = [
+                        name for name in all_tool_names if name not in _CODE_FIRST_ESCAPE_TOOL_SET
+                    ]
+                    return TurnToolPolicy(
+                        round_no=round_no,
+                        policy_id="code_repair_last_round_after_successful_probe",
+                        mode="code_first_repair",
+                        reason=(
+                            "A successful diagnostic probe already ran after the artifactless code "
+                            "failure, and only one round remains. Spend the final turn on targeted "
+                            "code repair instead of another read-only refresh."
+                        ),
+                        allowed_tool_names=allowed_tool_names,
+                        blocked_tool_names=blocked_tool_names,
+                        preferred_tool_names=[
+                            "execute_build123d",
+                            "query_kernel_state",
+                            "execute_build123d_probe",
+                        ],
+                        preferred_probe_families=preferred_probe_families,
+                    )
                 if not _has_semantic_refresh_turn_since_failed_write(
                     run_state,
                     failed_write_round=latest_code_write_turn.round_no,
@@ -2393,8 +2514,22 @@ def _has_probe_turn_since_failed_write(
     return _has_tool_turn_since_round(
         run_state,
         after_round=failed_write_round,
-        tool_names=_SEMANTIC_REFRESH_COMPLETION_TOOL_SET,
+        tool_names={"execute_build123d_probe"},
     )
+
+
+def _has_successful_probe_turn_since_failed_write(
+    run_state: RunState,
+    *,
+    failed_write_round: int,
+) -> bool:
+    for turn in run_state.turns:
+        if turn.round_no <= failed_write_round:
+            continue
+        for result in turn.tool_results:
+            if result.name == "execute_build123d_probe" and result.success:
+                return True
+    return False
 
 
 def _has_actionable_probe_turn_since_failed_write(
@@ -2868,9 +3003,6 @@ def _latest_validation_is_fresh_for_write(
     latest_validation = (
         run_state.latest_validation if isinstance(run_state.latest_validation, dict) else {}
     )
-    blockers = latest_validation.get("blockers")
-    if not isinstance(blockers, list) or not blockers:
-        return False
     latest_validation_round = max(
         (
             int(event.round_no)
@@ -2880,7 +3012,16 @@ def _latest_validation_is_fresh_for_write(
         ),
         default=-1,
     )
-    return latest_validation_round >= write_round
+    if latest_validation_round < write_round:
+        return False
+    blockers = latest_validation.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        return True
+    if latest_validation.get("is_complete") is False:
+        return True
+    if bool(latest_validation.get("insufficient_evidence")):
+        return True
+    return bool(latest_validation)
 
 
 def _blockers_are_local_structured_tail(blockers: list[str]) -> bool:
@@ -3088,6 +3229,32 @@ def _has_repeated_validation_blockers_without_semantic_refresh(
     return False
 
 
+def _has_repeated_validation_without_new_evidence_after_write(
+    run_state: RunState,
+    *,
+    write_round: int,
+    min_validations: int = 2,
+) -> bool:
+    if _has_tool_turn_since_round(
+        run_state,
+        after_round=write_round,
+        tool_names={
+            "query_kernel_state",
+            "query_feature_probes",
+            "execute_build123d_probe",
+        },
+    ):
+        return False
+    validation_rounds = {
+        int(event.round_no)
+        for event in run_state.agent_events
+        if event.kind == "validation_result"
+        and isinstance(event.round_no, int)
+        and int(event.round_no) >= write_round
+    }
+    return len(validation_rounds) >= min_validations
+
+
 def _latest_incomplete_finish_round(run_state: RunState) -> int | None:
     latest_validation = (
         run_state.latest_validation if isinstance(run_state.latest_validation, dict) else {}
@@ -3197,7 +3364,17 @@ def _should_auto_validate_after_non_progress(run_state: RunState) -> bool:
     if len(run_state.turns) < 2:
         return False
     recent = run_state.turns[-2:]
-    return all(turn.write_tool_name is None for turn in recent)
+    if not all(turn.write_tool_name is None for turn in recent):
+        return False
+    latest_turn = recent[-1]
+    if any(tool_call.name == "validate_requirement" for tool_call in latest_turn.tool_calls):
+        return False
+    if any(
+        result.name == "validate_requirement" and result.success
+        for result in latest_turn.tool_results
+    ):
+        return False
+    return True
 
 
 def _should_auto_validate_after_post_write(
@@ -3267,7 +3444,7 @@ def _result_has_positive_session_backed_solid(result: ToolResultRecord) -> bool:
     geometry = snapshot.get("geometry") if isinstance(snapshot.get("geometry"), dict) else {}
     return (
         int(geometry.get("solids", 0) or 0) > 0
-        and float(geometry.get("volume", 0.0) or 0.0) > 1e-6
+        and abs(float(geometry.get("volume", 0.0) or 0.0)) > 1e-6
         and bool(payload.get("session_state_persisted", False))
     )
 
@@ -3299,7 +3476,7 @@ def _payload_has_positive_session_backed_solid(payload: dict[str, Any]) -> bool:
     geometry = snapshot.get("geometry") if isinstance(snapshot.get("geometry"), dict) else {}
     return (
         int(geometry.get("solids", 0) or 0) > 0
-        and float(geometry.get("volume", 0.0) or 0.0) > 1e-6
+        and abs(float(geometry.get("volume", 0.0) or 0.0)) > 1e-6
         and bool(payload.get("session_state_persisted", False))
     )
 

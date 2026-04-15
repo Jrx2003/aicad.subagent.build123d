@@ -19,8 +19,9 @@ If the agent cannot discover a policy from this directory, that policy should be
 3. [FEATURE_GRAPH_RUNTIME.md](FEATURE_GRAPH_RUNTIME.md) - semantic feature-graph state model and sync rules.
 4. [ITERATION_PROTOCOL.md](ITERATION_PROTOCOL.md) - runtime loop and convergence rules.
 5. [TOOL_SURFACE.md](TOOL_SURFACE.md) - current and required MCP tool surface.
-6. [HARNESS_GUIDELINES.md](HARNESS_GUIDELINES.md) - harness-oriented doc and tool design rules.
-7. [UPGRADE_ROADMAP.md](UPGRADE_ROADMAP.md) - staged upgrade plan and completion criteria.
+6. [CANONICAL_BASELINE.md](CANONICAL_BASELINE.md) - frozen live lane, canary suite, and baseline metric definitions.
+7. [HARNESS_GUIDELINES.md](HARNESS_GUIDELINES.md) - harness-oriented doc and tool design rules.
+8. [UPGRADE_ROADMAP.md](UPGRADE_ROADMAP.md) - staged upgrade plan and completion criteria.
 
 ## Agent Access Protocol
 
@@ -29,9 +30,10 @@ If the agent cannot discover a policy from this directory, that policy should be
 3. Treat missing records as non-existent behavior.
 4. Use `FEATURE_GRAPH_RUNTIME.md` as the source of truth for semantic graph state ownership and sync semantics.
 5. Use `TOOL_SURFACE.md` as the source of query tool capabilities and defaults.
-6. Use `HARNESS_GUIDELINES.md` for access design, objective visibility, and failure visibility.
-7. If runtime behavior changes, update this directory before code comments/prose.
-8. Use the retrieval pattern `search -> window -> inspect -> act` to avoid prompt overflow.
+6. Use `CANONICAL_BASELINE.md` for benchmark-facing live-lane and canary expectations.
+7. Use `HARNESS_GUIDELINES.md` for access design, objective visibility, and failure visibility.
+8. If runtime behavior changes, update this directory before code comments/prose.
+9. Use the retrieval pattern `search -> window -> inspect -> act` to avoid prompt overflow.
 
 ## Stability Rules
 

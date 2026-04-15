@@ -1382,6 +1382,27 @@ def _sync_feature_instances_and_patches(
             patch.stale = True
         return
 
+    current_blocker_ids = {
+        blocker_id
+        for blocker_id in blockers
+        if isinstance(blocker_id, str) and blocker_id.strip()
+    }
+    for feature_instance in graph.feature_instances.values():
+        if not feature_instance.blocker_ids:
+            continue
+        remaining_blockers = [
+            blocker_id
+            for blocker_id in feature_instance.blocker_ids
+            if blocker_id in current_blocker_ids
+        ]
+        if remaining_blockers:
+            feature_instance.blocker_ids = remaining_blockers
+            continue
+        feature_instance.status = "resolved"
+        feature_instance.blocker_ids = []
+        feature_instance.latest_repair_mode = None
+        feature_instance.repair_intent = None
+
     active_instance_ids: list[str] = []
     patch_blocker_ids: list[str] = []
     patch_binding_ids: list[str] = []

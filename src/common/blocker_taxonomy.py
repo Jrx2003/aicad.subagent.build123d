@@ -282,6 +282,15 @@ def taxonomy_records_from_validation_payload(
             blocker_id = str(item.get("blocker_id") or "").strip()
             if not blocker_id:
                 continue
+            fallback_record = classify_blocker_taxonomy(
+                blocker_id,
+                evidence_source=str(item.get("evidence_source") or "validation").strip()
+                or "validation",
+                completeness_relevance=str(
+                    item.get("completeness_relevance") or "core"
+                ).strip()
+                or "core",
+            )
             family_ids = normalize_probe_family_ids(
                 [
                     str(family_id).strip()
@@ -294,6 +303,17 @@ def taxonomy_records_from_validation_payload(
                 for feature_id in (item.get("feature_ids") or [])
                 if isinstance(feature_id, str) and str(feature_id).strip()
             ]
+            if (
+                (not family_ids or family_ids == ["general_geometry"])
+                and fallback_record.family_ids
+                and any(family_id != "general_geometry" for family_id in fallback_record.family_ids)
+            ):
+                family_ids = list(fallback_record.family_ids)
+                feature_ids = list(fallback_record.feature_ids)
+            using_fallback_specific_family = (
+                family_ids == list(fallback_record.family_ids)
+                and any(family_id != "general_geometry" for family_id in family_ids)
+            )
             observation_tags = _normalize_str_list(item.get("observation_tags"))
             decision_hints = _normalize_str_list(item.get("decision_hints"))
             incoming_lane = str(item.get("recommended_repair_lane") or "").strip()
@@ -301,6 +321,15 @@ def taxonomy_records_from_validation_payload(
                 blocker_id,
                 family_ids,
             )
+            if using_fallback_specific_family:
+                recommended_repair_lane = fallback_record.recommended_repair_lane
+            primary_feature_id = str(item.get("primary_feature_id") or "").strip()
+            if not primary_feature_id and feature_ids:
+                primary_feature_id = feature_ids[0]
+            if using_fallback_specific_family and (
+                not primary_feature_id or primary_feature_id == "feature.core_geometry"
+            ):
+                primary_feature_id = fallback_record.primary_feature_id
             normalized.append(
                 BlockerTaxonomy(
                     blocker_id=blocker_id,
@@ -310,11 +339,7 @@ def taxonomy_records_from_validation_payload(
                     or blocker_id,
                     family_ids=family_ids or _family_ids_for_blocker(blocker_id),
                     feature_ids=feature_ids or _feature_ids_for_families(family_ids),
-                    primary_feature_id=str(
-                        item.get("primary_feature_id")
-                        or (feature_ids[0] if feature_ids else "feature.core_geometry")
-                    ).strip()
-                    or "feature.core_geometry",
+                    primary_feature_id=primary_feature_id or "feature.core_geometry",
                     evidence_source=str(item.get("evidence_source") or "validation").strip()
                     or "validation",
                     completeness_relevance=str(
@@ -433,12 +458,16 @@ def _family_ids_for_blocker(blocker_id: str) -> list[str]:
     if matched:
         return matched
     lowered = blocker_id.lower()
+    if _looks_like_hole_wizard_or_revolved_hole_clause(lowered):
+        return ["explicit_anchor_hole", "named_face_local_edit"]
     if "annular" in lowered or "groove" in lowered or "revolve" in lowered:
         return ["annular_groove", "axisymmetric_profile"]
     if "inner_void" in lowered or "hollow" in lowered or "section" in lowered:
         return ["nested_hollow_section"]
     if "pattern" in lowered:
         return ["pattern_distribution", "spherical_recess"]
+    if _looks_like_countersink_or_explicit_hole_dimension_blocker(lowered):
+        return ["explicit_anchor_hole", "named_face_local_edit"]
     if "hole" in lowered or "anchor" in lowered:
         return ["explicit_anchor_hole", "named_face_local_edit"]
     if "union" in lowered or "orthogonal" in lowered or "merged_body" in lowered:
@@ -446,6 +475,30 @@ def _family_ids_for_blocker(blocker_id: str) -> list[str]:
     if "fillet" in lowered or "chamfer" in lowered or "face" in lowered:
         return ["named_face_local_edit"]
     return ["general_geometry"]
+
+
+def _looks_like_countersink_or_explicit_hole_dimension_blocker(lowered_blocker_id: str) -> bool:
+    lowered = str(lowered_blocker_id or "").strip().lower()
+    if not lowered:
+        return False
+    if lowered.startswith(("head_diameter_", "cone_angle_", "through_hole_diameter_")):
+        return True
+    if "countersink" in lowered or "counter_sink" in lowered:
+        return True
+    if "conical_recess" in lowered or "conical recess" in lowered:
+        return True
+    return False
+
+
+def _looks_like_hole_wizard_or_revolved_hole_clause(lowered_blocker_id: str) -> bool:
+    lowered = str(lowered_blocker_id or "").strip().lower()
+    if not lowered:
+        return False
+    if "hole_wizard" in lowered or "hole wizard" in lowered:
+        return True
+    if "revolved_cut_tool" in lowered or "revolved cut tool" in lowered:
+        return "hole" in lowered or "countersink" in lowered or "conical_recess" in lowered
+    return False
 
 
 def _feature_ids_for_families(family_ids: list[str]) -> list[str]:

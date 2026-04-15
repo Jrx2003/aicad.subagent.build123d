@@ -1092,6 +1092,7 @@ class V2ContextManager:
         volume = (
             float(geometry.get("volume", 0.0) or 0.0) if isinstance(geometry, dict) else 0.0
         )
+        material_volume = abs(volume)
         bbox_raw = geometry.get("bbox") if isinstance(geometry, dict) else []
         bbox = (
             [float(value) for value in bbox_raw[:3]]
@@ -1120,7 +1121,8 @@ class V2ContextManager:
                 else bool(run_state.latest_step_file)
             ),
             "has_solids": solids > 0,
-            "has_positive_volume": volume > 1e-6,
+            "has_positive_volume": material_volume > 1e-6,
+            "has_signed_negative_volume": volume < -1e-6,
             "has_nonzero_bbox": positive_bbox_axes >= 2,
             "has_three_dimensional_bbox": positive_bbox_axes >= 3,
         }
@@ -1151,6 +1153,7 @@ class V2ContextManager:
                 "faces": faces,
                 "edges": edges,
                 "volume": volume,
+                "volume_magnitude": material_volume,
                 "bbox": bbox,
                 "bbox_min": bbox_min,
                 "bbox_max": bbox_max,

@@ -64,6 +64,14 @@ def test_build123d_codegen_prompt_describes_make_face_helper_case() -> None:
 
     assert "use lowercase `make_face()`" in prompt
     assert "Do not invent `MakeFace()`" in prompt
+    assert "Curve helpers such as `Polyline(...)`, `Line(...)`, `CenterArc(...)`, and `RadiusArc(...)` belong inside `BuildLine`" in prompt
+
+
+def test_build123d_codegen_prompt_describes_revolve_keyword_contract() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "`revolve(...)` uses `revolution_arc=`" in prompt
+    assert "do not invent `angle=...`" in prompt
 
 
 def test_build123d_codegen_prompt_describes_semicircle_arc_contract() -> None:
@@ -73,6 +81,21 @@ def test_build123d_codegen_prompt_describes_semicircle_arc_contract() -> None:
     assert "Do not invent `Circle(..., arc_size=...)`" in prompt
     assert "there is no `Semicircle(...)` helper" in prompt
     assert "use `CenterArc(...)` or `RadiusArc(...)` inside `BuildLine`" in prompt
+
+
+def test_build123d_codegen_prompt_describes_plain_degree_angle_contract() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "pass plain degree numbers such as `start_angle=-90` and `arc_size=90` directly" in prompt
+    assert "do not multiply them by `DEGREE` or `DEGREES`" in prompt
+
+
+def test_build123d_codegen_prompt_prefers_center_arc_for_explicit_radius_path_sweeps() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "For explicit circular elbows with a named radius or quarter-turn" in prompt
+    assert "prefer `CenterArc(...)` with `start_angle=` and `arc_size=`" in prompt
+    assert "only reach for `TangentArc(...)` or `JernArc(...)`" in prompt
 
 
 def test_build123d_codegen_prompt_discourages_detached_cutter_primitives_inside_active_buildpart() -> None:
@@ -94,8 +117,18 @@ def test_build123d_codegen_prompt_describes_valid_countersink_helper_contract() 
 
     assert "`CounterSinkHole(radius=..., counter_sink_radius=..., depth=..., counter_sink_angle=...)`" in prompt
     assert "Do not invent `CountersinkHole(...)`" in prompt
+    assert "There is no `Workplanes(...)` helper" in prompt
+    assert "Use capitalized `Hole(...)`, not lowercase `hole(...)`" in prompt
     assert "`CounterSinkHole(...)` is a `BuildPart` operation, not a `BuildSketch` entity" in prompt
     assert "with Locations((x, y, top_z), ...): CounterSinkHole(...)" in prompt
+
+
+def test_build123d_codegen_prompt_prefers_countersink_helper_for_explicit_plate_arrays() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "For explicit countersink arrays on a planar host face" in prompt
+    assert "prefer one `CounterSinkHole(...)` pass on the first attempt" in prompt
+    assert "Only fall back to manual cylinder+cone or revolved cutters" in prompt
 
 
 def test_build123d_codegen_prompt_describes_directional_drill_coordinate_remapping() -> None:
@@ -135,6 +168,10 @@ def test_build123d_codegen_prompt_describes_half_shell_same_builder_subtraction_
     assert "do not start from a full cylinder and split it later" in prompt
     assert "keep the Y-axis hole cutters in the same active `BuildPart`" in prompt
     assert "prefer the lower-risk same-builder `Cylinder(...)` + `mode=Mode.SUBTRACT` + `mode=Mode.INTERSECT` path on the first pass" in prompt
+    assert "merge the pad/lugs, then run the bore cut on that combined host" in prompt
+    assert "outer cylinder -> subtract inner cylinder -> intersect/trim to the half-plane -> add pad/lugs -> cut the bore -> drill the lug holes" in prompt
+    assert "Do not write `outer_cyl = Cylinder(...)`" in prompt
+    assert "`Cylinder(outer_radius, length)` -> `Cylinder(inner_radius, length, mode=Mode.SUBTRACT)` -> `Box(..., mode=Mode.INTERSECT)`" in prompt
 
 
 def test_build123d_codegen_prompt_prefers_explicit_inner_solid_for_simple_shelled_boxes() -> None:
@@ -149,6 +186,15 @@ def test_build123d_codegen_prompt_discourages_nested_annular_groove_band_builder
 
     assert "Do not open a nested `BuildPart()` just to create an annular groove band cutter" in prompt
     assert "close the host and subtract the groove band once" in prompt
+    assert "There is no `Ring(...)` helper in Build123d" in prompt
+
+
+def test_build123d_codegen_prompt_preserves_named_plane_mixed_section_extrude_contract() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "draw multiple closed section elements on a named plane" in prompt
+    assert "outer-circle plus inner-square/rectangle families" in prompt
+    assert "default centered `Cylinder(...)`" in prompt
 
 
 def test_build123d_codegen_prompt_discourages_temporary_primitives_inside_active_buildpart() -> None:

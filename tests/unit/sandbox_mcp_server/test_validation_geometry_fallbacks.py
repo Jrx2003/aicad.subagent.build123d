@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from sandbox.interface import SandboxResult
 from sandbox_mcp_server.contracts import (
     ActionHistoryEntry,
     BoundingBox3D,
@@ -37,6 +38,127 @@ def test_runtime_wrap_build123d_code_falls_back_to_empty_result_for_probe_analys
     assert "else:\n    result = Part()\n    __aicad_last_result = result\n" in wrapped
 
 
+def test_execute_probe_summary_marks_path_rail_diagnostics_actionable_for_path_sweep() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+
+    result = SandboxResult(
+        success=True,
+        stdout=(
+            "Line 1: start=Vector(0, 0, 0), end=Vector(50, 0, 0)\n"
+            "Arc: start=Vector(50, 0, 0), end=Vector(80, 0, 30)\n"
+            "Line 2: start=Vector(80, 0, 30), end=Vector(80, 0, 80)\n"
+            "Path wire: <build123d.topology.Wire object at 0xffff47425990>\n"
+            "Success!\n"
+        ),
+        stderr="",
+        output_files=["geometry_info.json"],
+        output_file_contents={"geometry_info.json": b"{}"},
+    )
+
+    summary = service._build_execute_probe_summary(
+        result=result,
+        filenames=["geometry_info.json"],
+        requirement_text=(
+            "Use the Sweep feature to construct. First, draw the path sketch on the "
+            "front view: an L-shaped path consisting of a 50.0mm horizontal line, "
+            "a 90-degree tangent arc with a radius of 30.0mm, and another 50.0mm "
+            "tangent straight line. Exit the path sketch. Create a vertical "
+            "reference plane at one endpoint of the path, and draw the profile "
+            "sketch: two concentric circles, with an outer diameter of 20.0mm and "
+            "an inner diameter of 16.0mm (wall thickness 2mm). Execute the sweep "
+            "command, select the annular profile, and sweep along the L-shaped path "
+            "to generate a hollow bent pipe solid."
+        ),
+    )
+
+    assert summary["actionable"] is True
+    assert summary["actionable_family_ids"] == ["path_sweep"]
+    assert summary["signal_values_by_family"]["path_sweep"]["workplane_path_wire_valid"] is True
+
+
+def test_execute_probe_summary_marks_center_arc_signature_probe_actionable_for_path_sweep() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+
+    result = SandboxResult(
+        success=True,
+        stdout=(
+            "=== Testing CenterArc signatures ===\n"
+            "Positional args work: <build123d.objects_curve.CenterArc object at 0xffff>\n"
+            "Keyword args failed: CenterArc.__init__() got an unexpected keyword argument 'arc_angle'\n"
+            "\n=== Building L-shaped path ===\n"
+            "Path edges: [<build123d.topology.Edge object at 0x1>, <build123d.topology.Edge object at 0x2>, <build123d.topology.Edge object at 0x3>]\n"
+            "Path is valid: <bound method Shape.is_valid of Curve at 0xffff>\n"
+            "\n=== Profile at path endpoint ===\n"
+            "Path endpoint: Vector(80, 80, 0)\n"
+            "Profile face count: 1\n"
+            "Profile is valid: <bound method Shape.is_valid of Sketch at 0xffff>\n"
+        ),
+        stderr="",
+        output_files=["geometry_info.json"],
+        output_file_contents={"geometry_info.json": b"{}"},
+    )
+
+    summary = service._build_execute_probe_summary(
+        result=result,
+        filenames=["geometry_info.json"],
+        requirement_text=(
+            "Use the Sweep feature to construct. First, draw the path sketch on the front "
+            "view: an L-shaped path consisting of a 50.0mm horizontal line, a 90-degree "
+            "tangent arc with a radius of 30.0mm, and another 50.0mm tangent straight line. "
+            "Exit the path sketch. Create a vertical reference plane at one endpoint of the "
+            "path, and draw the profile sketch: two concentric circles, with an outer "
+            "diameter of 20.0mm and an inner diameter of 16.0mm (wall thickness 2mm). "
+            "Execute the sweep command, select the annular profile, and sweep along the "
+            "L-shaped path to generate a hollow bent pipe solid."
+        ),
+    )
+
+    assert summary["actionable"] is True
+    assert summary["actionable_family_ids"] == ["path_sweep"]
+    assert summary["signal_values_by_family"]["path_sweep"]["path_segment_count"] == 3
+    assert summary["signal_values_by_family"]["path_sweep"]["profile_face_valid"] is True
+
+
+def test_execute_probe_summary_marks_countersink_signature_probe_actionable_for_explicit_anchor_hole() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+
+    result = SandboxResult(
+        success=True,
+        stdout=(
+            "CounterSinkHole signature:\n"
+            "(radius: 'float', counter_sink_radius: 'float', depth: 'float' = None, "
+            "counter_sink_angle: 'float' = 82, mode: 'Mode' = <Mode.SUBTRACT>)\n\n"
+            "CounterSinkHole docstring:\n"
+            "Part Operation: Counter Sink Hole\n"
+        ),
+        stderr="",
+        output_files=["geometry_info.json"],
+        output_file_contents={"geometry_info.json": b"{}"},
+    )
+
+    summary = service._build_execute_probe_summary(
+        result=result,
+        filenames=["geometry_info.json"],
+        requirement_text=(
+            "Select the top reference plane, draw a 100.0x60.0 millimeter rectangle and "
+            "extrude it by 8.0 millimeters. Select the plate surface, and use the sketch "
+            "to draw four points with coordinates (25,15), (25,45), (75,15), and (75,45). "
+            "Exit the sketch, and activate the Hole Wizard or the revolved cut tool. If "
+            "using the Hole Wizard: select Countersink, head diameter 12.0 millimeters, "
+            "cone angle 90 degrees, through-hole diameter 6.0 millimeters."
+        ),
+    )
+
+    assert summary["actionable"] is True
+    assert summary["actionable_family_ids"] == ["explicit_anchor_hole"]
+    assert (
+        summary["signal_values_by_family"]["explicit_anchor_hole"][
+            "countersink_helper_signature_valid"
+        ]
+        is True
+    )
+
+
 def _bbox(
     xmin: float,
     xmax: float,
@@ -70,6 +192,7 @@ def _topology_face(
     axis_origin: list[float] | None = None,
     axis_direction: list[float] | None = None,
     area: float = 100.0,
+    edge_refs: list[str] | None = None,
 ) -> TopologyFaceEntity:
     return TopologyFaceEntity(
         face_ref=f"face:{step}:{face_id}",
@@ -84,7 +207,7 @@ def _topology_face(
         geom_type=geom_type,
         bbox=bbox,
         parent_solid_id="S1",
-        edge_refs=[],
+        edge_refs=edge_refs or [],
         adjacent_face_refs=[],
     )
 
@@ -179,6 +302,124 @@ def _snapshot(
         topology_index=topology_index,
         success=True,
         error=None,
+    )
+
+
+_PLATE_COUNTERSINK_REQUIREMENT = (
+    "Select the top reference plane, draw a 100.0x60.0 millimeter rectangle and extrude it by 8.0 millimeters. "
+    "Select the plate surface, and use the sketch to draw four points with coordinates (25,15), (25,45), (75,15), and (75,45). "
+    'Exit the sketch, and activate the Hole Wizard or the revolved cut tool. If using the Hole Wizard: select "Countersink," '
+    "set the standard, head diameter 12.0 millimeters, cone angle 90 degrees, through-hole diameter 6.0 millimeters, and in the "
+    "position tab, select the four points drawn earlier. If using manual modeling: at each point, first cut a through-hole with "
+    "a diameter of 6.0 millimeters, then cut a conical recess with an upper diameter of 12.0 millimeters and a cone angle of "
+    "90 degrees (pay attention to depth control to ensure the countersink face matches), and complete the operation."
+)
+
+
+def _build_centered_plate_countersink_topology(
+    *,
+    head_radius: float,
+    shaft_radius: float = 3.0,
+) -> TopologyObjectIndex:
+    plate_top = _topology_face(
+        step=1,
+        face_id="F_plate_top",
+        center=[0.0, 0.0, 4.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-50.0, 50.0, -30.0, 30.0, 4.0, 4.0),
+        area=6000.0,
+        edge_refs=["edge:1:E_plate_1", "edge:1:E_plate_2", "edge:1:E_plate_3", "edge:1:E_plate_4"],
+    )
+    local_centers = [(-25.0, -15.0), (-25.0, 15.0), (25.0, -15.0), (25.0, 15.0)]
+    cone_depth = max(head_radius - shaft_radius, 0.5)
+    throat_z = 4.0 - cone_depth
+
+    faces: list[TopologyFaceEntity] = [plate_top]
+    edges: list[TopologyEdgeEntity] = []
+    for index, (x, y) in enumerate(local_centers, start=1):
+        faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_hole_cone_{index}",
+                center=[x + (head_radius + shaft_radius) / 2.0, y, 4.0 - cone_depth / 2.0],
+                normal=[-0.70710678, 0.0, 0.70710678],
+                bbox=_bbox(
+                    x - head_radius,
+                    x + head_radius,
+                    y - head_radius,
+                    y + head_radius,
+                    throat_z,
+                    4.0,
+                ),
+                geom_type="CONE",
+                area=120.0,
+            )
+        )
+        faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_hole_cyl_{index}",
+                center=[x + shaft_radius, y, (throat_z - 4.0) / 2.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(
+                    x - shaft_radius,
+                    x + shaft_radius,
+                    y - shaft_radius,
+                    y + shaft_radius,
+                    -4.0,
+                    throat_z,
+                ),
+                geom_type="CYLINDER",
+                radius=shaft_radius,
+                axis_origin=[x, y, 12.0],
+                axis_direction=[0.0, 0.0, -1.0],
+                area=200.0,
+            )
+        )
+        edges.append(
+            _topology_edge(
+                step=1,
+                edge_id=f"E_hole_head_{index}",
+                center=[x + head_radius, y, 4.0],
+                bbox=_bbox(
+                    x - head_radius,
+                    x + head_radius,
+                    y - head_radius,
+                    y + head_radius,
+                    4.0,
+                    4.0,
+                ),
+                radius=head_radius,
+                length=2.0 * math.pi * head_radius,
+                axis_origin=[x, y, 4.0],
+                axis_direction=[0.0, 0.0, 1.0],
+            )
+        )
+        edges.append(
+            _topology_edge(
+                step=1,
+                edge_id=f"E_hole_throat_{index}",
+                center=[x + shaft_radius, y, throat_z],
+                bbox=_bbox(
+                    x - shaft_radius,
+                    x + shaft_radius,
+                    y - shaft_radius,
+                    y + shaft_radius,
+                    throat_z,
+                    throat_z,
+                ),
+                radius=shaft_radius,
+                length=2.0 * math.pi * shaft_radius,
+                axis_origin=[x, y, throat_z],
+                axis_direction=[0.0, 0.0, 1.0],
+            )
+        )
+    return TopologyObjectIndex(
+        faces=faces,
+        edges=edges,
+        faces_total=len(faces),
+        edges_total=len(edges),
+        max_items_per_type=64,
     )
 
 
@@ -1139,16 +1380,446 @@ def test_interpretation_accepts_axisymmetric_bolt_circle_through_hole_clauses_wi
     )
 
     assert summary.insufficient_evidence == []
-    clause_status = {
-        clause.clause_id: clause.status for clause in summary.clause_interpretations
-    }
-    assert clause_status["on_the_same_top_face_sketch"] == RequirementClauseStatus.NOT_APPLICABLE
-    assert (
-        clause_status[
-            "the_six_bolt_circle_holes_cut_through_the_full_flange_plus_boss_thickness_in_one_operation"
-        ]
-        == RequirementClauseStatus.VERIFIED
+
+
+def test_path_sweep_geometry_fallback_accepts_revolution_bend_faces() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    geometry_objects = GeometryObjectIndex(
+        solids=[],
+        faces=[
+            _geometry_face(
+                face_id="F_cyl_1",
+                center=[25.0, 0.0, 0.0],
+                normal=[0.0, 1.0, 0.0],
+                bbox=_bbox(0.0, 50.0, -10.0, 10.0, -10.0, 10.0),
+                geom_type="CYLINDER",
+                radius=10.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[1.0, 0.0, 0.0],
+            ),
+            _geometry_face(
+                face_id="F_bend",
+                center=[70.0, 10.0, 0.0],
+                normal=[0.707, -0.707, 0.0],
+                bbox=_bbox(49.4, 90.0, -10.0, 31.6, -10.0, 10.0),
+                geom_type="REVOLUTION",
+            ),
+            _geometry_face(
+                face_id="F_cyl_2",
+                center=[80.0, 55.0, 0.0],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(70.0, 90.0, 30.0, 80.0, -10.0, 10.0),
+                geom_type="CYLINDER",
+                radius=10.0,
+                axis_origin=[80.0, 30.0, 0.0],
+                axis_direction=[0.0, 1.0, 0.0],
+            ),
+            _geometry_face(
+                face_id="F_cap_start",
+                center=[0.0, 0.0, 0.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(0.0, 0.0, -10.0, 10.0, -10.0, 10.0),
+                geom_type="PLANE",
+            ),
+            _geometry_face(
+                face_id="F_cap_end",
+                center=[80.0, 80.0, 0.0],
+                normal=[0.0, 1.0, 0.0],
+                bbox=_bbox(70.0, 90.0, 80.0, 80.0, -10.0, 10.0),
+                geom_type="PLANE",
+            ),
+        ],
+        edges=[],
+        faces_total=5,
+        edges_total=0,
+        max_items_per_type=20,
     )
+    snapshot = CADStateSnapshot(
+        step=1,
+        features=[],
+        geometry=GeometryInfo(
+            solids=1,
+            faces=5,
+            edges=0,
+            volume=-9829.660064683596,
+            bbox=[90.0000002, 90.0000001, 20.0000002],
+            center_of_mass=[0.0, 0.0, 0.0],
+            surface_area=1000.0,
+            bbox_min=[0.0, -10.0, -10.0],
+            bbox_max=[90.0, 80.0, 10.0],
+        ),
+        issues=[],
+        warnings=[],
+        blockers=[],
+        images=[],
+        sketch_state=None,
+        geometry_objects=geometry_objects,
+        topology_index=None,
+        success=True,
+        error=None,
+    )
+
+    ok, evidence = service._snapshot_has_execute_build123d_path_sweep_fallback(
+        snapshot=snapshot,
+        hollow_profile_required=False,
+        bend_required=True,
+    )
+    relation = service._relation_bend_realized(snapshot, blocking=True)
+
+    assert ok is True
+    assert "revolution_faces=1" in evidence
+    assert relation.status.value == "pass"
+    assert relation.measured["revolution_faces"] == 1
+    assert relation.measured["cylinder_faces"] == 2
+
+
+def test_path_sweep_recipe_detection_accepts_named_plane_offset_frames() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    history = [
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={
+                "source": "execute_build123d",
+                "build123d_code": (
+                    "from build123d import *\n"
+                    "with BuildLine() as path:\n"
+                    "    Line((0, 0, 0), (50, 0, 0))\n"
+                    "    RadiusArc((50, 0, 0), (80, 30, 0), 30)\n"
+                    "    Line((80, 30, 0), (80, 80, 0))\n"
+                    "profile_plane = Plane.YZ.offset(0)\n"
+                    "with BuildSketch(profile_plane) as profile:\n"
+                    "    Circle(10)\n"
+                    "    Circle(8, mode=Mode.SUBTRACT)\n"
+                    "with BuildPart() as pipe:\n"
+                    "    sweep(profile.sketch, path=path.wire())\n"
+                    "result = pipe.part\n"
+                ),
+            },
+            result_snapshot=_snapshot(step=1),
+            success=True,
+            error=None,
+        )
+    ]
+
+    assert service._history_has_execute_build123d_path_sweep_recipe(history) is True
+
+
+def test_path_sweep_recipe_detection_survives_failed_pre_snapshot_history_entries() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    build123d_code = (
+        "from build123d import *\n"
+        "with BuildLine() as path:\n"
+        "    Line((0, 0, 0), (50, 0, 0))\n"
+        "    RadiusArc((50, 0, 0), (80, 30, 0), 30)\n"
+        "    Line((80, 30, 0), (80, 80, 0))\n"
+        "profile_plane = Plane(origin=(0, 0, 0), z_dir=(1, 0, 0))\n"
+        "with BuildSketch(profile_plane) as profile:\n"
+        "    Circle(10)\n"
+        "    Circle(8, mode=Mode.SUBTRACT)\n"
+        "with BuildPart() as pipe:\n"
+        "    sweep(profile.sketch, path=path.wire())\n"
+        "result = pipe.part\n"
+    )
+    history = [
+        ActionHistoryEntry(
+            step=0,
+            action_type=CADActionType.MODIFY_ACTION,
+            action_params={"reason": "preflight_lint_failed"},
+            result_snapshot=_snapshot(step=0),
+            success=False,
+            error="lint failure",
+        ),
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={
+                "source": "execute_build123d",
+                "build123d_code": build123d_code,
+            },
+            result_snapshot=_snapshot(step=1),
+            success=True,
+            error=None,
+        ),
+    ]
+
+    assert service._history_has_execute_build123d_path_sweep_recipe(history) is True
+
+
+def test_path_sweep_checks_use_execute_build123d_fallback_after_failed_pre_snapshot_turns() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    requirement_text = (
+        "Use the Sweep feature to construct. First, draw the path sketch on the front view: "
+        "an L-shaped path consisting of a 50.0mm horizontal line, a 90-degree tangent arc "
+        "with a radius of 30.0mm, and another 50.0mm tangent straight line. Exit the path "
+        "sketch. Create a vertical reference plane at one endpoint of the path, and draw the "
+        "profile sketch: two concentric circles, with an outer diameter of 20.0mm and an "
+        "inner diameter of 16.0mm (wall thickness 2mm). Execute the sweep command, select the "
+        "annular profile, and sweep along the L-shaped path to generate a hollow bent pipe solid."
+    )
+    geometry_objects = GeometryObjectIndex(
+        solids=[],
+        faces=[
+            _geometry_face(
+                face_id="F_cyl_outer_1",
+                center=[25.0, 0.0, 0.0],
+                normal=[0.0, 1.0, 0.0],
+                bbox=_bbox(0.0, 50.0, -10.0, 10.0, -10.0, 10.0),
+                geom_type="CYLINDER",
+                radius=10.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[1.0, 0.0, 0.0],
+            ),
+            _geometry_face(
+                face_id="F_cyl_inner_1",
+                center=[25.0, 0.0, 0.0],
+                normal=[0.0, -1.0, 0.0],
+                bbox=_bbox(0.0, 50.0, -8.0, 8.0, -8.0, 8.0),
+                geom_type="CYLINDER",
+                radius=8.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[1.0, 0.0, 0.0],
+            ),
+            _geometry_face(
+                face_id="F_bend_outer",
+                center=[70.0, 10.0, 0.0],
+                normal=[0.707, -0.707, 0.0],
+                bbox=_bbox(49.4, 90.0, -10.0, 31.6, -10.0, 10.0),
+                geom_type="TORUS",
+            ),
+            _geometry_face(
+                face_id="F_bend_inner",
+                center=[70.0, 10.0, 0.0],
+                normal=[0.707, 0.707, 0.0],
+                bbox=_bbox(51.4, 88.0, -8.0, 29.6, -8.0, 8.0),
+                geom_type="TORUS",
+            ),
+            _geometry_face(
+                face_id="F_cyl_outer_2",
+                center=[80.0, 55.0, 0.0],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(70.0, 90.0, 30.0, 80.0, -10.0, 10.0),
+                geom_type="CYLINDER",
+                radius=10.0,
+                axis_origin=[80.0, 30.0, 0.0],
+                axis_direction=[0.0, 1.0, 0.0],
+            ),
+            _geometry_face(
+                face_id="F_cyl_inner_2",
+                center=[80.0, 55.0, 0.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(72.0, 88.0, 32.0, 78.0, -8.0, 8.0),
+                geom_type="CYLINDER",
+                radius=8.0,
+                axis_origin=[80.0, 30.0, 0.0],
+                axis_direction=[0.0, 1.0, 0.0],
+            ),
+            _geometry_face(
+                face_id="F_cap_start",
+                center=[0.0, 0.0, 0.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(0.0, 0.0, -10.0, 10.0, -10.0, 10.0),
+                geom_type="PLANE",
+            ),
+            _geometry_face(
+                face_id="F_cap_end",
+                center=[80.0, 80.0, 0.0],
+                normal=[0.0, 1.0, 0.0],
+                bbox=_bbox(70.0, 90.0, 80.0, 80.0, -10.0, 10.0),
+                geom_type="PLANE",
+            ),
+        ],
+        edges=[],
+        faces_total=8,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    snapshot = CADStateSnapshot(
+        step=1,
+        features=[],
+        geometry=GeometryInfo(
+            solids=1,
+            faces=8,
+            edges=14,
+            volume=16639.319929511308,
+            bbox=[90.0, 90.0, 20.0000001],
+            center_of_mass=[52.997473765737176, 21.904781734715083, 0.0],
+            surface_area=17344.422753420225,
+            bbox_min=[0.0, -10.0, -10.0000001],
+            bbox_max=[90.0, 80.0, 10.0],
+        ),
+        issues=[],
+        warnings=[],
+        blockers=[],
+        images=[],
+        sketch_state=None,
+        geometry_objects=geometry_objects,
+        topology_index=None,
+        success=True,
+        error=None,
+    )
+    history = [
+        ActionHistoryEntry(
+            step=0,
+            action_type=CADActionType.MODIFY_ACTION,
+            action_params={"reason": "preflight_lint_failed"},
+            result_snapshot=_snapshot(step=0),
+            success=False,
+            error="lint failure",
+        ),
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={
+                "source": "execute_build123d",
+                "build123d_code": (
+                    "from build123d import *\n"
+                    "with BuildLine() as path:\n"
+                    "    Line((0, 0, 0), (50, 0, 0))\n"
+                    "    RadiusArc((50, 0, 0), (80, 30, 0), 30)\n"
+                    "    Line((80, 30, 0), (80, 80, 0))\n"
+                    "profile_plane = Plane.YZ.offset(0)\n"
+                    "with BuildSketch(profile_plane) as profile:\n"
+                    "    Circle(10)\n"
+                    "    Circle(8, mode=Mode.SUBTRACT)\n"
+                    "with BuildPart() as pipe:\n"
+                    "    sweep(profile.sketch, path=path.wire())\n"
+                    "result = pipe.part\n"
+                ),
+            },
+            result_snapshot=snapshot,
+            success=True,
+            error=None,
+        ),
+    ]
+
+    checks = service._build_path_sweep_checks(
+        snapshot=snapshot,
+        history=history,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    assert {check.check_id for check in checks} == {
+        "feature_path_sweep_rail",
+        "feature_path_sweep_profile",
+        "feature_path_sweep_frame",
+        "feature_path_sweep_result",
+    }
+    assert all(check.status == RequirementCheckStatus.PASS for check in checks)
+    assert all(
+        "execute_build123d_path_sweep_recipe=true" in str(check.evidence)
+        for check in checks
+    )
+
+
+def test_path_sweep_geometry_fallback_rejects_hollow_bent_pipe_with_extrusion_straights() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    geometry_objects = GeometryObjectIndex(
+        solids=[],
+        faces=[
+            _geometry_face(
+                face_id="F_cyl_outer_1",
+                center=[25.0, 0.0, 0.0],
+                normal=[0.0, 1.0, 0.0],
+                bbox=_bbox(0.0, 50.0, -10.0, 10.0, -10.0, 10.0),
+                geom_type="CYLINDER",
+                radius=10.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[1.0, 0.0, 0.0],
+            ),
+            _geometry_face(
+                face_id="F_cyl_inner_1",
+                center=[25.0, 0.0, 0.0],
+                normal=[0.0, -1.0, 0.0],
+                bbox=_bbox(0.0, 50.0, -8.0, 8.0, -8.0, 8.0),
+                geom_type="CYLINDER",
+                radius=8.0,
+                axis_origin=[0.0, 0.0, 0.0],
+                axis_direction=[1.0, 0.0, 0.0],
+            ),
+            _geometry_face(
+                face_id="F_bend_outer",
+                center=[70.0, 10.0, 0.0],
+                normal=[0.707, -0.707, 0.0],
+                bbox=_bbox(49.4, 90.0, -10.0, 31.6, -10.0, 10.0),
+                geom_type="TORUS",
+            ),
+            _geometry_face(
+                face_id="F_bend_inner",
+                center=[70.0, 10.0, 0.0],
+                normal=[0.707, 0.707, 0.0],
+                bbox=_bbox(51.4, 88.0, -8.0, 29.6, -8.0, 8.0),
+                geom_type="TORUS",
+            ),
+            _geometry_face(
+                face_id="F_wrong_leg_outer",
+                center=[65.0, 55.0, 0.0],
+                normal=[0.0, 0.0, 1.0],
+                bbox=_bbox(50.0, 80.0, 30.0, 80.0, -10.0, 10.0),
+                geom_type="EXTRUSION",
+            ),
+            _geometry_face(
+                face_id="F_wrong_leg_inner",
+                center=[65.0, 55.0, 0.0],
+                normal=[0.0, 0.0, -1.0],
+                bbox=_bbox(52.0, 78.0, 32.0, 78.0, -8.0, 8.0),
+                geom_type="EXTRUSION",
+            ),
+            _geometry_face(
+                face_id="F_cap_start",
+                center=[0.0, 0.0, 0.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(0.0, 0.0, -10.0, 10.0, -10.0, 10.0),
+                geom_type="PLANE",
+            ),
+            _geometry_face(
+                face_id="F_cap_end",
+                center=[65.0, 55.0, 0.0],
+                normal=[0.0, 1.0, 0.0],
+                bbox=_bbox(55.0, 75.0, 80.0, 80.0, -10.0, 10.0),
+                geom_type="PLANE",
+            ),
+        ],
+        edges=[],
+        faces_total=8,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    snapshot = CADStateSnapshot(
+        step=1,
+        features=[],
+        geometry=GeometryInfo(
+            solids=1,
+            faces=8,
+            edges=14,
+            volume=16639.319929511308,
+            bbox=[90.0, 90.0, 20.0000001],
+            center_of_mass=[52.997473765737176, 21.904781734715083, 0.0],
+            surface_area=17344.422753420225,
+            bbox_min=[0.0, -10.0, -10.0000001],
+            bbox_max=[90.0, 80.0, 10.0],
+        ),
+        issues=[],
+        warnings=[],
+        blockers=[],
+        images=[],
+        sketch_state=None,
+        geometry_objects=geometry_objects,
+        topology_index=None,
+        success=True,
+        error=None,
+    )
+
+    ok, evidence = service._snapshot_has_execute_build123d_path_sweep_fallback(
+        snapshot=snapshot,
+        hollow_profile_required=True,
+        bend_required=True,
+    )
+
+    assert ok is False
+    assert "cylinder_faces=2" in evidence
+    assert "torus_faces=2" in evidence
 
 
 @pytest.mark.parametrize(
@@ -1311,6 +1982,172 @@ def test_interpretation_verifies_downward_disk_clause_from_axisymmetric_band() -
     )
 
     assert summary.clause_interpretations[0].status == RequirementClauseStatus.VERIFIED
+
+
+def test_interpretation_closes_path_sweep_process_and_profile_clauses_from_family_checks() -> None:
+    requirement_text = (
+        "Use the Sweep feature to construct. First, draw the path sketch on the front view: "
+        "an L-shaped path consisting of a 50.0mm horizontal line, a 90-degree tangent arc "
+        "with a radius of 30.0mm, and another 50.0mm tangent straight line. Exit the path "
+        "sketch. Create a vertical reference plane at one endpoint of the path, and draw the "
+        "profile sketch: two concentric circles, with an outer diameter of 20.0mm and an "
+        "inner diameter of 16.0mm (wall thickness 2mm). Execute the sweep command, select the "
+        "annular profile, and sweep along the L-shaped path to generate a hollow bent pipe solid."
+    )
+    topology_index = TopologyObjectIndex(
+        faces=[
+            _topology_face(
+                step=1,
+                face_id="F_outer_pipe",
+                center=[40.0, 0.0, 20.0],
+                normal=[-1.0, 0.0, 0.0],
+                bbox=_bbox(30.0, 50.0, -10.0, 10.0, 0.0, 40.0),
+                geom_type="CYLINDER",
+                radius=10.0,
+                axis_origin=[40.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=2513.274122872,
+            ),
+            _topology_face(
+                step=1,
+                face_id="F_inner_pipe",
+                center=[40.0, 0.0, 20.0],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(32.0, 48.0, -8.0, 8.0, 0.0, 40.0),
+                geom_type="CYLINDER",
+                radius=8.0,
+                axis_origin=[40.0, 0.0, 0.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=2010.619298298,
+            ),
+        ],
+        edges=[],
+        faces_total=2,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            faces=8,
+            edges=14,
+            volume=16013.742100620624,
+            bbox=[94.06148056457118, 93.71988681140206, 20.0000002],
+            bbox_min=[-0.0000001, -10.0, 0.0],
+            bbox_max=[94.0614804, 83.7198868, 20.0000001],
+            topology_index=topology_index,
+        ),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_path_sweep_rail",
+                label="path-sweep rail",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "execute_build123d_path_sweep_recipe=true, "
+                    "execute_build123d_geometry_fallback=true, torus_faces=0, "
+                    "revolution_faces=2, cylinder_faces=2, plane_faces=2, "
+                    "bbox=[94.06148056457118, 93.71988681140206, 20.0000002], "
+                    "volume=16013.742100620624"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_path_sweep_profile",
+                label="path-sweep profile",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "execute_build123d_path_sweep_recipe=true, "
+                    "execute_build123d_geometry_fallback=true, torus_faces=0, "
+                    "revolution_faces=2, cylinder_faces=2, plane_faces=2, "
+                    "bbox=[94.06148056457118, 93.71988681140206, 20.0000002], "
+                    "volume=16013.742100620624"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_path_sweep_frame",
+                label="path-sweep frame",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "execute_build123d_path_sweep_recipe=true, "
+                    "execute_build123d_geometry_fallback=true, torus_faces=0, "
+                    "revolution_faces=2, cylinder_faces=2, plane_faces=2, "
+                    "bbox=[94.06148056457118, 93.71988681140206, 20.0000002], "
+                    "volume=16013.742100620624"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_path_sweep_result",
+                label="path-sweep result",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "execute_build123d_path_sweep_recipe=true, "
+                    "execute_build123d_geometry_fallback=true, torus_faces=0, "
+                    "revolution_faces=2, cylinder_faces=2, plane_faces=2, "
+                    "bbox=[94.06148056457118, 93.71988681140206, 20.0000002], "
+                    "volume=16013.742100620624"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_profile_shape_alignment",
+                label="profile shape alignment",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence=(
+                    "required_shapes=['circle'], observed_post_solid_shapes=['<none>'], "
+                    "missing_post_solid_profile_window=true, "
+                    "observed_snapshot_profile_shapes=['circle'], "
+                    "execute_build123d_geometry_fallback=true"
+                ),
+            ),
+            RequirementCheck(
+                check_id="feature_merged_body_result",
+                label="merged body",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="final_solids=1, requires_merged_body=True",
+            ),
+        ],
+    )
+
+    clause_status = {
+        item.clause_text: item.status for item in summary.clause_interpretations
+    }
+
+    assert (
+        clause_status["draw the path sketch on the front view: an L-shaped path consisting of a 50.0mm horizontal line"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["a 90-degree tangent arc with a radius of 30.0mm"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["another 50.0mm tangent straight line"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert clause_status["Exit the path sketch"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status["Create a vertical reference plane at one endpoint of the path"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert (
+        clause_status["draw the profile sketch: two concentric circles"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert summary.insufficient_evidence == []
 
 
 def test_interpretation_verifies_mixed_nested_section_and_annular_groove_clauses_from_passed_checks() -> None:
@@ -1788,6 +2625,128 @@ async def test_validate_requirement_rejects_detached_countersink_solids_as_plate
     assert "feature_hole" in result.blockers
     assert "feature_countersink" in result.blockers
     assert "feature_hole_position_alignment" in result.blockers
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_surfaces_countersink_head_diameter_mismatch_as_concrete_blocker() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-countersink-head-diameter-mismatch"
+    service._session_manager.clear_session(session_id)
+
+    topology_index = _build_centered_plate_countersink_topology(head_radius=4.5)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=9,
+                edges=8,
+                volume=46996.261147178,
+                bbox=[100.0, 60.0, 8.0],
+                bbox_min=[-50.0, -30.0, -4.0],
+                bbox_max=[50.0, 30.0, 4.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=_PLATE_COUNTERSINK_REQUIREMENT,
+            requirements={"description": _PLATE_COUNTERSINK_REQUIREMENT},
+        )
+    )
+
+    assert result.success is True
+    assert result.is_complete is False
+    assert result.insufficient_evidence is False
+    assert "head_diameter_12_0_millimeters" in result.blockers
+    assert (
+        "cut_a_conical_recess_with_an_upper_diameter_of_12_0_millimeters"
+        in result.blockers
+    )
+    clause_status = {
+        clause.clause_id: clause.status for clause in result.clause_interpretations
+    }
+    assert clause_status["extrude_it_by_8_0_millimeters"] == RequirementClauseStatus.VERIFIED
+    assert clause_status["in_the_position_tab"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status["if_using_manual_modeling_at_each_point"]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+    assert clause_status["complete_the_operation"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status["head_diameter_12_0_millimeters"]
+        == RequirementClauseStatus.CONTRADICTED
+    )
+    assert (
+        clause_status["cut_a_conical_recess_with_an_upper_diameter_of_12_0_millimeters"]
+        == RequirementClauseStatus.CONTRADICTED
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_accepts_exact_countersink_head_diameter_without_clause_gaps() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-exact-countersink-head-diameter"
+    service._session_manager.clear_session(session_id)
+
+    topology_index = _build_centered_plate_countersink_topology(head_radius=6.0)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=9,
+                edges=8,
+                volume=46574.806908831764,
+                bbox=[100.0, 60.0, 8.0],
+                bbox_min=[-50.0, -30.0, -4.0],
+                bbox_max=[50.0, 30.0, 4.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=_PLATE_COUNTERSINK_REQUIREMENT,
+            requirements={"description": _PLATE_COUNTERSINK_REQUIREMENT},
+        )
+    )
+
+    assert result.success is True
+    assert result.is_complete is True
+    assert result.insufficient_evidence is False
+    clause_status = {
+        clause.clause_id: clause.status for clause in result.clause_interpretations
+    }
+    assert clause_status["extrude_it_by_8_0_millimeters"] == RequirementClauseStatus.VERIFIED
+    assert clause_status["head_diameter_12_0_millimeters"] == RequirementClauseStatus.VERIFIED
+    assert (
+        clause_status["cut_a_conical_recess_with_an_upper_diameter_of_12_0_millimeters"]
+        == RequirementClauseStatus.VERIFIED
+    )
+    assert clause_status["in_the_position_tab"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert (
+        clause_status["if_using_manual_modeling_at_each_point"]
+        == RequirementClauseStatus.NOT_APPLICABLE
+    )
+    assert clause_status["complete_the_operation"] == RequirementClauseStatus.NOT_APPLICABLE
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,63 @@
+{
+  "metadata": {
+    "date": "2026-04-14",
+    "owner": "codex",
+    "theme": "build123d_vs_cadquery_evidence_comparison",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "fresh_head_to_head_runs",
+      "title": "Run fresh Build123d vs CadQuery benchmark slices on the same cases before making any comparison claim",
+      "status": "done",
+      "notes": "Used build123d benchmark/runs/20260414_091747 and cadquery benchmark/runs/20260414_091748 as the main same-day head-to-head evidence for L1_218, L2_130, and L2_172."
+    },
+    {
+      "id": "generic_build123d_runtime_fix",
+      "title": "Land only family-level Build123d fixes that improve runtime contract surfaces rather than case-specific patches",
+      "status": "done",
+      "notes": "Strengthened BuildLine ownership and revolve keyword contract across src/sub_agent/prompts/codegen.md, src/sub_agent_runtime/skill_pack.py, and src/sub_agent_runtime/tool_runtime.py."
+    },
+    {
+      "id": "verify_runtime_contract_tests",
+      "title": "Run focused runtime contract tests after the Build123d family-level fix",
+      "status": "done",
+      "notes": "PATH=\"/opt/homebrew/bin:$PATH\" uv run pytest -q tests/unit/sub_agent_runtime/test_codegen_prompt_contract.py tests/unit/sub_agent_runtime/test_skill_pack.py tests/unit/sub_agent_runtime/test_tool_runtime_preflight_lint.py -> 78 passed in 1.38s."
+    },
+    {
+      "id": "prove_family_unlock_with_l2_88",
+      "title": "Demonstrate that a generic Build123d contract fix can unlock an entire family with a before/after benchmark rerun",
+      "status": "done",
+      "notes": "Build123d L2_88 moved from benchmark/runs/20260414_093041/L2_88 (8 rounds, failed, code_path_family_gap) to benchmark/runs/20260414_130005/L2_88 (1 round, validation_complete=true, eval_score=1.0) without changing the benchmark case or evaluator."
+    },
+    {
+      "id": "document_comparison_with_artifacts",
+      "title": "Produce a manager-shareable comparison package that ties conclusions to concrete plans/actions/queries/trace/evaluation artifacts",
+      "status": "done",
+      "notes": "Added report-20260414-build123d-vs-cadquery-benchmark/index.html, shareable-report.md, and detailed-evidence.md with concrete case evidence for L1_218, L2_130, L2_172, and L2_88."
+    },
+    {
+      "id": "sync_work_log_system",
+      "title": "Update docs/work_logs with today's comparison rationale, evidence, and remaining gaps",
+      "status": "done",
+      "notes": "Added docs/work_logs/2026-04-14.md and this checklist to keep the doc system aligned with the latest comparison and Build123d family-level fix."
+    },
+    {
+      "id": "half_shell_family_next",
+      "title": "Continue improving Build123d first-turn bias for half-shell plus directional-hole families",
+      "status": "in_progress",
+      "notes": "L2_130 now fails in a more mechanized way, but same-builder skeleton and drill-plane contract still need stronger first-turn canonical recipes."
+    },
+    {
+      "id": "countersink_family_next",
+      "title": "Continue improving Build123d countersink family convergence on centered hosts and local face coordinates",
+      "status": "in_progress",
+      "notes": "L2_172 shows the current gap is no longer point placement; it is the unified countersink helper/keyword/host-face/cone-geometry contract."
+    }
+  ]
+}

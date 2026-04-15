@@ -30,6 +30,7 @@ from step_similarity_eval import evaluate_step_pair_sync
 CSV_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "gbk", "latin1")
 PROMPT_FIELD_FALLBACK = ("pro_prompt_en", "geo_prompt_en", "prompt", "requirement")
 _TIMESTAMP_RUN_ID_RE = re.compile(r"^\d{8}_\d{6}$")
+_CASE_SET_MANIFEST_PATH = _REPO_ROOT / "benchmark" / "canary_case_sets.json"
 
 
 @dataclass
@@ -83,6 +84,12 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Comma-separated case ids, e.g. L1_20,L2_88.",
+    )
+    parser.add_argument(
+        "--case-set",
+        type=str,
+        default="",
+        help="Named case set from benchmark/canary_case_sets.json, e.g. canary.",
     )
     parser.add_argument(
         "--levels",
@@ -781,6 +788,8 @@ def _load_feature_graph_index(case_dir: Path) -> dict[int, dict[str, Any]]:
             "active_feature_instances": payload.get("active_feature_instances"),
             "kernel_patch_count": payload.get("kernel_patch_count"),
             "kernel_patch_kinds": payload.get("kernel_patch_kinds"),
+            "repair_packet_count": payload.get("repair_packet_count"),
+            "repair_packet_kinds": payload.get("repair_packet_kinds"),
             "latest_patch_repair_mode": payload.get("latest_patch_repair_mode"),
             "latest_patch_feature_instance_ids": payload.get(
                 "latest_patch_feature_instance_ids"
@@ -789,6 +798,17 @@ def _load_feature_graph_index(case_dir: Path) -> dict[int, dict[str, Any]]:
             "latest_patch_anchor_keys": payload.get("latest_patch_anchor_keys"),
             "latest_patch_parameter_keys": payload.get("latest_patch_parameter_keys"),
             "latest_patch_repair_intent": payload.get("latest_patch_repair_intent"),
+            "latest_repair_packet_family_id": payload.get("latest_repair_packet_family_id"),
+            "latest_repair_packet_feature_instance_id": payload.get(
+                "latest_repair_packet_feature_instance_id"
+            ),
+            "latest_repair_packet_repair_mode": payload.get(
+                "latest_repair_packet_repair_mode"
+            ),
+            "latest_repair_packet_recipe_id": payload.get("latest_repair_packet_recipe_id"),
+            "latest_repair_packet_recipe_summary": payload.get(
+                "latest_repair_packet_recipe_summary"
+            ),
         }
     return index
 
@@ -849,6 +869,9 @@ def _summarize_feature_graph_index(
     kernel_patch_peak = max(
         int(entry.get("kernel_patch_count", 0) or 0) for entry in ordered_entries
     )
+    repair_packet_peak = max(
+        int(entry.get("repair_packet_count", 0) or 0) for entry in ordered_entries
+    )
     kernel_patch_rounds = [
         int(entry.get("round"))
         for entry in patch_entries
@@ -856,6 +879,7 @@ def _summarize_feature_graph_index(
     ]
     kernel_patch_kind_counts = Counter()
     repair_mode_counts = Counter()
+    repair_packet_kind_counts = Counter()
     for entry in patch_entries:
         for patch_kind in entry.get("kernel_patch_kinds") or []:
             if isinstance(patch_kind, str) and patch_kind.strip():
@@ -863,6 +887,10 @@ def _summarize_feature_graph_index(
         repair_mode = str(entry.get("latest_patch_repair_mode") or "").strip()
         if repair_mode:
             repair_mode_counts[repair_mode] += 1
+    for entry in ordered_entries:
+        for packet_kind in entry.get("repair_packet_kinds") or []:
+            if isinstance(packet_kind, str) and packet_kind.strip():
+                repair_packet_kind_counts[packet_kind.strip()] += 1
     return {
         "available": True,
         "snapshot_count": len(feature_graph_index),
@@ -906,6 +934,9 @@ def _summarize_feature_graph_index(
         "kernel_patch_count": kernel_patch_peak,
         "final_kernel_patch_count": latest.get("kernel_patch_count"),
         "kernel_patch_kinds": sorted(kernel_patch_kind_counts),
+        "repair_packet_count": repair_packet_peak,
+        "final_repair_packet_count": latest.get("repair_packet_count"),
+        "repair_packet_kinds": sorted(repair_packet_kind_counts),
         "kernel_patch_rounds": kernel_patch_rounds,
         "repair_mode_counts": dict(repair_mode_counts),
         "latest_patch_repair_mode": latest_patch_entry.get("latest_patch_repair_mode"),
@@ -914,6 +945,17 @@ def _summarize_feature_graph_index(
         "latest_patch_anchor_keys": latest_patch_entry.get("latest_patch_anchor_keys") or [],
         "latest_patch_parameter_keys": latest_patch_entry.get("latest_patch_parameter_keys") or [],
         "latest_patch_repair_intent": latest_patch_entry.get("latest_patch_repair_intent"),
+        "latest_repair_packet_family_id": latest.get("latest_repair_packet_family_id"),
+        "latest_repair_packet_feature_instance_id": latest.get(
+            "latest_repair_packet_feature_instance_id"
+        ),
+        "latest_repair_packet_repair_mode": latest.get(
+            "latest_repair_packet_repair_mode"
+        ),
+        "latest_repair_packet_recipe_id": latest.get("latest_repair_packet_recipe_id"),
+        "latest_repair_packet_recipe_summary": latest.get(
+            "latest_repair_packet_recipe_summary"
+        ),
         "first_patch_round": first_patch_entry.get("round") if first_patch_entry else None,
         "first_patch_feature_instance_ids": (
             first_patch_entry.get("latest_patch_feature_instance_ids") or []
@@ -1149,12 +1191,28 @@ def _diagnose_case(
         status = "INCOMPLETE"
         end_to_end_status = "incomplete"
 
-    if prompt_metrics.get("max_final_chars", 0) and prompt_metrics.get("max_final_chars", 0) > 20000:
+    diagnosis_supports_context_pressure_note = category not in {
+        "runner_timeout",
+        "runner_exception",
+        "runtime_error",
+        "llm_error",
+    }
+    diagnosis_supports_kernel_query_note = category not in {
+        "runner_exception",
+        "runtime_error",
+    }
+
+    if (
+        diagnosis_supports_context_pressure_note
+        and prompt_metrics.get("max_final_chars", 0)
+        and prompt_metrics.get("max_final_chars", 0) > 20000
+    ):
         diagnosis = f"{diagnosis} Prompt context grew large during the run."
     if trace_summary.get("available") and trace_summary.get("event_count", 0) <= 3:
         diagnosis = f"{diagnosis} Trace is too sparse to explain the failure timeline."
     if (
-        isinstance(feature_graph_summary, dict)
+        diagnosis_supports_kernel_query_note
+        and isinstance(feature_graph_summary, dict)
         and feature_graph_summary.get("available")
         and not int(feature_graph_summary.get("graph_query_count") or 0)
         and (
@@ -1166,7 +1224,7 @@ def _diagnose_case(
             f"{diagnosis} Domain-kernel snapshots existed, but the loop never issued "
             "query_kernel_state before stopping."
         )
-    if graph_validation_mismatch:
+    if diagnosis_supports_kernel_query_note and graph_validation_mismatch:
         diagnosis = (
             f"{diagnosis} Current validation blockers and domain-kernel blocked nodes diverged; "
             "inspect freshness/binding sync rather than treating this as a pure modeling miss."
@@ -1253,6 +1311,11 @@ def _write_case_analysis(case_dir: Path, case_record: dict[str, Any]) -> None:
     round_digest = case_record.get("round_digest")
     if not isinstance(round_digest, dict):
         round_digest = {}
+    baseline_metrics = (
+        case_record.get("baseline_metrics")
+        if isinstance(case_record.get("baseline_metrics"), dict)
+        else _build_case_baseline_metrics(case_record)
+    )
     validation_lanes = analysis.get("validation_lanes")
     if not isinstance(validation_lanes, dict):
         validation_lanes = {}
@@ -1304,6 +1367,20 @@ def _write_case_analysis(case_dir: Path, case_record: dict[str, Any]) -> None:
         f"- is_complete: {runtime_validation_view.get('is_complete')}",
         f"- blockers: {runtime_validation_view.get('blockers')}",
         f"- failed_checks: {runtime_validation_view.get('failed_checks')}",
+        "",
+        "## Baseline Metrics",
+        "",
+        f"- first_solid_success: {baseline_metrics.get('first_solid_success')}",
+        f"- first_solid_round: {baseline_metrics.get('first_solid_round')}",
+        f"- first_solid_tool: {baseline_metrics.get('first_solid_tool')}",
+        f"- requirement_complete: {baseline_metrics.get('requirement_complete')}",
+        f"- runtime_rewrite_turn_count: {baseline_metrics.get('rewrite_turn_count')}",
+        f"- repair_turns_after_first_write: {baseline_metrics.get('repair_turns_after_first_write')}",
+        f"- stale_evidence_incidents: {baseline_metrics.get('stale_evidence_incidents')}",
+        f"- tokens: {baseline_metrics.get('tokens')}",
+        f"- family_repair_packet_available: {baseline_metrics.get('family_repair_packet_available')}",
+        f"- family_repair_packet_hit: {baseline_metrics.get('family_repair_packet_hit')}",
+        f"- latest_repair_packet_family_id: {baseline_metrics.get('latest_repair_packet_family_id')}",
         "",
         "## Runtime",
         "",
@@ -1362,6 +1439,9 @@ def _write_case_analysis(case_dir: Path, case_record: dict[str, Any]) -> None:
         f"- kernel_patch_count: {feature_graph_summary.get('kernel_patch_count')}",
         f"- final_kernel_patch_count: {feature_graph_summary.get('final_kernel_patch_count')}",
         f"- kernel_patch_kinds: {feature_graph_summary.get('kernel_patch_kinds')}",
+        f"- repair_packet_count: {feature_graph_summary.get('repair_packet_count')}",
+        f"- final_repair_packet_count: {feature_graph_summary.get('final_repair_packet_count')}",
+        f"- repair_packet_kinds: {feature_graph_summary.get('repair_packet_kinds')}",
         f"- kernel_patch_rounds: {feature_graph_summary.get('kernel_patch_rounds')}",
         f"- first_patch_round: {feature_graph_summary.get('first_patch_round')}",
         f"- latest_binding_families: {feature_graph_summary.get('latest_binding_families')}",
@@ -1374,6 +1454,11 @@ def _write_case_analysis(case_dir: Path, case_record: dict[str, Any]) -> None:
         f"- latest_binding_geometry_summary: {feature_graph_summary.get('latest_binding_geometry_summary')}",
         f"- latest_binding_feature_anchor_summary: {feature_graph_summary.get('latest_binding_feature_anchor_summary')}",
         f"- latest_patch_repair_mode: {feature_graph_summary.get('latest_patch_repair_mode')}",
+        f"- latest_repair_packet_family_id: {feature_graph_summary.get('latest_repair_packet_family_id')}",
+        f"- latest_repair_packet_feature_instance_id: {feature_graph_summary.get('latest_repair_packet_feature_instance_id')}",
+        f"- latest_repair_packet_repair_mode: {feature_graph_summary.get('latest_repair_packet_repair_mode')}",
+        f"- latest_repair_packet_recipe_id: {feature_graph_summary.get('latest_repair_packet_recipe_id')}",
+        f"- latest_repair_packet_recipe_summary: {feature_graph_summary.get('latest_repair_packet_recipe_summary')}",
         f"- first_patch_feature_instance_ids: {feature_graph_summary.get('first_patch_feature_instance_ids')}",
         f"- latest_patch_feature_instance_ids: {feature_graph_summary.get('latest_patch_feature_instance_ids')}",
         f"- latest_patch_affected_hosts: {feature_graph_summary.get('latest_patch_affected_hosts')}",
@@ -1467,6 +1552,188 @@ def _infer_repeated_useless_reads(round_entries: list[dict[str, Any]]) -> list[d
     return repeated[-3:]
 
 
+def _extract_first_positive_write(round_digest: dict[str, Any]) -> dict[str, Any] | None:
+    round_entries = round_digest.get("rounds") if isinstance(round_digest, dict) else None
+    if not isinstance(round_entries, list):
+        return None
+    for entry in round_entries:
+        if not isinstance(entry, dict):
+            continue
+        round_no = entry.get("round")
+        if not isinstance(round_no, int):
+            continue
+        tool_results = entry.get("tool_results")
+        if not isinstance(tool_results, list):
+            continue
+        for result in tool_results:
+            if not isinstance(result, dict):
+                continue
+            if result.get("category") != "write" or result.get("success") is not True:
+                continue
+            payload_summary = result.get("payload_summary")
+            if not isinstance(payload_summary, dict):
+                continue
+            snapshot = payload_summary.get("snapshot")
+            if not isinstance(snapshot, dict):
+                continue
+            geometry = snapshot.get("geometry")
+            if not isinstance(geometry, dict):
+                continue
+            solids = geometry.get("solids")
+            volume = geometry.get("volume")
+            solid_count = int(solids or 0) if isinstance(solids, (int, float)) else 0
+            solid_volume = float(volume or 0.0) if isinstance(volume, (int, float)) else 0.0
+            if solid_count <= 0 and solid_volume <= 0.0:
+                continue
+            return {
+                "round": round_no,
+                "tool_name": str(result.get("tool_name") or "").strip() or None,
+                "solids": solid_count,
+                "volume": solid_volume,
+            }
+    return None
+
+
+def _build_case_baseline_metrics(case_payload: dict[str, Any]) -> dict[str, Any]:
+    runtime_summary = (
+        case_payload.get("runtime_summary")
+        if isinstance(case_payload.get("runtime_summary"), dict)
+        else {}
+    )
+    round_digest = (
+        case_payload.get("round_digest")
+        if isinstance(case_payload.get("round_digest"), dict)
+        else {}
+    )
+    feature_graph_summary = {}
+    if isinstance(round_digest.get("domain_kernel_summary"), dict):
+        feature_graph_summary = round_digest.get("domain_kernel_summary") or {}
+    elif isinstance(round_digest.get("feature_graph_summary"), dict):
+        feature_graph_summary = round_digest.get("feature_graph_summary") or {}
+    analysis = (
+        case_payload.get("analysis") if isinstance(case_payload.get("analysis"), dict) else {}
+    )
+    token_usage = (
+        case_payload.get("token_usage")
+        if isinstance(case_payload.get("token_usage"), dict)
+        else {}
+    )
+    planner_rounds = int(runtime_summary.get("planner_rounds", 0) or 0)
+    executed_action_count = int(runtime_summary.get("executed_action_count", 0) or 0)
+    validation_complete = bool(runtime_summary.get("validation_complete"))
+    first_positive_write = _extract_first_positive_write(round_digest)
+    stale_probe_carry_count = int(runtime_summary.get("stale_probe_carry_count", 0) or 0)
+    evidence_conflict_count = int(
+        runtime_summary.get("evidence_conflict_count")
+        or runtime_summary.get("freshness_conflict_count", 0)
+        or 0
+    )
+    stale_evidence_incidents = stale_probe_carry_count + evidence_conflict_count
+    repair_packet_count = int(feature_graph_summary.get("repair_packet_count", 0) or 0)
+    latest_repair_packet_family_id = str(
+        feature_graph_summary.get("latest_repair_packet_family_id") or ""
+    ).strip()
+    repair_packet_available = repair_packet_count > 0 or bool(latest_repair_packet_family_id)
+    token_total = (
+        int(token_usage.get("total_tokens"))
+        if isinstance(token_usage.get("total_tokens"), (int, float))
+        else None
+    )
+    first_solid_round = first_positive_write.get("round") if isinstance(first_positive_write, dict) else None
+    repair_turns_after_first_write = None
+    if isinstance(first_solid_round, int):
+        repair_turns_after_first_write = max(planner_rounds - first_solid_round, 0)
+    status = str(analysis.get("status") or "").strip()
+    return {
+        "case_id": str(case_payload.get("case_id") or ""),
+        "status": status,
+        "first_solid_success": first_positive_write is not None,
+        "first_solid_round": first_solid_round,
+        "first_solid_tool": (
+            first_positive_write.get("tool_name")
+            if isinstance(first_positive_write, dict)
+            else None
+        ),
+        "requirement_complete": validation_complete,
+        "rewrite_turn_count": max(executed_action_count - 1, 0),
+        "write_turn_count": max(executed_action_count, 0),
+        "repair_turns_after_first_write": repair_turns_after_first_write,
+        "stale_evidence_incidents": stale_evidence_incidents,
+        "tokens": token_total,
+        "family_repair_packet_available": repair_packet_available,
+        "family_repair_packet_hit": repair_packet_available and status == "PASS",
+        "repair_packet_count": repair_packet_count,
+        "latest_repair_packet_family_id": latest_repair_packet_family_id or None,
+    }
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return float(numerator) / float(denominator)
+
+
+def _summarize_baseline_metrics(case_payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    case_metrics = [_build_case_baseline_metrics(item) for item in case_payloads]
+    total_cases = len(case_metrics)
+    first_solid_success_case_count = sum(
+        1 for item in case_metrics if item.get("first_solid_success") is True
+    )
+    requirement_complete_case_count = sum(
+        1 for item in case_metrics if item.get("requirement_complete") is True
+    )
+    rewrite_turn_total = sum(int(item.get("rewrite_turn_count", 0) or 0) for item in case_metrics)
+    write_turn_total = sum(int(item.get("write_turn_count", 0) or 0) for item in case_metrics)
+    repair_turn_values = [
+        float(item["repair_turns_after_first_write"])
+        for item in case_metrics
+        if isinstance(item.get("repair_turns_after_first_write"), (int, float))
+    ]
+    stale_evidence_incidents = sum(
+        int(item.get("stale_evidence_incidents", 0) or 0) for item in case_metrics
+    )
+    successful_case_tokens = [
+        int(item["tokens"])
+        for item in case_metrics
+        if item.get("status") == "PASS" and isinstance(item.get("tokens"), int)
+    ]
+    family_repair_packet_cases = [
+        item for item in case_metrics if item.get("family_repair_packet_available") is True
+    ]
+    family_repair_packet_hit_case_count = sum(
+        1 for item in family_repair_packet_cases if item.get("family_repair_packet_hit") is True
+    )
+    return {
+        "total_cases": total_cases,
+        "case_metrics": case_metrics,
+        "first_solid_success_case_count": first_solid_success_case_count,
+        "first_solid_success_rate": _safe_ratio(first_solid_success_case_count, total_cases),
+        "requirement_complete_case_count": requirement_complete_case_count,
+        "requirement_complete_rate": _safe_ratio(requirement_complete_case_count, total_cases),
+        "runtime_rewrite_turn_count": rewrite_turn_total,
+        "runtime_write_turn_count": write_turn_total,
+        "runtime_rewrite_rate": _safe_ratio(rewrite_turn_total, write_turn_total),
+        "mean_repair_turns_after_first_write": (
+            sum(repair_turn_values) / len(repair_turn_values) if repair_turn_values else 0.0
+        ),
+        "stale_evidence_incidents": stale_evidence_incidents,
+        "stale_evidence_case_count": sum(
+            1 for item in case_metrics if int(item.get("stale_evidence_incidents", 0) or 0) > 0
+        ),
+        "tokens_per_successful_case": (
+            float(sum(successful_case_tokens)) / float(len(successful_case_tokens))
+            if successful_case_tokens
+            else 0.0
+        ),
+        "family_repair_packet_case_count": len(family_repair_packet_cases),
+        "family_repair_packet_hit_case_count": family_repair_packet_hit_case_count,
+        "family_repair_packet_hit_rate": _safe_ratio(
+            family_repair_packet_hit_case_count,
+            len(family_repair_packet_cases),
+        ),
+    }
+
+
 def _build_brief_case_row(case_payload: dict[str, Any]) -> dict[str, Any]:
     evaluation = case_payload.get("evaluation") if isinstance(case_payload.get("evaluation"), dict) else {}
     runtime_summary = (
@@ -1493,6 +1760,11 @@ def _build_brief_case_row(case_payload: dict[str, Any]) -> dict[str, Any]:
         analysis.get("repeated_useless_reads")
         if isinstance(analysis.get("repeated_useless_reads"), list)
         else []
+    )
+    baseline_metrics = (
+        case_payload.get("baseline_metrics")
+        if isinstance(case_payload.get("baseline_metrics"), dict)
+        else _build_case_baseline_metrics(case_payload)
     )
     validation_call_count = int(runtime_summary.get("validation_call_count", 0) or 0)
     read_only_turn_count = int(
@@ -1572,11 +1844,33 @@ def _build_brief_case_row(case_payload: dict[str, Any]) -> dict[str, Any]:
         "kernel_patch_count": int(feature_graph_summary.get("kernel_patch_count", 0) or 0),
         "kernel_patch_kinds": list(feature_graph_summary.get("kernel_patch_kinds") or []),
         "latest_patch_repair_mode": str(feature_graph_summary.get("latest_patch_repair_mode") or ""),
+        "repair_packet_count": int(feature_graph_summary.get("repair_packet_count", 0) or 0),
+        "repair_packet_kinds": list(feature_graph_summary.get("repair_packet_kinds") or []),
+        "latest_repair_packet_family_id": str(
+            feature_graph_summary.get("latest_repair_packet_family_id") or ""
+        ),
+        "latest_repair_packet_recipe_id": str(
+            feature_graph_summary.get("latest_repair_packet_recipe_id") or ""
+        ),
         "first_bad_feature_instance": str(analysis.get("first_bad_feature_instance") or ""),
         "repair_mode_counts": dict(analysis.get("repair_mode_counts") or {}),
         "kernel_blocked_count": len(feature_graph_summary.get("blocked_node_ids") or []),
         "kernel_unsatisfied_count": len(feature_graph_summary.get("unsatisfied_feature_ids") or []),
         "runtime_mode_effective": str(runtime_summary.get("runtime_mode_effective") or ""),
+        "first_solid_success": bool(baseline_metrics.get("first_solid_success")),
+        "first_solid_round": baseline_metrics.get("first_solid_round"),
+        "repair_turns_after_first_write": baseline_metrics.get(
+            "repair_turns_after_first_write"
+        ),
+        "runtime_rewrite_turn_count": int(
+            baseline_metrics.get("rewrite_turn_count", 0) or 0
+        ),
+        "stale_evidence_incidents": int(
+            baseline_metrics.get("stale_evidence_incidents", 0) or 0
+        ),
+        "family_repair_packet_hit": bool(
+            baseline_metrics.get("family_repair_packet_hit")
+        ),
     }
 
 
@@ -1592,6 +1886,7 @@ def _write_run_diagnostics(
     runtime_error_cases: list[dict[str, Any]] = []
     end_to_end_pass_cases: list[dict[str, Any]] = []
     rows = [_build_brief_case_row(item) for item in case_payloads]
+    baseline_metrics = _summarize_baseline_metrics(case_payloads)
     recommended_fix_layers = Counter(
         str(
             (
@@ -1733,6 +2028,7 @@ def _write_run_diagnostics(
     diagnostics_payload = {
         "practice_identity": practice_identity,
         "total_cases": len(rows),
+        "baseline_metrics": baseline_metrics,
         "end_to_end_pass_cases": [row["case_id"] for row in end_to_end_pass_cases],
         "validator_disagreement_cases": [row["case_id"] for row in validator_disagreement_cases],
         "diagnostic_only_validator_cases": diagnostic_only_validator_cases,
@@ -1775,6 +2071,7 @@ def _write_run_diagnostics(
         "## Overview",
         "",
         f"- total_cases: {len(rows)}",
+        f"- baseline_metrics: {baseline_metrics}",
         f"- end_to_end_pass_cases: {[row['case_id'] for row in end_to_end_pass_cases]}",
         f"- validator_disagreement_cases: {[row['case_id'] for row in validator_disagreement_cases]}",
         f"- diagnostic_only_validator_cases: {diagnostic_only_validator_cases}",
@@ -1835,9 +2132,10 @@ def _write_brief_report(
     practice_identity: dict[str, Any],
 ) -> None:
     rows = [_build_brief_case_row(item) for item in case_payloads]
+    baseline_metrics = _summarize_baseline_metrics(case_payloads)
     failure_rows = [row for row in rows if row["status"] != "PASS"]
     tsv_lines = [
-        "case_id\tstatus\teval_passed\tvalidation_complete\tscore\ttokens\trounds\twrites\tinspections\tvalidation_calls\trepeated_validation\tread_only_turns\tprompt_chars\truntime_mode_effective\tprimary_write_mode\tfirst_write_tool\tstructured_bootstrap_rounds\tstale_probe_carry_count\tfreshness_conflict_count\tevidence_conflict_count\tforced_policy_chain\tfeature_probe_count\tprobe_code_count\tfailure_cluster\trecommended_fix_layer\tfirst_bad_turn_round\tfirst_bad_feature_instance\tlast_good_write_round\tlast_good_write_tool\tkernel_binding_count\tkernel_binding_kinds\tfeature_instance_count\tkernel_patch_count\tkernel_patch_kinds\tlatest_patch_repair_mode\tissue"
+        "case_id\tstatus\teval_passed\tvalidation_complete\tscore\ttokens\trounds\twrites\tinspections\tvalidation_calls\trepeated_validation\tread_only_turns\tprompt_chars\truntime_mode_effective\tprimary_write_mode\tfirst_write_tool\tfirst_solid_success\tfirst_solid_round\trepair_turns_after_first_write\truntime_rewrite_turn_count\tstructured_bootstrap_rounds\tstale_probe_carry_count\tstale_evidence_incidents\tfreshness_conflict_count\tevidence_conflict_count\tforced_policy_chain\tfeature_probe_count\tprobe_code_count\tfailure_cluster\trecommended_fix_layer\tfirst_bad_turn_round\tfirst_bad_feature_instance\tlast_good_write_round\tlast_good_write_tool\tkernel_binding_count\tkernel_binding_kinds\tfeature_instance_count\tkernel_patch_count\tkernel_patch_kinds\trepair_packet_count\tlatest_repair_packet_family_id\tfamily_repair_packet_hit\tlatest_patch_repair_mode\tissue"
     ]
     for row in rows:
         score_text = "" if row["score"] is None else f"{row['score']:.4f}"
@@ -1850,7 +2148,7 @@ def _write_brief_report(
         validation_text = "done" if row["validation_complete"] else "open"
         forced_policy_chain_text = ",".join(row.get("forced_policy_chain") or [])
         tsv_lines.append(
-            f"{row['case_id']}\t{row['status']}\t{eval_text}\t{validation_text}\t{score_text}\t{token_text}\t{row['rounds']}\t{row['writes']}\t{row['inspections']}\t{row.get('validation_call_count') or 0}\t{row.get('repeated_validation_count') or 0}\t{row.get('read_only_turn_count') or 0}\t{row['prompt_chars']}\t{row.get('runtime_mode_effective') or ''}\t{row.get('primary_write_mode') or ''}\t{row.get('first_write_tool') or ''}\t{row.get('structured_bootstrap_rounds') or 0}\t{row.get('stale_probe_carry_count') or 0}\t{row.get('freshness_conflict_count') or 0}\t{row.get('evidence_conflict_count') or 0}\t{forced_policy_chain_text}\t{row.get('feature_probe_count') or 0}\t{row.get('probe_code_count') or 0}\t{row.get('failure_cluster') or ''}\t{row.get('recommended_fix_layer') or ''}\t{row.get('first_bad_turn_round') or ''}\t{row.get('first_bad_feature_instance') or ''}\t{row.get('last_good_write_round') or ''}\t{row.get('last_good_write_tool') or ''}\t{row.get('kernel_binding_count') or 0}\t{','.join(row.get('kernel_binding_kinds') or [])}\t{row.get('feature_instance_count') or 0}\t{row.get('kernel_patch_count') or 0}\t{','.join(row.get('kernel_patch_kinds') or [])}\t{row.get('latest_patch_repair_mode') or ''}\t{row['issue']}"
+            f"{row['case_id']}\t{row['status']}\t{eval_text}\t{validation_text}\t{score_text}\t{token_text}\t{row['rounds']}\t{row['writes']}\t{row['inspections']}\t{row.get('validation_call_count') or 0}\t{row.get('repeated_validation_count') or 0}\t{row.get('read_only_turn_count') or 0}\t{row['prompt_chars']}\t{row.get('runtime_mode_effective') or ''}\t{row.get('primary_write_mode') or ''}\t{row.get('first_write_tool') or ''}\t{int(row.get('first_solid_success') is True)}\t{row.get('first_solid_round') or ''}\t{row.get('repair_turns_after_first_write') if row.get('repair_turns_after_first_write') is not None else ''}\t{row.get('runtime_rewrite_turn_count') or 0}\t{row.get('structured_bootstrap_rounds') or 0}\t{row.get('stale_probe_carry_count') or 0}\t{row.get('stale_evidence_incidents') or 0}\t{row.get('freshness_conflict_count') or 0}\t{row.get('evidence_conflict_count') or 0}\t{forced_policy_chain_text}\t{row.get('feature_probe_count') or 0}\t{row.get('probe_code_count') or 0}\t{row.get('failure_cluster') or ''}\t{row.get('recommended_fix_layer') or ''}\t{row.get('first_bad_turn_round') or ''}\t{row.get('first_bad_feature_instance') or ''}\t{row.get('last_good_write_round') or ''}\t{row.get('last_good_write_tool') or ''}\t{row.get('kernel_binding_count') or 0}\t{','.join(row.get('kernel_binding_kinds') or [])}\t{row.get('feature_instance_count') or 0}\t{row.get('kernel_patch_count') or 0}\t{','.join(row.get('kernel_patch_kinds') or [])}\t{row.get('repair_packet_count') or 0}\t{row.get('latest_repair_packet_family_id') or ''}\t{int(row.get('family_repair_packet_hit') is True)}\t{row.get('latest_patch_repair_mode') or ''}\t{row['issue']}"
         )
     (run_root / "brief_report.tsv").write_text(
         "\n".join(tsv_lines) + "\n",
@@ -1867,6 +2165,7 @@ def _write_brief_report(
         "## Overview",
         "",
         f"- total_cases: {len(rows)}",
+        f"- baseline_metrics: {baseline_metrics}",
         f"- end_to_end_pass_cases: {sum(1 for row in rows if row['status'] == 'PASS')}",
         f"- evaluator_pass_cases: {sum(1 for row in rows if row['eval_passed'] is True)}",
         f"- validation_complete_cases: {sum(1 for row in rows if row['validation_complete'])}",
@@ -1992,6 +2291,30 @@ def _load_case_overrides(dataset_root: Path) -> dict[str, dict[str, Any]]:
     return overrides
 
 
+def _load_case_sets(manifest_path: Path) -> dict[str, list[str]]:
+    if not manifest_path.exists():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"failed to decode case-set manifest: {manifest_path}") from exc
+    raw_case_sets = payload.get("case_sets")
+    if not isinstance(raw_case_sets, dict):
+        return {}
+    case_sets: dict[str, list[str]] = {}
+    for name, raw_ids in raw_case_sets.items():
+        if not isinstance(name, str) or not isinstance(raw_ids, list):
+            continue
+        case_ids = [
+            str(case_id).strip()
+            for case_id in raw_ids
+            if isinstance(case_id, str) and str(case_id).strip()
+        ]
+        if case_ids:
+            case_sets[name.strip()] = case_ids
+    return case_sets
+
+
 def _pick_prompt(
     row: dict[str, str],
     preferred_field: str,
@@ -2064,9 +2387,20 @@ def _select_cases(
     case_ids_raw: str,
     levels_raw: str,
     limit: int,
+    case_set_name: str = "",
+    case_sets: dict[str, list[str]] | None = None,
 ) -> list[BenchmarkCase]:
     if case_ids_raw.strip():
         case_ids = [item.strip() for item in case_ids_raw.split(",") if item.strip()]
+    elif case_set_name.strip():
+        selected_case_ids = (case_sets or {}).get(case_set_name.strip())
+        if not isinstance(selected_case_ids, list) or not selected_case_ids:
+            raise KeyError(f"unknown case set: {case_set_name.strip()}")
+        case_ids = selected_case_ids
+    else:
+        case_ids = []
+
+    if case_ids:
         missing: list[str] = []
         selected: list[BenchmarkCase] = []
         for case_id in case_ids:
@@ -2143,11 +2477,14 @@ def main() -> int:
         raise FileNotFoundError(f"runner script missing: {runner_script}")
 
     case_map = _load_case_map(dataset_root=dataset_root, preferred_field=args.prompt_field.strip())
+    case_sets = _load_case_sets(_CASE_SET_MANIFEST_PATH)
     selected = _select_cases(
         case_map=case_map,
         case_ids_raw=args.cases,
         levels_raw=args.levels,
         limit=max(0, args.limit),
+        case_set_name=args.case_set,
+        case_sets=case_sets,
     )
     if not selected:
         raise ValueError("no benchmark case selected")
@@ -2165,6 +2502,12 @@ def main() -> int:
             "dataset_root": str(dataset_root),
             "selected_case_count": len(selected),
             "selected_cases": [asdict(item) for item in selected],
+            "case_set_name": args.case_set.strip() or None,
+            "case_set_manifest": (
+                str(_CASE_SET_MANIFEST_PATH.resolve())
+                if _CASE_SET_MANIFEST_PATH.exists()
+                else None
+            ),
             "provider_override": args.reasoning_provider or None,
             "model_override": args.reasoning_model or None,
             "practice_identity": practice_identity,
@@ -2354,6 +2697,19 @@ def main() -> int:
             "validator_evaluator_disagreement": bool(
                 analysis.get("validator_evaluator_disagreement")
             ),
+            "baseline_metrics": _build_case_baseline_metrics(
+                {
+                    "case_id": case.case_id,
+                    "analysis": analysis,
+                    "runtime_summary": runtime_summary,
+                    "token_usage": (
+                        runtime_summary.get("token_usage")
+                        if isinstance(runtime_summary.get("token_usage"), dict)
+                        else None
+                    ),
+                    "round_digest": round_digest,
+                }
+            ),
             "llm_judge_extension": {
                 "enabled": False,
                 "status": "not_requested",
@@ -2441,11 +2797,13 @@ def main() -> int:
             token_case_count += 1
         if item.get("used_canonical_override") is True:
             canonical_override_case_count += 1
+    baseline_metrics = _summarize_baseline_metrics(aggregate_cases)
     aggregate_summary = {
         "run_id": args.run_id,
         "run_root": str(run_root),
         "practice_identity": practice_identity,
         "dataset_root": str(dataset_root),
+        "case_set_name": args.case_set.strip() or None,
         "total_cases": len(aggregate_cases),
         "successful_case_count": success_count,
         "failed_case_count": len(aggregate_cases) - success_count,
@@ -2498,6 +2856,7 @@ def main() -> int:
             "total_tokens": token_total_total,
             "cases_with_usage": token_case_count,
         },
+        "baseline_metrics": baseline_metrics,
         "cases": aggregate_cases,
         "llm_judge_extension": {
             "enabled": False,

@@ -1,0 +1,69 @@
+{
+  "metadata": {
+    "date": "2026-04-15",
+    "owner": "codex",
+    "theme": "runtime_v2_canonical_baseline_and_canary_convergence",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "tighten_post_write_validation_closure",
+      "title": "Force successful code writes with fresh insufficient-evidence validation back into semantic refresh instead of generic read drift",
+      "status": "done",
+      "notes": "Updated src/sub_agent_runtime/agent_loop_v2.py and added policy tests for fresh insufficient-evidence and repeated validation-without-new-evidence closure."
+    },
+    {
+      "id": "zero_runner_exception_on_validation_cancel",
+      "title": "Convert MCP validate_requirement cancellation into structured runtime failure rather than a runner-killing exception",
+      "status": "done",
+      "notes": "Updated src/sandbox/mcp_runner.py so validate_requirement catches CancelledError and close-path failures no longer mask the original transport cancellation. Added tool_runtime batch exception collection so L1_148 moved from RUN_ERROR/runner_exception to INCOMPLETE/read_stall_gap in benchmark/runs/20260415_183000."
+    },
+    {
+      "id": "formalize_canary_case_set",
+      "title": "Expose a fixed canary benchmark slice through benchmark runner config instead of ad-hoc manual case lists",
+      "status": "done",
+      "notes": "Added benchmark/canary_case_sets.json and --case-set support in benchmark/run_prompt_benchmark.py."
+    },
+    {
+      "id": "baseline_metrics_from_existing_artifacts",
+      "title": "Compute first-solid, rewrite, stale-evidence, token, and repair-packet metrics directly from existing benchmark artifacts",
+      "status": "done",
+      "notes": "Added case-level and run-level baseline metrics to summary.json, brief_report, and run_diagnostics without creating a second reporting pipeline."
+    },
+    {
+      "id": "document_canonical_baseline",
+      "title": "Freeze the current V2 canonical lane, diagnostics-only legacy surface, and canary baseline in the doc system",
+      "status": "done",
+      "notes": "Added docs/cad_iteration/CANONICAL_BASELINE.md and updated benchmark/README.md plus docs/work_logs/2026-04-15.md."
+    },
+    {
+      "id": "canary_live_rerun",
+      "title": "Run the fixed canary suite end-to-end on the current Build123d runtime and inspect whether RUN_ERROR has reached zero",
+      "status": "in_progress",
+      "notes": "Targeted live reruns now cover L1_122, L1_148, L1_157, and L1_159. L1_122 passes in benchmark/runs/20260415_205500. L1_157 and L1_159 both pass in benchmark/runs/20260415_223500 after regular-polygon lint + clause interpretation reuse for frame/rectangle/topology-depth evidence. L1_148 now also passes in benchmark/runs/20260416_001500 after multi-plane additive plane-context clause interpretation reuse. The fresh canary rerun under benchmark/runs/20260416_002500 finished at 6/8 PASS: L1_122, L1_148, L1_157, L1_159, L2_88, and L2_130 passed; remaining hotspots are L2_149 and L2_172. On current HEAD, benchmark/runs/20260415_114542 already pulled L1_20 and L1_218 to PASS, benchmark/runs/20260415_120527 pulled L1_20 back to PASS while exposing L2_149 as validator/read-stall closure debt after first solid, and benchmark/runs/20260415_122001 is now rerunning L2_149,L1_20 after the new path-sweep clause interpretation closure."
+    },
+    {
+      "id": "l1_validator_read_stall_family",
+      "title": "Reduce validator mismatch and read-stall families on L1_122, L1_157, and L1_159 using the canary baseline",
+      "status": "in_progress",
+      "notes": "The policy closure is tighter now. L1_148 moved from runner_exception to INCOMPLETE/read_stall_gap in benchmark/runs/20260415_183000 and stayed INCOMPLETE/read_stall_gap with validation_call_count reduced to 3 in benchmark/runs/20260415_195500 after the direct validate_requirement judge lane change. It now passes in benchmark/runs/20260416_001500 after adding multi-plane additive plane-context clause interpretation for local sketch/extrude clauses and orthogonal-bar semantics. L1_122 was then pulled from INCOMPLETE/read_stall_gap to PASS in benchmark/runs/20260415_205500 by fixing validator timeout budget mismatch, full-span channel family inference, and clause interpretation reuse for bbox/Z/notch-dimension evidence. L1_157 now passes in benchmark/runs/20260415_223500 after regular-polygon frame clause reuse plus preflight lint for RegularPolygon side_count aliases. L1_159 now passes in benchmark/runs/20260415_223500 after rectangle bbox/profile reuse and topology-anchored cylindrical depth clause interpretation."
+    },
+    {
+      "id": "l2_half_shell_and_countersink",
+      "title": "Continue improving half-shell directional-hole and explicit-anchor countersink families after the runtime control-flow fixes land",
+      "status": "in_progress",
+      "notes": "L2_130 and L2_172 remain the main high-value geometry families for the next phase of convergence. L2_130 now passes in one round under benchmark/runs/20260416_002500, confirming that the half-shell/directional-hole family is materially healthier. L2_172 still fails, but the latest evidence shows the main blocker is no longer hole positioning; feature_hole_position_alignment / feature_hole_exact_center_set / feature_local_anchor_alignment already pass, while feature_countersink still rejects manual countersink geometry because snapshot-level countersink recognition stays false even with cone-like faces present. Cone(lower_radius=/upper_radius=) alias guesses are now rejected by preflight lint as invalid_build123d_keyword.cone_radius_alias."
+    },
+    {
+      "id": "path_sweep_family_governance",
+      "title": "Turn recurring Build123d path-sweep API guess failures into explicit lint and recipe assets instead of repeated runtime trial-and-error",
+      "status": "in_progress",
+      "notes": "Canary case L2_149 exposed a stack of path-sweep contract errors. The runtime now rejects CenterArc arc_angle aliases, missing CenterArc start_angle, sweep(section=...) aliases, sweep(path=path_builder.wire) method references, sweep(profile_builder.face, ...) method references, builder method reference assignments such as path_wire = path_builder.wire / profile_face = profile_builder.face, unsupported `Solid.sweep(...)` keyword guesses such as `path_wire=` / `profile_plane=`, same-sketch annular-profile face splitting via `profile.faces()[1]`, and explicit-radius path rails that drift into higher-risk `TangentArc(...)` / `JernArc(...)` helpers instead of a directly specified `CenterArc(...)` lane. Added repair recipes build123d_path_sweep_contract and build123d_builder_method_reference_contract. This round also fixed `_has_probe_turn_since_failed_write(...)`, added `code_repair_last_round_after_successful_probe`, upgraded execute_build123d_probe path-sweep summaries so rail-only probes with connected segment evidence can reopen code repair instead of wasting the last round on read-only refresh, corrected the skill/recipe default lane to prefer `sweep(profile.sketch, path=path_wire)` for annular same-sketch sections before escalating to separate outer/inner sweeps, and added validator-side clause interpretation reuse for path sketch / tangent arc / tangent line / endpoint frame / concentric profile clauses plus topology-backed inner-radius fallback. benchmark/runs/20260415_120527 captured the first-solid-but-not-complete state; benchmark/runs/20260415_122001 then moved L2_149 to PASS with validation_complete=true and L1_20 also to PASS, confirming that the validator closure work is now paying off on live cases."
+    }
+  ]
+}

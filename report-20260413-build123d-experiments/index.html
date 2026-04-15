@@ -3,278 +3,701 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Build123d 迁移实验汇报</title>
+    <title>Build123d 迁移进展与证据汇报</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header class="hero" id="hero">
-      <div class="hero__eyebrow">AiCAD Runtime / 2026-04-13</div>
+      <div class="hero__eyebrow">AiCAD Runtime / Build123d 迁移进展 / 2026-04-15</div>
       <div class="hero__grid">
         <div>
-          <h1>Build123d 迁移已经有足够证据支撑一次清晰汇报。</h1>
+          <h1>这轮 Build123d 迁移，已经从“换库实验”推进到“运行时契约重建”。</h1>
           <p class="hero__lede">
-            今天的目标不再是“不惜一切代价把迁移全部做完”，而是用真实 run 和一组小而清晰的
-            演示案例，说明为什么对这个仓库来说，Build123d 比旧的 CadQuery 契约更适合作为运行时建模表面。
+            这份页面把最近三天的工作收成一条可以独立阅读的主线：先把底层建模表面从
+            CadQuery 风格契约切到 Build123d 风格契约，再把提示、技能、写前校验、验证收口、
+            benchmark 报表和演示材料全部接到同一套几何语义上。
           </p>
+          <div class="summary-band">
+            <p>
+              核心判断只有一句话：这次改动的意义，不是把 `execute_cadquery`
+              机械改名成 `execute_build123d`，而是把原来依赖隐含 workplane 状态和脆弱布尔顺序的建模过程，
+              改造成一套运行时可以看懂、可以拦截、可以修复、可以验证、可以复盘的显式契约。
+            </p>
+          </div>
         </div>
         <aside class="metric-stack">
           <div class="metric-card">
-            <span class="metric-card__label">最佳成功样例</span>
+            <span class="metric-card__label">一轮成功样例</span>
             <strong>L2_172</strong>
-            <span>1 轮 / 完成验证 / 基准评测通过</span>
+            <span>1 轮完成写模，`execute_build123d` 首写命中，benchmark 通过</span>
           </div>
           <div class="metric-card">
-            <span class="metric-card__label">Builder 修复样例</span>
+            <span class="metric-card__label">修复闭环样例</span>
             <strong>L1_218</strong>
-            <span>5 轮 / 通过 Build123d 契约修复环形槽</span>
+            <span>5 轮收敛，annular groove 从错误写法收束到明确 repair lane</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-card__label">共享 family 提升</span>
+            <strong>L2_88</strong>
+            <span>fresh run 从 8 轮失败拉到 1 轮满分，证明规则能提升整类问题</span>
           </div>
           <div class="metric-card metric-card--warn">
-            <span class="metric-card__label">仍然开放的缺口</span>
-            <strong>外部 enclosure 案例</strong>
-            <span>失败已结构化，不再是无声的 sandbox 混乱</span>
+            <span class="metric-card__label">仍未收口的缺口</span>
+            <strong>L2_130 / enclosure</strong>
+            <span>主要矛盾已经从 API 猜错收敛到 half-shell 坐标和局部孔位契约</span>
           </div>
         </aside>
       </div>
       <nav class="chapter-nav">
-        <a href="#architecture">架构价值</a>
-        <a href="#demos">演示案例</a>
-        <a href="#negative-case">负例</a>
-        <a href="#success-case">正例</a>
-        <a href="#artifact-chain">工件链路</a>
-        <a href="#current-judgment">当前判断</a>
-        <a href="#next-plan">下一步</a>
+        <a href="#summary">总体结论</a>
+        <a href="#changes">这次改了什么</a>
+        <a href="#flow">流程里如何起作用</a>
+        <a href="#cases">代表性目录</a>
+        <a href="#gallery">配图证据</a>
+        <a href="#demos">演示入口</a>
+        <a href="#artifacts">证据链路</a>
+        <a href="#judgment">当前判断</a>
       </nav>
     </header>
 
     <main>
-      <section class="chapter" id="architecture" data-reveal>
+      <section class="chapter" id="summary" data-reveal>
         <div class="chapter__head">
           <span>01</span>
-          <h2>为什么 Build123d 对这个运行时更有帮助</h2>
+          <div>
+            <h2>先给总体结论</h2>
+            <p class="chapter__desc">
+              这页最重要的任务，是把“改了什么”“为什么要这样改”“改动是怎么在流程里起作用的”“到哪里看证据”讲清楚。
+            </p>
+          </div>
         </div>
-        <div class="card-grid card-grid--three">
-          <article class="card">
-            <h3>局部坐标系更显式</h3>
+        <div class="narrative-grid">
+          <article class="narrative-card">
+            <h3>结论一：这不是语法替换，而是契约替换</h3>
             <p>
-              `Plane`、`Locations` 和居中宿主几何让 requirement 中的局部坐标
-              更容易映射成稳定的模型空间 placement。
-            </p>
-            <p class="card__note">
-              这正是让 `benchmark/runs/20260413_102600/L2_172` 一轮收敛的关键契约。
+              保留下来的，是原有迭代运行时、benchmark 入口、artifact 布局和
+              `planner → write tool → validator → repair` 主循环。真正被替换的，是底层建模契约：
+              从旧的 CadQuery 风格链式状态，切到 Build123d 的显式 `Plane / BuildPart / Locations / Mode.*`
+              语义。
             </p>
           </article>
-          <article class="card">
-            <h3>Builder 原生布尔更干净</h3>
+          <article class="narrative-card">
+            <h3>结论二：改动已经开始产生结构化收益</h3>
             <p>
-              `Mode.SUBTRACT` 和 `Mode.INTERSECT` 可以把 half-shell、annular band 这类逻辑
-              放在一个可读的构建器内完成，而不是依赖脆弱的链式状态。
-            </p>
-            <p class="card__note">
-              这正是 `L1_218` 的修复路径和 `L2_130` 半壳 contract 收紧的基础。
+              收益不是抽象口号，而是几个可以直接打开目录验证的结果：`L2_172`
+              证明局部坐标阵列可以一轮写成；`L1_218` 证明运行时能把错误路径拉回共享修复面；
+              `L2_88` 证明一次通用规则可以解锁整个 revolve family；`L1_122`
+              证明 validator/read-stall 问题已经能被收回单轮闭环。
             </p>
           </article>
-          <article class="card">
-            <h3>安全的暂存能力</h3>
+          <article class="narrative-card narrative-card--warn">
+            <h3>结论三：边界同样明确</h3>
             <p>
-              `Mode.PRIVATE` 让我们可以在活动中的构建器内先暂存 cavity 或 lip solid，
-              而不会在时机未成熟时提前污染 host。
+              Build123d 还没有在所有 benchmark 上全面超过 CadQuery。当前仍有两个明显缺口：
+              `L2_130` 代表的 half-shell + directional hole 家族，以及外部 enclosure
+              prompt 所代表的 body/lid/cavity/lip 组合推理。好消息是，问题已经越来越少表现为“代码根本跑不通”，
+              而是收敛为更具体的几何和验证契约问题。
             </p>
-            <p class="card__note">
-              这对 shelled box、盖子，以及带 opening-face 语义的 feature family 都很重要。
+          </article>
+        </div>
+        <div class="note-band">
+          <p>
+            如果只需要一句管理层摘要，可以直接使用这句话：
+            <strong>
+              Build123d 迁移已经证明了它对运行时工程的价值，关键优势是让几何行为更显式、错误更可拦截、
+              修复更可复用、证据更可复盘。
+            </strong>
+          </p>
+        </div>
+      </section>
+
+      <section class="chapter" id="changes" data-reveal>
+        <div class="chapter__head">
+          <span>02</span>
+          <div>
+            <h2>这次到底改了什么</h2>
+            <p class="chapter__desc">
+              用三天时间把散点工作收成同一条主线，避免“今天补一点 prompt，明天补一点 case”的碎片化推进。
             </p>
+          </div>
+        </div>
+
+        <div class="timeline-grid">
+          <article class="timeline-card">
+            <div class="timeline-card__date">4/13</div>
+            <h3>先把迁移说明面和第一批 Build123d 契约面搭起来</h3>
+            <ul>
+              <li>建立 `demos/build123d_foundations/`，把局部坐标、半壳体、enclosure body/lid 三类问题拆成最小演示。</li>
+              <li>把未知 prompt `test_runs/20260413_094502` 转成结构化失败，而不是黑盒 sandbox error。</li>
+              <li>拿 `L2_172` 和 `L1_218` 两个真实 run 作为正证据，分别展示一轮成功和健康修复闭环。</li>
+            </ul>
+            <p class="timeline-card__path">
+              关键目录：<code>benchmark/runs/20260413_102600/L2_172</code>、
+              <code>benchmark/runs/20260413_141000/L1_218</code>、
+              <code>test_runs/20260413_094502</code>
+            </p>
+          </article>
+          <article class="timeline-card">
+            <div class="timeline-card__date">4/14</div>
+            <h3>把“值不值得继续投”这件事用同题 benchmark 讲清楚</h3>
+            <ul>
+              <li>完成 Build123d / CadQuery fresh run 对照，明确承认当前均值尚未领先。</li>
+              <li>围绕 revolve / BuildLine / countersink 等共享 family 继续补产品级规则，而不是补单 case。</li>
+              <li>用 `L2_88` 的前后对照证明：一条通用规则可以把一个 family 从 fresh run 失败拉到 1 轮满分。</li>
+            </ul>
+            <p class="timeline-card__path">
+              关键目录：<code>benchmark/runs/20260414_091747</code>、
+              <code>benchmark/runs/20260414_130005/L2_88</code>、
+              <code>report-20260414-build123d-vs-cadquery-benchmark/</code>
+            </p>
+          </article>
+          <article class="timeline-card">
+            <div class="timeline-card__date">4/15</div>
+            <h3>把 validator closure 和 canary 基线接进主路径</h3>
+            <ul>
+              <li>新增固定 canary case set 和 baseline 指标，后续优化终于可以按同一把尺子比较。</li>
+              <li>把 `validate_requirement` 的超时、取消、重复验证空转收紧回结构化 closure lane。</li>
+              <li>用 `L1_122` 证明 read-stall / insufficient-evidence family 已经能被拉回一轮闭环。</li>
+            </ul>
+            <p class="timeline-card__path">
+              关键目录：<code>benchmark/runs/20260415_205500/L1_122</code>、
+              <code>docs/work_logs/2026-04-15.md</code>、
+              <code>docs/cad_iteration/CANONICAL_BASELINE.md</code>
+            </p>
+          </article>
+        </div>
+
+        <div class="file-grid">
+          <article class="file-card">
+            <h3><code>src/sub_agent/prompts/codegen.md</code></h3>
+            <p>把 Build123d 合法写法、builder 归属、局部平面和孔位约束前置到首轮写模提示里。</p>
+          </article>
+          <article class="file-card">
+            <h3><code>src/sub_agent_runtime/skill_pack.py</code></h3>
+            <p>把“什么是更安全的 first-pass skeleton”“什么时候该走哪条 repair lane”沉淀成可复用 guidance。</p>
+          </article>
+          <article class="file-card">
+            <h3><code>src/sub_agent_runtime/tool_runtime.py</code></h3>
+            <p>把常见错法前置成确定性的写前校验，让错误先以结构化规则出现，再进入修复，而不是先炸 sandbox。</p>
+          </article>
+          <article class="file-card">
+            <h3><code>src/sub_agent_runtime/agent_loop_v2.py</code></h3>
+            <p>控制写后关闭策略，避免 repeated validation、无意义 probe 和 read-stall 把回合预算消耗掉。</p>
+          </article>
+          <article class="file-card">
+            <h3><code>docs/cad_iteration/*.md</code></h3>
+            <p>把已经生效的 runtime 约束写成公开文档，确保 benchmark、代码和说明页使用同一套口径。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="chapter" id="flow" data-reveal>
+        <div class="chapter__head">
+          <span>03</span>
+          <div>
+            <h2>这些改动在流程里如何起作用</h2>
+            <p class="chapter__desc">
+              下面这五步，是 Build123d 迁移真正影响运行时行为的地方。每一步都对应代码路径和真实 case。
+            </p>
+          </div>
+        </div>
+
+        <div class="flow-grid">
+          <article class="flow-card">
+            <span class="flow-card__index">1</span>
+            <h3>首轮写模先被约束成 Build123d 契约</h3>
+            <p>
+              通过 <code>src/sub_agent/prompts/codegen.md</code> 和
+              <code>src/sub_agent_runtime/skill_pack.py</code>，
+              首轮不再默认沿用旧的 workplane 链式心智，而是优先使用 `BuildPart`、`BuildSketch`、`Plane`、`Locations`
+              和 `Mode.*` 这些显式对象。
+            </p>
+            <p class="flow-card__evidence">
+              看点：<code>benchmark/runs/20260413_102600/L2_172/plans/round_01_response.json</code>
+              的 `decision_summary` 已经明确写出“先做 corner-frame 到 centered host frame 的映射”。
+            </p>
+          </article>
+          <article class="flow-card">
+            <span class="flow-card__index">2</span>
+            <h3>写前校验先拦住已知错法</h3>
+            <p>
+              当模型仍然会猜错 Build123d API、helper、关键字或 builder 上下文时，
+              <code>src/sub_agent_runtime/tool_runtime.py</code> 会在真正执行前拦下这些错误，
+              返回明确的 `rule_id`、`repair_hint` 和推荐 repair lane。
+            </p>
+            <p class="flow-card__evidence">
+              看点：<code>test_runs/20260413_094502/actions/round_01_execute_build123d.json</code>
+              里同时保留了 `failure_kind`、`lint_hits` 和 `repair_recipe`。
+            </p>
+          </article>
+          <article class="flow-card">
+            <span class="flow-card__index">3</span>
+            <h3>写成功以后，validator 和 feature probe 决定是否继续修</h3>
+            <p>
+              以前的主要问题是“写了一个几何体，但不知道自己做没做对”；现在写成功后会立刻进入
+              `validate_requirement`，必要时再进入 `query_feature_probes`，把“哪一类 family 还没满足”明确出来。
+            </p>
+            <p class="flow-card__evidence">
+              看点：<code>benchmark/runs/20260413_141000/L1_218/queries/round_04_query_feature_probes.json</code>
+              直接把问题缩小到 `annular_groove` 家族。
+            </p>
+          </article>
+          <article class="flow-card">
+            <span class="flow-card__index">4</span>
+            <h3>修复不再只是“再写一遍”，而是沿着 family repair lane 收口</h3>
+            <p>
+              当失败已经被缩小到具体 family，运行时会退出泛泛的重写，改走更窄的 repair lane。
+              这就是为什么 `L1_218` 的后半程开始显式改用 annular-band subtraction，而不是继续盲猜 revolve 写法。
+            </p>
+            <p class="flow-card__evidence">
+              看点：<code>benchmark/runs/20260413_141000/L1_218/plans/round_05_response.json</code>
+              的 `decision_summary`。
+            </p>
+          </article>
+          <article class="flow-card">
+            <span class="flow-card__index">5</span>
+            <h3>最后把结果变成 benchmark 和汇报都能复用的证据</h3>
+            <p>
+              成功与失败都会落成完整的 run 目录：`prompts/`、`plans/`、`actions/`、`queries/`、`trace/`、
+              `outputs/`、`evaluation/`。4/15 之后，这些目录还会同时输出统一 baseline 指标，
+              方便做 canary 回归。
+            </p>
+            <p class="flow-card__evidence">
+              看点：<code>benchmark/runs/20260415_205500/brief_report.md</code> 和
+              <code>run_diagnostics.md</code> 里的 `baseline_metrics`。
+            </p>
+          </article>
+        </div>
+
+        <div class="comparison-board">
+          <div class="comparison-row comparison-row--head">
+            <span>旧问题</span>
+            <span>Build123d 迁移后的处理方式</span>
+            <span>对应证据</span>
+          </div>
+          <div class="comparison-row">
+            <span>局部坐标和 host 坐标混在一起</span>
+            <span>显式使用 `Plane`、`Locations` 和中心坐标映射</span>
+            <span><code>L2_172/plans/round_01_response.json</code></span>
+          </div>
+          <div class="comparison-row">
+            <span>错误 helper 直到执行时才暴露</span>
+            <span>写前校验直接给出 `rule_id` 和 repair recipe</span>
+            <span><code>test_runs/20260413_094502/actions/round_01_execute_build123d.json</code></span>
+          </div>
+          <div class="comparison-row">
+            <span>validator 知道不完整，但说不清缺哪里</span>
+            <span>feature probe 缩小到具体 family，再进入 targeted repair</span>
+            <span><code>L1_218/queries/round_04_query_feature_probes.json</code></span>
+          </div>
+          <div class="comparison-row">
+            <span>read-stall 和 repeated validation 空转</span>
+            <span>写后 closure 收口，canary 指标可以直接观察改善</span>
+            <span><code>benchmark/runs/20260415_205500/brief_report.md</code></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="chapter" id="cases" data-reveal>
+        <div class="chapter__head">
+          <span>04</span>
+          <div>
+            <h2>五个代表性目录，分别证明五件事</h2>
+            <p class="chapter__desc">
+              这部分是整页最重要的证据面。每张卡只聚焦一个问题，并把最值得打开的文件直接写出来。
+            </p>
+          </div>
+        </div>
+
+        <div class="case-list">
+          <article class="case-card case-card--warn">
+            <div class="case-card__header">
+              <span class="case-card__tag">负例 / 未知 prompt</span>
+              <h3><code>test_runs/20260413_094502</code></h3>
+            </div>
+            <p>
+              这个目录证明的不是“外部 enclosure 已经做完”，而是“未知 prompt 的失败已经开始被结构化”。
+              首轮没有消失在黑盒报错里，而是被明确归类成 Build123d 写前校验失败，并返回可复用的修复 recipe。
+            </p>
+            <ul class="evidence-list">
+              <li><strong>先看：</strong><code>actions/round_01_execute_build123d.json</code></li>
+              <li><strong>关键信息：</strong><code>failure_kind=execute_build123d_api_lint_failure</code></li>
+              <li><strong>具体规则：</strong><code>legacy_api.countersink_workplane_method</code></li>
+              <li><strong>修复配方：</strong><code>explicit_anchor_hole_countersink_array_safe_recipe</code></li>
+              <li><strong>过程时间线：</strong><code>trace/events.jsonl</code></li>
+            </ul>
+            <p class="case-card__judgment">
+              这说明 Build123d 迁移已经不只是“能不能建出几何”，而是开始具备“遇到未知 prompt 也能留下有教学价值的失败面”。
+            </p>
+          </article>
+
+          <article class="case-card">
+            <div class="case-card__header">
+              <span class="case-card__tag">正例 / 一轮成功</span>
+              <h3><code>benchmark/runs/20260413_102600/L2_172</code></h3>
+            </div>
+            <p>
+              这个目录证明 Build123d 对局部坐标阵列的帮助已经能直接落到真实 case：
+              板件、四个沉头孔、角点坐标到中心坐标的映射，都在一轮内完成。
+            </p>
+            <ul class="evidence-list">
+              <li><strong>先看：</strong><code>benchmark/runs/20260413_102600/brief_report.md</code> 中 `L2_172 | PASS | rounds=1 | score=0.8565`</li>
+              <li><strong>决策摘要：</strong><code>plans/round_01_response.json</code> 写明“把 corner-based 坐标映射到 centered host frame”</li>
+              <li><strong>几何结果：</strong><code>actions/round_01_execute_build123d.json</code> 记录了 <code>solids=1</code>、<code>bbox=[100,60,8]</code></li>
+              <li><strong>最终判定：</strong><code>benchmark/runs/20260413_102600/run_diagnostics.md</code> 显示 `end_to_end_pass_cases=['L2_172']`</li>
+            </ul>
+            <p class="case-card__judgment">
+              这张卡证明的是：当问题本质是显式坐标变换时，Build123d 的 `Plane + Locations`
+              表面已经足够强，运行时可以在首轮把它说清楚、写出来并落成结果。
+            </p>
+          </article>
+
+          <article class="case-card">
+            <div class="case-card__header">
+              <span class="case-card__tag">正例 / 健康修复闭环</span>
+              <h3><code>benchmark/runs/20260413_141000/L1_218</code></h3>
+            </div>
+            <p>
+              这个目录证明 Build123d 迁移的价值不只是一轮命中率。真正更重要的是：系统能把错误路径收束到共享 family，
+              再从 probe 结果回到更窄的修复 lane。
+            </p>
+            <ul class="evidence-list">
+              <li><strong>先看：</strong><code>benchmark/runs/20260413_141000/brief_report.md</code> 中 `PASS | rounds=5 | writes=4 | probes=1`</li>
+              <li><strong>问题缩小：</strong><code>queries/round_04_query_feature_probes.json</code> 里 `annular_groove: 0/4 relevant checks currently pass`</li>
+              <li><strong>修复决策：</strong><code>plans/round_05_response.json</code> 明确改走 annular-band subtraction</li>
+              <li><strong>最终关闭：</strong><code>queries/round_05_validate_requirement_post_write.json</code> 返回 `Requirement validation passed`</li>
+              <li><strong>回放入口：</strong><code>trace/round_digest.md</code></li>
+            </ul>
+            <p class="case-card__judgment">
+              这张卡证明的是：Build123d 迁移让“先查明是哪个 family 没满足，再走更窄的修复面”成为可能，而不是在多轮里重复重写。
+            </p>
+          </article>
+
+          <article class="case-card">
+            <div class="case-card__header">
+              <span class="case-card__tag">关键证据 / family 提升</span>
+              <h3><code>benchmark/runs/20260414_130005/L2_88</code></h3>
+            </div>
+            <p>
+              这个目录是“Build123d 远期天花板更高”最硬的一条证据链。因为它证明：不是改 prompt 运气变好，
+              而是明确补了通用规则后，同一个 revolve family 的 fresh run 直接从失败变成一轮满分。
+            </p>
+            <ul class="evidence-list">
+              <li><strong>修复前：</strong><code>benchmark/runs/20260414_093041/L2_88</code> 8 轮未收敛，卡在 `revolve` / `BuildLine` 契约错误</li>
+              <li><strong>修复后：</strong><code>benchmark/runs/20260414_130005/brief_report.md</code> 中 `PASS | rounds=1 | score=1.0000 | tokens=4462`</li>
+              <li><strong>决策摘要：</strong><code>plans/round_01_response.json</code> 明确采用 explicit revolve profile recipe</li>
+              <li><strong>验证结果：</strong><code>queries/round_01_validate_requirement_post_write.json</code> 返回 `Requirement validation passed`</li>
+              <li><strong>几何评价：</strong><code>evaluation/benchmark_eval.json</code> 记录 `difference_notes=[\"STEP geometric signatures are closely aligned\"]`</li>
+            </ul>
+            <p class="case-card__judgment">
+              这张卡证明的是：一条写进产品代码的共享规则，已经可以改善整个 family，而不是只修一个锚点 case。
+            </p>
+          </article>
+
+          <article class="case-card">
+            <div class="case-card__header">
+              <span class="case-card__tag">最新进展 / closure 收口</span>
+              <h3><code>benchmark/runs/20260415_205500/L1_122</code></h3>
+            </div>
+            <p>
+              这个目录用来说明最近两天最现实的问题：写出几何以后，系统能不能稳定判断自己已经做对，
+              而不是卡在 repeated validation、insufficient evidence 或 read-stall。
+            </p>
+            <ul class="evidence-list">
+              <li><strong>先看：</strong><code>benchmark/runs/20260415_205500/brief_report.md</code> 里的 `baseline_metrics`</li>
+              <li><strong>关键数值：</strong><code>first_solid_success_rate=1.0</code>、<code>requirement_complete_rate=1.0</code>、<code>tokens_per_successful_case=4888.0</code></li>
+              <li><strong>单轮完成：</strong><code>trace/round_digest.md</code> 显示 `stop_reason=post_write_validated_complete`、`planner_rounds=1`</li>
+              <li><strong>决策摘要：</strong><code>plans/round_01_response.json</code> 明确识别为 top-face slot / U-shaped channel</li>
+              <li><strong>验证结果：</strong><code>queries/round_01_validate_requirement_post_write.json</code> 返回 `Requirement validation passed`</li>
+            </ul>
+            <p class="case-card__judgment">
+              这张卡证明的是：Build123d 项目现在不仅能生成几何，也开始能把“做对了”稳定地收口成一轮结束。
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="chapter" id="gallery" data-reveal>
+        <div class="chapter__head">
+          <span>05</span>
+          <div>
+            <h2>配图证据：看图更容易理解这些改动的作用</h2>
+            <p class="chapter__desc">
+              这部分不做抽象概念说明，只展示“当前已经做对的样子”和“当前还没收口的差异长什么样”。
+            </p>
+          </div>
+        </div>
+
+        <div class="figure-grid">
+          <article class="figure-card">
+            <div>
+              <h3>L2_172：局部坐标阵列已经能一次写准</h3>
+              <p>
+                左图是当前 Build123d 生成结果，右图是 benchmark 标准答案。这个 case 最值得讲的不是“孔开出来了”，
+                而是“局部坐标映射已经进入了首轮决策逻辑”。
+              </p>
+              <p class="figure-card__note">
+                关联目录：<code>benchmark/runs/20260413_102600/L2_172</code>
+              </p>
+            </div>
+            <div class="media-pair">
+              <figure>
+                <img src="assets/l2_172_generated_iso.png" alt="L2_172 当前生成结果" />
+                <figcaption>当前 Build123d 结果</figcaption>
+              </figure>
+              <figure>
+                <img src="assets/l2_172_ground_truth_iso.png" alt="L2_172 标准答案" />
+                <figcaption>Benchmark 标准答案</figcaption>
+              </figure>
+            </div>
+          </article>
+
+          <article class="figure-card">
+            <div>
+              <h3>L1_218：修复后的 groove 已经贴回目标几何</h3>
+              <p>
+                这一组图最适合说明“为什么健康的 repair lane 比一次侥幸写对更重要”。
+                运行时先把 family 缩到 annular groove，再把写法收束到更稳定的 annular-band subtraction。
+              </p>
+              <p class="figure-card__note">
+                关联目录：<code>benchmark/runs/20260413_141000/L1_218</code>
+              </p>
+            </div>
+            <div class="media-pair">
+              <figure>
+                <img src="assets/l1_218_generated_iso.png" alt="L1_218 当前生成结果" />
+                <figcaption>修复后的 Build123d 结果</figcaption>
+              </figure>
+              <figure>
+                <img src="assets/l1_218_ground_truth_iso.png" alt="L1_218 标准答案" />
+                <figcaption>Benchmark 标准答案</figcaption>
+              </figure>
+            </div>
+          </article>
+
+          <article class="figure-card">
+            <div>
+              <h3>L2_130：当前仍未收口的 half-shell 差异</h3>
+              <p>
+                这组图用来诚实展示当前边界。Build123d 版本已经不再主要卡在 API 猜错，但 half-shell 的轮廓组织、
+                directional hole 的平面语义、局部孔位对齐仍然没有完全收口。
+              </p>
+              <p class="figure-card__note">
+                关联目录：<code>benchmark/runs/20260414_091747/L2_130</code> 与
+                <code>/Users/jerryx/code/aicad.subagent.iteration/benchmark/runs/20260414_091748/L2_130</code>
+              </p>
+            </div>
+            <div class="media-triptych">
+              <figure>
+                <img
+                  src="../report-20260414-build123d-vs-cadquery-benchmark/assets/l2_130_build123d_iso.png"
+                  alt="L2_130 当前 Build123d 结果"
+                />
+                <figcaption>当前 Build123d 结果</figcaption>
+              </figure>
+              <figure>
+                <img
+                  src="../report-20260414-build123d-vs-cadquery-benchmark/assets/l2_130_cadquery_iso.png"
+                  alt="L2_130 CadQuery 结果"
+                />
+                <figcaption>CadQuery 结果</figcaption>
+              </figure>
+              <figure>
+                <img
+                  src="../report-20260414-build123d-vs-cadquery-benchmark/assets/l2_130_ground_truth_iso.png"
+                  alt="L2_130 标准答案"
+                />
+                <figcaption>Benchmark 标准答案</figcaption>
+              </figure>
+            </div>
           </article>
         </div>
       </section>
 
       <section class="chapter" id="demos" data-reveal>
         <div class="chapter__head">
-          <span>02</span>
-          <h2>三组适合现场讲解的演示案例</h2>
-        </div>
-        <div class="demo-list">
-          <article class="demo-card">
-            <h3>演示 A：局部坐标 countersink 板</h3>
-            <p>
-              路径：<code>demos/build123d_foundations/demo_local_frame_countersink.py</code>
-            </p>
-            <ul>
-              <li>展示 corner-frame 到 centered-frame 的坐标重映射。</li>
-              <li>用 `Locations` 清晰表达重复 cutter 的布局。</li>
-              <li>直接对应成功的 `L2_172` 模式。</li>
-            </ul>
-          </article>
-          <article class="demo-card">
-            <h3>演示 B：半壳体与定向打孔</h3>
-            <p>
-              路径：<code>demos/build123d_foundations/demo_half_shell_directional_holes.py</code>
-            </p>
-            <ul>
-              <li>展示同一构建器内的 `Mode.INTERSECT` 如何处理 half-shell trimming。</li>
-              <li>展示 `Plane.XZ.offset(0)` 才是正确的定向打孔坐标框架。</li>
-              <li>解释为什么运行时现在会 lint 这类 plane-offset 坐标混淆。</li>
-            </ul>
-          </article>
-          <article class="demo-card">
-            <h3>演示 C：壳体本体与 lip-fit 盖子</h3>
-            <p>
-              路径：<code>demos/build123d_foundations/demo_enclosure_body_lid.py</code>
-            </p>
-            <ul>
-              <li>用 `Mode.PRIVATE` 暂存 cavity 和 lip 几何。</li>
-              <li>把 body 与 lid 的语义显式拆开，便于阅读和解释。</li>
-              <li>给仍未收口的 enclosure gap 提供一个更适合汇报的对照面。</li>
-            </ul>
-          </article>
-        </div>
-      </section>
-
-      <section class="chapter" id="negative-case" data-reveal>
-        <div class="chapter__head">
-          <span>03</span>
-          <h2>负例：未知 enclosure prompt</h2>
-        </div>
-        <div class="split">
-          <article class="card">
-            <h3>对应 run</h3>
-            <p><code>test_runs/20260413_094502</code></p>
-            <p>
-              Requirement：一个包含 shelled body、lip-fit cover 和 countersunk fastener holes 的紧凑 enclosure。
-            </p>
-          </article>
-          <article class="card card--warn">
-            <h3>这次失败为什么是有价值的</h3>
-            <p>
-              首轮写入没有消失在一个泛化的 sandbox error 中。预检 lint 立刻拦住了
-              legacy countersink helper，并给出了结构化修复方案：
-              <code>explicit_anchor_hole_countersink_array_safe_recipe</code>。
-            </p>
-            <p class="card__note">
-              这种失败是可以被教学、验证、泛化的失败，比起过去那种 opaque 的 kernel-specific breakage，
-              已经是明确的产品能力提升。
-            </p>
-          </article>
-        </div>
-      </section>
-
-      <section class="chapter" id="success-case" data-reveal>
-        <div class="chapter__head">
-          <span>04</span>
-          <h2>正例：真实运行时证据</h2>
-        </div>
-        <div class="card-grid card-grid--two">
-          <article class="card media-card">
-            <div>
-              <h3>L2_172：一轮完成的 countersink 板</h3>
-              <p>
-                `benchmark/runs/20260413_102600/L2_172` 在 1 个规划轮次内完成，
-                同时满足 `first_write_tool=execute_build123d`、`validation_complete=true`
-                和 evaluator pass。
-              </p>
-              <p class="card__note">
-                这个案例的关键一步，是把局部坐标显式翻译到居中宿主坐标系。
-              </p>
-            </div>
-            <div class="media-pair">
-              <img src="assets/l2_172_generated_iso.png" alt="L2_172 生成结果等轴视图" />
-              <img src="assets/l2_172_ground_truth_iso.png" alt="L2_172 标准答案等轴视图" />
-            </div>
-          </article>
-          <article class="card media-card">
-            <div>
-              <h3>L1_218：环形槽修复链路</h3>
-              <p>
-                `benchmark/runs/20260413_141000/L1_218` 最终收敛，关键在于通过 Build123d 修复路径
-                把 groove 拉回到更显式的带状减料契约。
-              </p>
-              <p class="card__note">
-                这个案例适合汇报，因为它展示的是一个健康的修复闭环，而不只是一次性成功。
-              </p>
-            </div>
-            <div class="media-pair">
-              <img src="assets/l1_218_generated_iso.png" alt="L1_218 生成结果等轴视图" />
-              <img src="assets/l1_218_ground_truth_iso.png" alt="L1_218 标准答案等轴视图" />
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section class="chapter" id="artifact-chain" data-reveal>
-        <div class="chapter__head">
-          <span>05</span>
-          <h2>工件链路仍然可讲、可复盘</h2>
-        </div>
-        <div class="timeline">
-          <div class="timeline__item"><strong>prompts/</strong><span>模型这一轮到底看到了什么。</span></div>
-          <div class="timeline__item"><strong>plans/</strong><span>模型为什么选这个工具，以及它准备写什么代码。</span></div>
-          <div class="timeline__item"><strong>actions/</strong><span>Build123d 写入是否成功，还是命中了结构化 lint / 修复面。</span></div>
-          <div class="timeline__item"><strong>queries/</strong><span>写后 validator、kernel refresh 和 probe 拿回了什么证据。</span></div>
-          <div class="timeline__item"><strong>trace/</strong><span>每一轮的决策链路和停止原因。</span></div>
-          <div class="timeline__item"><strong>outputs/ 与 evaluation/</strong><span>最终 STEP 产物以及基准评测对照证据。</span></div>
-        </div>
-      </section>
-
-      <section class="chapter" id="current-judgment" data-reveal>
-        <div class="chapter__head">
           <span>06</span>
-          <h2>当前判断</h2>
+          <div>
+            <h2>演示入口：页面本身也可以当现场讲解提纲</h2>
+            <p class="chapter__desc">
+              下面三组 demo 不是临时拼出来的示意代码，而是直接对应上面几个真实 family 和 run 目录。
+            </p>
+          </div>
         </div>
-        <div class="judgment-band">
-          <p>
-            这次迁移已经有足够扎实的内容支撑一次汇报：Build123d 确实在我们最关心的几个点上改善了
-            运行时，包括显式局部坐标系、构建器可见的 boolean、安全暂存，以及可确定的预检修复面。
-          </p>
-          <p>
-            需要诚实说明的是：基准评测锚点通过，并不等于仓库已经“全部完成”。enclosure family
-            仍然需要更泛化的 body / lid / top-face reasoning。
-          </p>
+
+        <div class="demo-grid">
+          <article class="demo-card">
+            <h3>Demo A：局部坐标沉头孔板</h3>
+            <p><code>demos/build123d_foundations/demo_local_frame_countersink.py</code></p>
+            <pre class="command-block"><code>uv run python demos/build123d_foundations/demo_local_frame_countersink.py</code></pre>
+            <ul>
+              <li>输出 STEP：<code>demos/build123d_foundations/artifacts/demo_01_local_frame_countersink.step</code></li>
+              <li>最适合讲：corner-based 坐标如何映射到 centered host frame</li>
+              <li>对应真实证据：<code>benchmark/runs/20260413_102600/L2_172</code></li>
+            </ul>
+          </article>
+
+          <article class="demo-card">
+            <h3>Demo B：半壳体与定向打孔</h3>
+            <p><code>demos/build123d_foundations/demo_half_shell_directional_holes.py</code></p>
+            <pre class="command-block"><code>uv run python demos/build123d_foundations/demo_half_shell_directional_holes.py</code></pre>
+            <ul>
+              <li>输出 STEP：<code>demos/build123d_foundations/artifacts/demo_02_half_shell_directional_holes.step</code></li>
+              <li>最适合讲：`Mode.INTERSECT`、`Mode.SUBTRACT` 和 `Plane.XZ.offset(0)` 为什么能把几何契约写清楚</li>
+              <li>对应真实证据：<code>benchmark/runs/20260413_142700/L2_130</code></li>
+            </ul>
+          </article>
+
+          <article class="demo-card">
+            <h3>Demo C：body / lid / cavity / lip 显式生命周期</h3>
+            <p><code>demos/build123d_foundations/demo_enclosure_body_lid.py</code></p>
+            <pre class="command-block"><code>uv run python demos/build123d_foundations/demo_enclosure_body_lid.py</code></pre>
+            <ul>
+              <li>输出 STEP：<code>demo_03_enclosure_body.step</code> 与 <code>demo_03_enclosure_lid.step</code></li>
+              <li>最适合讲：原本基于 CadQuery 的容器，是怎样被改造成 Build123d 风格的显式生命周期</li>
+              <li>对应真实证据：<code>test_runs/20260413_094502</code></li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="narrative-grid">
+          <article class="narrative-card">
+            <h3>推荐演示顺序</h3>
+            <p>
+              最容易讲清楚的顺序是：先展示 Demo A 的局部坐标，再展示 Demo B 的半壳体和定向孔位，
+              最后用 Demo C 说明“容器到底怎么改造”这个问题。这样从最小特征、到共享 family、再到复杂容器，逻辑最连贯。
+            </p>
+          </article>
+          <article class="narrative-card">
+            <h3>一键生成全部产物</h3>
+            <pre class="command-block"><code>uv run python demos/build123d_foundations/run_all.py</code></pre>
+            <p>
+              会统一生成 4 个 STEP 和一个 <code>demos/build123d_foundations/artifacts/summary.json</code>。
+              这个 `summary.json` 里已经整理好了每个 demo 的 `title`、`narrative`、`talking_points`、`bbox` 和 `step_path`，
+              适合直接当讲稿提纲使用。
+            </p>
+          </article>
         </div>
       </section>
 
-      <section class="chapter" id="next-plan" data-reveal>
+      <section class="chapter" id="artifacts" data-reveal>
         <div class="chapter__head">
           <span>07</span>
-          <h2>下一步计划</h2>
+          <div>
+            <h2>证据链路：每一类产物到底看什么</h2>
+            <p class="chapter__desc">
+              这部分专门说明“在哪里能找到相关证据”。建议按下面顺序打开，不要从目录树盲翻。
+            </p>
+          </div>
         </div>
-        <div class="card-grid card-grid--three">
-          <article class="card">
-            <h3>保持演示案例小而稳定</h3>
-            <p>把这套演示案例作为 Build123d 迁移阶段的稳定解释面，而不是不断堆大而杂的案例。</p>
+
+        <div class="artifact-grid">
+          <article class="artifact-card">
+            <h3><code>prompts/</code></h3>
+            <p>看模型实际收到的 requirement、runtime skill 和当前回合上下文。</p>
+            <p class="artifact-card__path">
+              代表文件：<code>benchmark/runs/20260415_205500/L1_122/prompts/round_01_user_prompt.txt</code>
+            </p>
           </article>
-          <article class="card">
-            <h3>继续泛化 enclosure reasoning</h3>
-            <p>重点放在 shell opening 语义、lid/body 拆解，以及 top-face fastener placement。</p>
+          <article class="artifact-card">
+            <h3><code>plans/</code></h3>
+            <p>看这一轮为什么这么做，尤其是 `decision_summary` 和工具选择。</p>
+            <p class="artifact-card__path">
+              代表文件：<code>benchmark/runs/20260413_102600/L2_172/plans/round_01_response.json</code>
+            </p>
           </article>
-          <article class="card">
-            <h3>把基准评测当信号，不当目标</h3>
-            <p>继续只接受那些能提升多个未知 prompt 共享运行时契约的修复，而不是单个 case 强化。</p>
+          <article class="artifact-card">
+            <h3><code>actions/</code></h3>
+            <p>看写模是否成功，失败是被哪条规则拦下，成功后几何体长什么样。</p>
+            <p class="artifact-card__path">
+              代表文件：<code>test_runs/20260413_094502/actions/round_01_execute_build123d.json</code>
+            </p>
+          </article>
+          <article class="artifact-card">
+            <h3><code>queries/</code></h3>
+            <p>看 validator 和 feature probe 对当前模型的判断，知道系统下一步为什么继续修或直接结束。</p>
+            <p class="artifact-card__path">
+              代表文件：<code>benchmark/runs/20260413_141000/L1_218/queries/round_04_query_feature_probes.json</code>
+            </p>
+          </article>
+          <article class="artifact-card">
+            <h3><code>trace/</code></h3>
+            <p>看整条回合链是怎样收口的，尤其适合解释 stop reason、回合预算和 policy 变化。</p>
+            <p class="artifact-card__path">
+              代表文件：<code>benchmark/runs/20260415_205500/L1_122/trace/round_digest.md</code>
+            </p>
+          </article>
+          <article class="artifact-card">
+            <h3><code>outputs/</code></h3>
+            <p>看最终 STEP 和几何信息；这一步证明系统不是只会说，而是真的落成了模型。</p>
+            <p class="artifact-card__path">
+              代表文件：<code>demos/build123d_foundations/artifacts/summary.json</code>
+            </p>
+          </article>
+          <article class="artifact-card">
+            <h3><code>evaluation/</code></h3>
+            <p>看 benchmark 对比结果，包括分数、差异说明和通过与否。</p>
+            <p class="artifact-card__path">
+              代表文件：<code>benchmark/runs/20260414_130005/L2_88/evaluation/benchmark_eval.json</code>
+            </p>
+          </article>
+          <article class="artifact-card">
+            <h3><code>brief_report / run_diagnostics</code></h3>
+            <p>看一个 run 的聚合结论，是最适合快速汇报的总览入口。</p>
+            <p class="artifact-card__path">
+              代表文件：<code>benchmark/runs/20260415_205500/brief_report.md</code>、
+              <code>benchmark/runs/20260415_205500/run_diagnostics.md</code>
+            </p>
           </article>
         </div>
       </section>
 
-      <section class="chapter" id="key-evidence" data-reveal>
+      <section class="chapter" id="judgment" data-reveal>
         <div class="chapter__head">
           <span>08</span>
-          <h2>关键证据</h2>
+          <div>
+            <h2>当前判断与下一步</h2>
+            <p class="chapter__desc">
+              最后的结论必须同时包含进展和边界，避免只报喜不报忧，也避免把未完成的事情说成已经完成。
+            </p>
+          </div>
         </div>
-        <div class="evidence-grid">
-          <article class="code-card">
-            <h3>L2_172 决策摘要</h3>
-            <pre><code>把 corner-based 的草图坐标
-转换到居中宿主坐标系，
-然后一次性写出完整的 Build123d 脚本。</code></pre>
+
+        <div class="decision-grid">
+          <article class="decision-card">
+            <h3>已经证明的事</h3>
+            <ul>
+              <li>Build123d 迁移已经形成了真实可运行的主路径，而不是只停留在演示代码层面。</li>
+              <li>局部坐标、annular groove repair、revolve family、validator closure 这几条线已经出现了明确的正证据。</li>
+              <li>错误开始变成可归类、可修复、可复盘的运行时资产，这比单纯多过几个 benchmark 更重要。</li>
+            </ul>
           </article>
-          <article class="code-card">
-            <h3>外部 enclosure 的失败面</h3>
-            <pre><code>failure_kind=execute_build123d_api_lint_failure
-rule=legacy_api.countersink_workplane_method
-recipe=explicit_anchor_hole_countersink_array_safe_recipe</code></pre>
+          <article class="decision-card decision-card--warn">
+            <h3>还没有证明的事</h3>
+            <ul>
+              <li>Build123d 尚未在 full L1/L2 上稳定全面领先 CadQuery。</li>
+              <li>half-shell + directional hole 家族还需要继续提高首轮 skeleton 命中率。</li>
+              <li>enclosure body/lid/cavity/lip 组合推理还没有收口到稳定通用能力。</li>
+            </ul>
           </article>
-          <article class="code-card">
-            <h3>L2_130 的 contract 教训</h3>
-            <pre><code>Plane.XZ.offset(0) 才能保持打孔 frame 语义正确。
-这个平面上的局部坐标是 (x, z)，
-不是 (x, y)，也不是“按 hole z 去 offset”。</code></pre>
+          <article class="decision-card">
+            <h3>下一步最该做的事</h3>
+            <ul>
+              <li>继续沿着共享 family 做规则和 repair lane 收口，而不是堆单 case 提示词。</li>
+              <li>持续跑 canary 与 full L1/L2，优先关注 first solid、closure、read-stall 和 validator mismatch。</li>
+              <li>把已经生效的 contract 继续沉淀到 `docs/cad_iteration/`、报告页和 demo 说明中。</li>
+            </ul>
           </article>
+        </div>
+
+        <div class="note-band">
+          <p>
+            用于汇报的最简结论可以压缩成这样：
+            <strong>
+              Build123d 迁移的真正价值，不是“换了个建模库”，而是把原来隐含、脆弱、难验证的几何行为，
+              改造成显式、可拦截、可修复、可验证、可复盘的运行时契约。
+            </strong>
+          </p>
         </div>
       </section>
     </main>

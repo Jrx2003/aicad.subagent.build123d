@@ -38,6 +38,12 @@ Single case:
 ./benchmark/run_prompt_benchmark.sh --cases L1_20
 ```
 
+Named canary set:
+
+```bash
+./benchmark/run_prompt_benchmark.sh --case-set canary
+```
+
 By default the benchmark runs with:
 
 1. `runtime=v2`
@@ -92,6 +98,33 @@ Run root:
 1. `summary.json`
 2. `brief_report.md`
 3. `run_diagnostics.md`
+
+## Canary And Baseline
+
+Named case sets live in:
+
+`benchmark/canary_case_sets.json`
+
+The default fixed regression slice is:
+
+1. `L1_122`
+2. `L1_148`
+3. `L1_157`
+4. `L1_159`
+5. `L2_88`
+6. `L2_130`
+7. `L2_149`
+8. `L2_172`
+
+Run-level reports now expose baseline metrics derived from existing case artifacts:
+
+1. `first_solid_success_rate`
+2. `requirement_complete_rate`
+3. `runtime_rewrite_rate`
+4. `mean_repair_turns_after_first_write`
+5. `stale_evidence_incidents`
+6. `tokens_per_successful_case`
+7. `family_repair_packet_hit_rate`
 
 ## Notes
 

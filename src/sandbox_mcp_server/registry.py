@@ -246,6 +246,10 @@ def infer_requirement_probe_families(
         or "inner void" in text
         or "hollow" in text
         or "frame" in text
+        or _requirement_describes_full_span_top_face_channel(
+            text,
+            semantics=current_semantics,
+        )
     ):
         families.append("nested_hollow_section")
     if (
@@ -286,6 +290,26 @@ def infer_requirement_probe_families(
         seen.add(normalized)
         deduped.append(normalized)
     return deduped
+
+
+def _requirement_describes_full_span_top_face_channel(
+    text: str,
+    *,
+    semantics: RequirementSemantics,
+) -> bool:
+    if not text:
+        return False
+    if not semantics.mentions_notch_like:
+        return False
+    if "top face" not in text and "top-face" not in text:
+        return False
+    if not any(token in text for token in ("slot", "notch", "channel section")):
+        return False
+    if not any(
+        token in text for token in ("spans the full", "spans full", "full length")
+    ):
+        return False
+    return any(token in text for token in ("u-shaped", "u shape", "channel section"))
 
 
 @dataclass(frozen=True)

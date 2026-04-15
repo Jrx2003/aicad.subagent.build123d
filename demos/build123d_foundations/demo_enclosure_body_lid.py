@@ -20,6 +20,7 @@ BODY_Z = 35.0
 WALL = 3.0
 LID_THICKNESS = 3.0
 LIP_HEIGHT = 8.0
+# 四个紧固孔都以 lid 顶面坐标系为基准，便于和 body/lid 生命周期一起讲。
 FASTENER_POINTS = [
     (-24.0, -14.0, LID_THICKNESS),
     (24.0, -14.0, LID_THICKNESS),
@@ -30,8 +31,10 @@ FASTENER_POINTS = [
 
 def build_body():
     with BuildPart() as body:
+        # 先把外部宿主稳定下来，body 采用显式 inner-solid subtraction，而不是依赖隐式 shell 副作用。
         Box(BODY_X, BODY_Y, BODY_Z, align=(Align.CENTER, Align.CENTER, Align.MIN))
         with BuildPart(mode=Mode.PRIVATE) as cavity:
+            # cavity 先作为暂存几何存在，等到外部 host 完整后再统一减掉。
             Box(
                 BODY_X - 2.0 * WALL,
                 BODY_Y - 2.0 * WALL,
@@ -44,10 +47,12 @@ def build_body():
 
 def build_lid():
     with BuildPart() as lid:
+        # lid plate 先单独成立，再把 lip 作为第二层显式几何并入。
         Box(
             BODY_X, BODY_Y, LID_THICKNESS, align=(Align.CENTER, Align.CENTER, Align.MIN)
         )
         with BuildPart(mode=Mode.PRIVATE) as lip:
+            # 这里不是调用一个抽象的“lip-fit”黑盒，而是把 lip 环形结构明确做出来。
             Box(
                 BODY_X - 2.0 * WALL,
                 BODY_Y - 2.0 * WALL,
@@ -63,6 +68,7 @@ def build_lid():
             )
         add(lip.part.locate(Pos(0, 0, -LIP_HEIGHT)), mode=Mode.ADD)
 
+        # 紧固孔和沉头锥体共享同一组显式 placement，便于解释“坐标”与“减料”如何拆开。
         with Locations(*FASTENER_POINTS):
             Cylinder(
                 2.0,
@@ -82,6 +88,7 @@ def build_lid():
 
 
 def export_demo() -> list[dict[str, object]]:
+    # 这个 demo 同时导出 body 和 lid，两者分开看比合成一个零件更适合讲容器改造。
     return [
         export_artifact(
             "demo_03_enclosure_body",

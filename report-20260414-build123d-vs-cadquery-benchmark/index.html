@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Build123d 对比 CadQuery Benchmark 证据报告</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&amp;family=DM+Sans:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <nav class="nav" aria-label="章节导航">
+    <div class="progress-bar" id="progress-bar" aria-hidden="true"></div>
+    <div class="nav-inner">
+      <div class="nav-brand">
+        <span class="brand-kicker">Benchmark Evidence Report</span>
+        <span class="nav-title">Build123d vs CadQuery 对比与潜力判断</span>
+      </div>
+      <div class="nav-dots" role="tablist" aria-label="章节">
+        <button class="nav-dot active" data-target="module-0" data-tooltip="执行摘要" aria-label="执行摘要"></button>
+        <button class="nav-dot" data-target="module-1" data-tooltip="主对照结果" aria-label="主对照结果"></button>
+        <button class="nav-dot" data-target="module-2" data-tooltip="长期上限证据" aria-label="长期上限证据"></button>
+        <button class="nav-dot" data-target="module-3" data-tooltip="L2_88 前后对照" aria-label="L2_88 前后对照"></button>
+        <button class="nav-dot" data-target="module-4" data-tooltip="L2_130 半壳体" aria-label="L2_130 半壳体"></button>
+        <button class="nav-dot" data-target="module-5" data-tooltip="L2_172 沉头孔" aria-label="L2_172 沉头孔"></button>
+        <button class="nav-dot" data-target="module-6" data-tooltip="Artifact 链路" aria-label="Artifact 链路"></button>
+        <button class="nav-dot" data-target="module-7" data-tooltip="当前判断" aria-label="当前判断"></button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="main">
+    <section class="module module-hero" id="module-0">
+      <div class="module-shell">
+        <div class="hero-grid">
+          <article class="hero-panel glass reveal">
+            <p class="eyebrow">2026-04-14 / 证据页</p>
+            <h1 class="hero-title">当前 benchmark 还没有证明 Build123d 已经更强，但它已经证明了自己更值得继续投。</h1>
+            <p class="hero-summary">
+              这份报告的核心判断不是“Build123d 已经在所有 case 上赢了 CadQuery”，而是：
+              Build123d 已经暴露出更强的运行时契约面、更可编程的修复面，以及更快把一类失败变成通用修复规则的能力。
+              这三点，才是远期上限更高的真正证据。
+            </p>
+            <div class="hero-ribbon">
+              <span class="chip chip-accent">显式 Plane / Axis / Locations</span>
+              <span class="chip chip-secondary">builder-native 布尔语义</span>
+              <span class="chip chip-muted">lintable / repairable contract</span>
+            </div>
+          </article>
+
+          <aside class="hero-side glass reveal">
+            <div class="side-label">一句话管理结论</div>
+            <p class="side-summary">
+              Build123d 的投资价值，不在于今天平均分已经超过 CadQuery，而在于它让 runtime 能用更少的产品级改动，
+              更快地收拢整个几何 family 的失败面。
+            </p>
+            <ul class="signal-list">
+              <li>主对照三题里，Build123d 目前是 1 题持平、2 题落后。</li>
+              <li>但一次泛化修复已经把 `L2_88` 从 fresh run 失败拉到 1 轮满分。</li>
+              <li>这说明 Build123d 的能力提升可以直接落在 runtime 契约层，而不是只靠 prompt 运气。</li>
+            </ul>
+          </aside>
+        </div>
+
+        <div class="stats-grid">
+          <article class="stat-card glass reveal">
+            <div class="stat-value">1 / 2 / 0</div>
+            <div class="stat-label">主对照的当前结果</div>
+            <p>以 `L1_218 / L2_130 / L2_172` 为主对照，Build123d 当前是 1 题持平、2 题落后、0 题领先。</p>
+          </article>
+          <article class="stat-card glass reveal">
+            <div class="stat-value">8 轮失败 → 1 轮通过</div>
+            <div class="stat-label">`L2_88` Build123d 前后对照</div>
+            <p>同一个 axisymmetric family，加入两条通用规则后，fresh run 从失败直接收敛到 `eval_score=1.0`。</p>
+          </article>
+          <article class="stat-card glass reveal">
+            <div class="stat-value">78 / 78</div>
+            <div class="stat-label">相关单测</div>
+            <p>本轮新增的 revolve / BuildLine / lint 契约已通过 `pytest`，不是只在 benchmark 中碰巧命中。</p>
+          </article>
+          <article class="stat-card glass reveal">
+            <div class="stat-value">3 条证据链</div>
+            <div class="stat-label">长期上限判断依据</div>
+            <p>源码契约、失败面收敛、family 级前后对照，共同支撑“Build123d 值得继续投”的结论。</p>
+          </article>
+        </div>
+
+        <div class="summary-band reveal">
+          <span class="summary-kicker">本页结论</span>
+          <p>“长期上限更高”在这里不是空话，它对应的是：更显式的语义表面、更强的产品级 lint/repair 编码能力、以及更快把一类失败变成家族级修复。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-1">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">01 / 主对照结果</span>
+          <h2>先看客观事实：这轮同题 benchmark 里，Build123d 还没有整体赢。</h2>
+          <p class="module-desc">所有结论都以 fresh run 为准，而不是旧印象。这里先把不带解释的结果摆出来，再进入“为什么仍然值得继续投”的证据。</p>
+        </header>
+
+        <div class="comparison-table glass reveal">
+          <div class="comparison-row comparison-head">
+            <span>Case</span>
+            <span>Build123d</span>
+            <span>CadQuery</span>
+            <span>判断</span>
+          </div>
+          <div class="comparison-row">
+            <span><strong>L1_218</strong><small>同心截面 + 环槽</small></span>
+            <span>1 轮, `0.9434`, 8,437 tokens</span>
+            <span>1 轮, `0.9598`, 6,774 tokens</span>
+            <span>基本持平，CadQuery 略优</span>
+          </div>
+          <div class="comparison-row">
+            <span><strong>L2_130</strong><small>half-shell + directional holes</small></span>
+            <span>5 轮, `0.8826`, 46,510 tokens</span>
+            <span>1 轮, `0.9126`, 5,822 tokens</span>
+            <span>CadQuery 明显更快</span>
+          </div>
+          <div class="comparison-row">
+            <span><strong>L2_172</strong><small>局部坐标沉头孔阵列</small></span>
+            <span>8 轮未收敛, `0.3436`, 97,012 tokens</span>
+            <span>7 轮收敛, `1.0`, 101,136 tokens</span>
+            <span>CadQuery 明显胜出</span>
+          </div>
+        </div>
+
+        <div class="evidence-grid">
+          <article class="insight-card glass reveal">
+            <span class="insight-label">正视现实</span>
+            <h3>如果只看今天的主 benchmark，Build123d 还不够好。</h3>
+            <p>这一点必须先承认。`L2_130` 和 `L2_172` 都说明 Build123d runtime 还缺少稳定的 first-turn bias，尤其是 half-shell 和 countersink family。</p>
+          </article>
+          <article class="insight-card glass reveal">
+            <span class="insight-label">但这不是全部</span>
+            <h3>长期上限的判断，不应该只看今天的均值。</h3>
+            <p>真正关键的问题是：当我们发现一类失败时，系统能不能用产品级规则把整类 family 收住。Build123d 在这件事上已经表现出更强的可编程性。</p>
+          </article>
+        </div>
+
+        <div class="path-list reveal">
+          <div class="path-card glass">
+            <div class="path-title">主对照 run</div>
+            <p><code>/Users/jerryx/code/aicad.subagent.build123d/benchmark/runs/20260414_091747</code></p>
+            <p><code>/Users/jerryx/code/aicad.subagent.iteration/benchmark/runs/20260414_091748</code></p>
+          </div>
+          <div class="path-card glass">
+            <div class="path-title">补充前后对照 run</div>
+            <p><code>/Users/jerryx/code/aicad.subagent.build123d/benchmark/runs/20260414_093041/L2_88</code></p>
+            <p><code>/Users/jerryx/code/aicad.subagent.build123d/benchmark/runs/20260414_130005/L2_88</code></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-2">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">02 / 长期上限证据</span>
+          <h2>为什么说 Build123d 的长期天花板更高？不是因为它“更新”，而是因为它更适合被 runtime 编程。</h2>
+          <p class="module-desc">这部分只看源码和运行时表面。结论要靠产品代码证明，而不是靠 CAD 库口碑。</p>
+        </header>
+
+        <div class="code-grid">
+          <article class="code-card glass reveal">
+            <div class="code-head">
+              <span class="code-tag">Prompt Contract</span>
+              <span class="code-path">src/sub_agent/prompts/codegen.md</span>
+            </div>
+            <pre><code>- Curve helpers such as `Polyline(...)`, `Line(...)`, `CenterArc(...)`, and `RadiusArc(...)`
+  belong inside `BuildLine`, not directly inside `BuildSketch`
+- `revolve(...)` uses `revolution_arc=` ...
+- `CounterSinkHole(...)` is a `BuildPart` operation ...
+- `Plane.XZ.offset(d)` shifts along Y, not Z</code></pre>
+            <p>这不是单纯“教模型写代码”，而是在把几何语义拆成可判定的契约：曲线归属哪个 builder、revolve 的合法签名、countersink 的合法宿主、Plane.offset 的真实含义。</p>
+          </article>
+
+          <article class="code-card glass reveal">
+            <div class="code-head">
+              <span class="code-tag">Runtime Skill</span>
+              <span class="code-path">src/sub_agent_runtime/skill_pack.py</span>
+            </div>
+            <pre><code>- choose the workplane whose normal matches the drill direction
+- `CounterSinkHole(...)` belongs in `BuildPart`, not `BuildSketch`
+- A safe first-pass half-shell skeleton is
+  `Cylinder(...) -> subtract inner -> intersect half-plane -> add pad/lugs -> bore -> holes`
+- For Build123d `revolve(...)`, ... do not invent `angle=`</code></pre>
+            <p>Skill pack 的价值在于：同一条 family 规则可以同时作用在 first write、repair、probe follow-up 上，而不是只存在于单次 prompt 里。</p>
+          </article>
+
+          <article class="code-card glass reveal">
+            <div class="code-head">
+              <span class="code-tag">Preflight Lint</span>
+              <span class="code-path">src/sub_agent_runtime/tool_runtime.py</span>
+            </div>
+            <pre><code>invalid_build123d_context.curve_requires_buildline
+invalid_build123d_keyword.revolve_angle_alias
+invalid_build123d_contract.directional_drill_plane_offset_coordinate_mixup
+invalid_build123d_context.countersinkhole_requires_buildpart</code></pre>
+            <p>这才是“长期上限更高”的第一条硬证据：Build123d 失败可以前移为结构化 lint，再绑定成 repair recipe。CadQuery 也能修，但它更多依赖链式 Workplane 经验和运行后读错。</p>
+          </article>
+        </div>
+
+        <div class="evidence-grid">
+          <article class="insight-card glass reveal">
+            <span class="insight-label">证据 1</span>
+            <h3>Build123d 把几何状态拆成了更多显式对象。</h3>
+            <p>`BuildPart / BuildSketch / BuildLine / Plane / Axis / Locations / Mode.PRIVATE` 这些对象，使 runtime 能准确判断“错在 builder 上下文、坐标 frame、还是布尔顺序”。</p>
+          </article>
+          <article class="insight-card glass reveal">
+            <span class="insight-label">证据 2</span>
+            <h3>这些对象已经被我们接成了产品级修复面。</h3>
+            <p>本轮不是临时补 prompt，而是把 revolve、BuildLine、countersink、directional drill 这些错误转成了可测试、可复用、可前置拦截的 runtime 规则。</p>
+          </article>
+          <article class="insight-card glass reveal">
+            <span class="insight-label">证据 3</span>
+            <h3>规则一旦对，整个 family 会一起受益。</h3>
+            <p>`L2_88` 的前后对照就是证据：我们没有改 case 数据，也没有改 benchmark evaluator，只补了通用契约，结果 fresh run 从失败变成 1 轮满分。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-3">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">03 / L2_88 前后对照</span>
+          <h2>这是最关键的一条证据链：一次通用修复，把 Build123d 的 axisymmetric revolve family 从 fresh run 失败拉回 1 轮满分。</h2>
+          <p class="module-desc">如果不能证明“产品级规则能快速解锁一个 family”，那“长期上限更高”就只是观点。这一节专门证明这件事已经发生了。</p>
+        </header>
+
+        <div class="before-after-grid">
+          <article class="case-panel glass reveal">
+            <span class="case-label case-bad">修复前 / 20260414_093041</span>
+            <h3>fresh run 的失败不是几何太难，而是 API/上下文契约还没被前移。</h3>
+            <div class="metric-strip">
+              <span>8 轮未收敛</span>
+              <span>57,224 tokens</span>
+              <span>tool=`execute_build123d`</span>
+            </div>
+            <pre><code>round 1:
+TypeError: revolve() got an unexpected keyword argument 'angle'
+
+round 2:
+RuntimeError: BuildSketch doesn't have a Polyline object or operation
+(Polyline applies to ['BuildLine'])</code></pre>
+            <p>这两条错误都不是 case 私有知识，而是通用 Build123d 契约：`revolve` 的正确签名、curve helper 的 builder 归属。</p>
+          </article>
+
+          <article class="case-panel glass reveal">
+            <span class="case-label case-good">修复后 / 20260414_130005</span>
+            <h3>加入两条通用规则后，同题 fresh run 一轮收敛。</h3>
+            <div class="metric-strip">
+              <span>1 轮收敛</span>
+              <span>4,462 tokens</span>
+              <span>`eval_score=1.0`</span>
+            </div>
+            <pre><code>with BuildSketch(Plane.XZ):
+    with BuildLine():
+        ...
+    make_face()
+revolve(axis=Axis.Z)</code></pre>
+            <p>新 run 不需要 probe 链，也不需要补充 repair packet。模型首轮就写出了正确的 Build123d recipe，说明规则已经进入主路径。</p>
+          </article>
+        </div>
+
+        <div class="image-compare reveal">
+          <figure class="image-card glass">
+            <img src="assets/l2_88_build123d_after_iso.png" alt="L2_88 Build123d 修复后预览">
+            <figcaption>Build123d 修复后生成图，来自 <code>20260414_130005/L2_88/evaluation</code></figcaption>
+          </figure>
+          <figure class="image-card glass">
+            <img src="assets/l2_88_ground_truth_iso.png" alt="L2_88 Ground Truth">
+            <figcaption>Ground truth 对照图</figcaption>
+          </figure>
+        </div>
+
+        <div class="timeline-panel glass reveal">
+          <h3>为什么这个前后对照是“长期上限”证据，而不是一次偶然命中？</h3>
+          <ol class="timeline-list">
+            <li>修复前，错误集中在 Build123d 通用契约：`revolve(angle=...)` 和 `Polyline` builder 误用。</li>
+            <li>本轮修改没有碰 benchmark 数据，只在 `codegen.md`、`skill_pack.py`、`tool_runtime.py` 里补了通用规则。</li>
+            <li>相关测试 `78 passed in 1.38s`，证明这些规则已经进入产品表面，而不是 notebook 里的临时经验。</li>
+            <li>修复后，同题 fresh run 一轮通过并拿到 `STEP geometric signatures are closely aligned`。</li>
+          </ol>
+        </div>
+
+        <div class="summary-band reveal">
+          <span class="summary-kicker">本页结论</span>
+          <p>`L2_88` 证明了一个关键事实：Build123d 的失败面更容易被产品化编码，而一旦规则进入 runtime，这个 family 的能力会以“整类修复”的方式提升。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-4">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">04 / L2_130 半壳体</span>
+          <h2>`L2_130` 说明：Build123d 已经有正确的修复方向，但 half-shell family 的 first-turn bias 还不够强。</h2>
+          <p class="module-desc">这是一个很典型的“当前结果落后，但机制潜力更好”的案例。</p>
+        </header>
+
+        <div class="case-split">
+          <article class="case-panel glass reveal">
+            <span class="case-label case-warn">Build123d / 20260414_091747</span>
+            <div class="metric-strip">
+              <span>5 轮收敛</span>
+              <span>`eval_score=0.8826`</span>
+              <span>46,510 tokens</span>
+            </div>
+            <pre><code>round 1-2:
+Plane.offset(...) 被误用为 in-plane z 坐标
+
+round 3:
+active builder temporary primitive arithmetic 被 preflight 拦截
+
+round 5:
+policy -> execute_repair_packet
+validation -> passed</code></pre>
+            <p>关键点在于：它不是乱修，而是被 runtime 明确收敛到 <code>directional drill workplane contract</code> 和 <code>half-shell builder-native recipe</code> 上，最后靠 repair packet 收口。</p>
+          </article>
+
+          <article class="case-panel glass reveal">
+            <span class="case-label case-good">CadQuery / 20260414_091748</span>
+            <div class="metric-strip">
+              <span>1 轮收敛</span>
+              <span>`eval_score=0.9126`</span>
+              <span>5,822 tokens</span>
+            </div>
+            <p>CadQuery 在这题仍然更成熟，说明 half-shell family 目前还不是 Build123d 的强项。但同样重要的是，Build123d 侧的失败已经被压缩成了非常具体的两个问题：</p>
+            <ul class="flat-list">
+              <li>工作平面法向与局部坐标没有严格分离。</li>
+              <li>临时 solid staging 没有遵守 builder-native 布尔纪律。</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="image-compare reveal">
+          <figure class="image-card glass">
+            <img src="assets/l2_130_build123d_iso.png" alt="L2_130 Build123d 结果">
+            <figcaption>Build123d 结果图</figcaption>
+          </figure>
+          <figure class="image-card glass">
+            <img src="assets/l2_130_cadquery_iso.png" alt="L2_130 CadQuery 结果">
+            <figcaption>CadQuery 结果图</figcaption>
+          </figure>
+          <figure class="image-card glass">
+            <img src="assets/l2_130_ground_truth_iso.png" alt="L2_130 Ground Truth">
+            <figcaption>Ground truth</figcaption>
+          </figure>
+        </div>
+
+        <div class="summary-band reveal">
+          <span class="summary-kicker">本页结论</span>
+          <p>`L2_130` 不是在证明 Build123d 已经赢，而是在证明它的失败正变得可机制化：现在要补的是 family recipe 和 first-turn bias，不再是“到处都说不清楚”。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-5">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">05 / L2_172 沉头孔</span>
+          <h2>`L2_172` 是当前最清楚的负例：Build123d 还没有把 countersink family 收敛完成。</h2>
+          <p class="module-desc">负例不是坏事。真正重要的是：它告诉我们 build123d 现在还差哪一层，以及这些差距是不是能继续产品化处理。</p>
+        </header>
+
+        <div class="case-split">
+          <article class="case-panel glass reveal">
+            <span class="case-label case-bad">Build123d / 20260414_091747</span>
+            <div class="metric-strip">
+              <span>8 轮未收敛</span>
+              <span>`eval_score=0.3436`</span>
+              <span>97,012 tokens</span>
+            </div>
+            <pre><code>round 1:
+validation blockers = countersink + merged body result
+
+round 2:
+CounterSinkHole helper name 被 preflight 拦截
+
+round 5:
+counter_sink_angle keyword 再次被 preflight 拦截
+
+round 8:
+虽然生成了单实体板件，但 validator 仍判定 countersink 语义未满足</code></pre>
+            <p>这说明 Build123d 侧已经从“完全乱写 API”进步到了“知道要做沉头孔，但 helper 选择、宿主平面、through-hole + cone 语义还没统一”。</p>
+          </article>
+
+          <article class="case-panel glass reveal">
+            <span class="case-label case-good">CadQuery / 20260414_091748</span>
+            <div class="metric-strip">
+              <span>7 轮收敛</span>
+              <span>`eval_score=1.0`</span>
+              <span>101,136 tokens</span>
+            </div>
+            <pre><code>round 7 final recipe:
+centered host
+-> normalize corner-frame points
+-> top face workplane
+-> pushPoints(points)
+-> cskHole(...)</code></pre>
+            <p>CadQuery 这题也不轻松，但它最后把“中心化宿主 frame + 4 点沉头孔”这条 recipe 收住了，Build123d 还没有。</p>
+          </article>
+        </div>
+
+        <div class="image-compare reveal">
+          <figure class="image-card glass">
+            <img src="assets/l2_172_build123d_iso.png" alt="L2_172 Build123d 结果">
+            <figcaption>Build123d 最终失败产物</figcaption>
+          </figure>
+          <figure class="image-card glass">
+            <img src="assets/l2_172_cadquery_iso.png" alt="L2_172 CadQuery 结果">
+            <figcaption>CadQuery 最终通过产物</figcaption>
+          </figure>
+          <figure class="image-card glass">
+            <img src="assets/l2_172_ground_truth_iso.png" alt="L2_172 Ground Truth">
+            <figcaption>Ground truth</figcaption>
+          </figure>
+        </div>
+
+        <div class="summary-band reveal">
+          <span class="summary-kicker">本页结论</span>
+          <p>`L2_172` 说明 Build123d 现在最大的剩余短板，是 `explicit_anchor_hole / named_face_local_edit` 这条 countersink family 还没形成稳定的一轮 recipe。这是当前继续优化的主战场。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-6">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">06 / Artifact 链路</span>
+          <h2>为什么这些 run 值得汇报？因为它们不是只有最终分数，而是完整保留了“模型为什么走到这一步”的链路。</h2>
+          <p class="module-desc">这一节用 `L2_88` 修复后 run 作为模板，说明 benchmark 里每类中间产物分别证明什么。</p>
+        </header>
+
+        <div class="artifact-shell glass reveal">
+          <div class="artifact-tabs" role="tablist" aria-label="artifact families">
+            <button class="artifact-tab active" data-artifact-target="artifact-prompts">prompts/</button>
+            <button class="artifact-tab" data-artifact-target="artifact-plans">plans/</button>
+            <button class="artifact-tab" data-artifact-target="artifact-actions">actions/</button>
+            <button class="artifact-tab" data-artifact-target="artifact-queries">queries/</button>
+            <button class="artifact-tab" data-artifact-target="artifact-trace">trace/</button>
+            <button class="artifact-tab" data-artifact-target="artifact-outputs">outputs/</button>
+            <button class="artifact-tab" data-artifact-target="artifact-eval">evaluation/</button>
+          </div>
+
+          <div class="artifact-panels">
+            <article class="artifact-panel active" id="artifact-prompts">
+              <h3><code>prompts/</code></h3>
+              <p>模型这一轮到底看到了什么。比如 <code>20260414_130005/L2_88/prompts/round_01_user_prompt.txt</code> 里明确写着 front plane、centerline、closed profile、360 度 revolve，这决定了 runtime 应该激活 axisymmetric revolve family，而不是去猜别的 body family。</p>
+            </article>
+            <article class="artifact-panel" id="artifact-plans">
+              <h3><code>plans/</code></h3>
+              <p>模型的决策摘要和工具载荷。真正值得看的字段不是“这轮有没有调用工具”，而是 <code>decision_summary</code> 与 <code>tool_calls[0].arguments.code</code>。例如 <code>20260414_130005/L2_88/plans/round_01_response.json</code> 明确写出 “Following the explicit revolve profile recipe...”，并且代码里真的出现了 <code>BuildSketch(Plane.XZ) -&gt; BuildLine() -&gt; make_face() -&gt; revolve(axis=Axis.Z)</code>。</p>
+            </article>
+            <article class="artifact-panel" id="artifact-actions">
+              <h3><code>actions/</code></h3>
+              <p>真正执行的代码与执行结果。这里要同时看 <code>stderr</code> 和 <code>snapshot.geometry</code>。修复前 <code>20260414_093041/L2_88/actions/round_01_execute_build123d.json</code> 里明确报 <code>revolve(..., angle=360)</code> 非法；修复后 <code>20260414_130005/L2_88/actions/round_01_execute_build123d.json</code> 的快照直接给出 <code>solids=1</code>、<code>faces=6</code>、<code>bbox=[50,50,20]</code>，说明它不只是“没报错”，而是真的生成了目标族几何。</p>
+            </article>
+            <article class="artifact-panel" id="artifact-queries">
+              <h3><code>queries/</code></h3>
+              <p>validator、probe、kernel state 的读回证据。这里最关键的是 <code>validate_requirement</code> 的 <code>checks[].evidence</code> 与 <code>clause_interpretations[]</code>。例如 <code>L2_172</code> 的 Build123d 最终验证里，<code>feature_hole_position_alignment</code> 已 pass，但 <code>feature_countersink</code> 明确 fail，证据字符串直接写着 <code>cone_like_face_present=False</code>。这能把“孔位做对了”与“沉头语义没做对”清楚拆开。</p>
+            </article>
+            <article class="artifact-panel" id="artifact-trace">
+              <h3><code>trace/</code></h3>
+              <p>完整的 round timeline。这里最值得看的不是时间戳本身，而是 <code>stop_reason.json</code> 和各轮工具切换。比如 <code>20260414_093041/L2_88</code> 的 stop reason 是 <code>max_rounds_reached</code>，而修复后 <code>20260414_130005/L2_88</code> 在 round 1 就变成了 <code>post_write_validated_complete</code>。这条变化说明规则已经进入首轮主路径。</p>
+            </article>
+            <article class="artifact-panel" id="artifact-outputs">
+              <h3><code>outputs/</code></h3>
+              <p>最终 STEP 和 geometry_info。汇报时如果只想看最终产物，这一层最直观；但如果要解释为什么变强，必须和 <code>plans/trace/queries</code> 连起来看。单独看 STEP 只能证明“最后长这样”，不能证明“为什么这次是系统变强了，而不是恰好命中”。</p>
+            </article>
+            <article class="artifact-panel" id="artifact-eval">
+              <h3><code>evaluation/</code></h3>
+              <p>和 ground truth 的最终几何对比。这里要盯的字段是 <code>scores.final_score</code>、<code>metrics.feature_anchor_rel_max</code>、<code>metrics.face_type_iou</code> 和 <code>difference_notes</code>。例如 <code>L2_130</code> 虽然 validator pass，但 evaluator 仍明确指出 <code>local feature-anchor deviation 0.119 is high</code>；而 <code>L2_88</code> 修复后则直接回到 <code>final_score=1.0</code>。</p>
+            </article>
+          </div>
+        </div>
+
+        <div class="path-list reveal">
+          <article class="path-card glass">
+            <div class="path-title">L2_88 家族解锁证据</div>
+            <p><code>20260414_093041/L2_88/summary.json</code>：8 轮失败，<code>failure_cluster=code_path_family_gap</code></p>
+            <p><code>20260414_093041/L2_88/actions/round_01_execute_build123d.json</code>：<code>revolve(..., angle=360)</code> 直接报错</p>
+            <p><code>20260414_093041/L2_88/actions/round_02_execute_build123d.json</code>：<code>Polyline</code> 被错误放进 <code>BuildSketch</code></p>
+            <p><code>20260414_130005/L2_88/plans/round_01_response.json</code>：decision summary 明确采用 explicit revolve profile recipe</p>
+            <p><code>20260414_130005/L2_88/evaluation/benchmark_eval.json</code>：<code>final_score=1.0</code></p>
+          </article>
+
+          <article class="path-card glass">
+            <div class="path-title">L2_130 半壳体证据</div>
+            <p><code>20260414_091747/L2_130/actions/round_01_execute_build123d.json</code>：drill plane / offset 语义被 preflight 直接拦截</p>
+            <p><code>20260414_091747/L2_130/actions/round_03_execute_build123d.json</code>：same-builder boolean 纪律再次被拦截</p>
+            <p><code>20260414_091747/L2_130/queries/round_05_validate_requirement_post_write.json</code>：多数 clause 已转为 <code>verified</code></p>
+            <p><code>20260414_091747/L2_130/evaluation/benchmark_eval.json</code>：仍有 <code>feature-anchor deviation 0.119</code></p>
+          </article>
+        </div>
+
+        <div class="path-list reveal">
+          <article class="path-card glass">
+            <div class="path-title">L2_172 沉头孔证据</div>
+            <p><code>20260414_091747/L2_172/actions/round_02_execute_build123d.json</code>：helper 名称错误</p>
+            <p><code>20260414_091747/L2_172/actions/round_05_execute_build123d.json</code>：<code>counter_sink_angle</code> 关键字契约错误</p>
+            <p><code>20260414_091747/L2_172/queries/round_08_validate_requirement_post_write.json</code>：孔位对了，但 <code>feature_countersink</code> 仍 fail</p>
+            <p><code>20260414_091747/L2_172/evaluation/benchmark_eval.json</code>：<code>face_type_iou=0.385</code>，<code>feature_anchor_rel_max=1.0</code></p>
+          </article>
+
+          <article class="path-card glass">
+            <div class="path-title">可直接转发的重证据文档</div>
+            <p><code>report-20260414-build123d-vs-cadquery-benchmark/shareable-report.md</code>：适合直接发消息或邮件</p>
+            <p><code>report-20260414-build123d-vs-cadquery-benchmark/detailed-evidence.md</code>：适合汇报或评审时逐条引用 artifact</p>
+            <p>这两份文档都把“结论”与“证据文件路径”绑在一起，避免汇报时只剩口头判断。</p>
+          </article>
+        </div>
+
+        <div class="summary-band reveal">
+          <span class="summary-kicker">本页结论</span>
+          <p>这套 benchmark 不是只适合做排行榜，它更适合做产品研发证据。因为每个 case 都能被拆成 prompt、decision、execution、validation、evaluation 五层证据链。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-7">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">07 / 当前判断</span>
+          <h2>最后的结论必须同时诚实和可行动。</h2>
+          <p class="module-desc">这部分给出汇报时可以直接说的话，以及接下来继续投入 Build123d 的正确方向。</p>
+        </header>
+
+        <div class="judgment-grid">
+          <article class="judgment-card glass reveal">
+            <span class="judgment-label">可以直接说</span>
+            <h3>Build123d 的长期投资价值已经被证明。</h3>
+            <p>证明方式不是“它今天 benchmark 平均分领先”，而是：它让 runtime 能用更显式的 Plane / builder / boolean / local-frame 契约，把失败前移成 lint 与 repair recipe，再用一次通用修复快速拉起整个 revolve family。</p>
+          </article>
+          <article class="judgment-card glass reveal">
+            <span class="judgment-label">不能过度说</span>
+            <h3>不能说 Build123d 现在已经全面超过 CadQuery。</h3>
+            <p>至少在本轮 `L2_130` 和 `L2_172` 上，这个结论不成立。CadQuery 在 half-shell 与 countersink family 上依然更稳。</p>
+          </article>
+          <article class="judgment-card glass reveal">
+            <span class="judgment-label">真正要投的方向</span>
+            <h3>继续投 family recipe，而不是投 case patch。</h3>
+            <ul class="flat-list">
+              <li><strong>axisymmetric_profile</strong>：本轮已经证明 generic fix 有效。</li>
+              <li><strong>half_shell + directional hole</strong>：继续强化 first-turn same-builder skeleton。</li>
+              <li><strong>explicit_anchor_hole / countersink</strong>：统一 helper、宿主平面、corner-frame 到 centered-frame 的归一化。</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="next-plan glass reveal">
+          <div class="next-plan-head">
+            <span class="next-label">下一步计划</span>
+            <h3>如果继续推进 Build123d，不该再靠零散 prompt 文案，而应该继续加厚三层产品面。</h3>
+          </div>
+          <ol class="timeline-list">
+            <li>继续把 Build123d 的 family 失败前移成 preflight lint，而不是浪费 sandbox 重试。</li>
+            <li>针对 half-shell 和 countersink family，补 first-turn canonical recipe，而不是等多轮 repair 才逼近正确写法。</li>
+            <li>继续保留同题 CadQuery 对照，确保每次“Build123d 更强”的说法都有 fresh run 证据支撑。</li>
+          </ol>
+        </div>
+
+        <div class="next-plan glass reveal">
+          <div class="next-plan-head">
+            <span class="next-label">汇报建议</span>
+            <h3>最稳妥的说法是：Build123d 还没在平均分上赢，但已经在产品化潜力上给出更硬的工程证据。</h3>
+          </div>
+          <p>这份证据主要来自三条链：源码层的显式契约对象、preflight lint 与 repair recipe 的可编程失败面，以及 <code>L2_88</code> 这种“通用规则直接解锁一个 family”的前后对照。汇报时如果需要更细的证据，请直接引用同目录下的 <code>shareable-report.md</code> 和 <code>detailed-evidence.md</code>。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

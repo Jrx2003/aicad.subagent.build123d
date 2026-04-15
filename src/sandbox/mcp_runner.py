@@ -26,6 +26,10 @@ DEFAULT_GET_HISTORY_TOOL_NAME = "get_history"
 
 logger = get_logger(__name__)
 
+_CROSS_TASK_CANCEL_SCOPE_ERROR = (
+    "Attempted to exit cancel scope in a different task than it was entered in"
+)
+
 
 @dataclass
 class CADActionResult:
@@ -966,6 +970,32 @@ class McpSandboxRunner:
                 relation_index=None,
                 summary="Validation timed out",
             )
+        except asyncio.CancelledError:
+            logger.warning(
+                "sandbox_mcp_validate_requirement_cancelled",
+                timeout=timeout,
+                session_id=session_id,
+            )
+            return RequirementValidationResult(
+                success=False,
+                error_code="execution_error",
+                error_message="validate_requirement cancelled before MCP completed",
+                session_id=session_id,
+                step=step,
+                is_complete=False,
+                blockers=["execution_error"],
+                checks=[],
+                core_checks=[],
+                diagnostic_checks=[],
+                clause_interpretations=[],
+                coverage_confidence=0.0,
+                insufficient_evidence=False,
+                observation_tags=[],
+                decision_hints=[],
+                blocker_taxonomy=[],
+                relation_index=None,
+                summary="Validation failed",
+            )
         except Exception as exc:
             logger.warning(
                 "sandbox_mcp_validate_requirement_failed",
@@ -1116,11 +1146,27 @@ class McpSandboxRunner:
                     session = await self._ensure_client_session()
                     return await session.call_tool(tool_name, arguments)
                 except asyncio.CancelledError:
-                    await self.aclose()
+                    try:
+                        await self.aclose()
+                    except Exception as close_exc:
+                        logger.warning(
+                            "sandbox_mcp_close_failed_after_cancelled_tool_call",
+                            tool_name=tool_name,
+                            error=str(close_exc),
+                            exc_info=True,
+                        )
                     raise
                 except Exception as exc:
                     last_error = exc
-                    await self.aclose()
+                    try:
+                        await self.aclose()
+                    except Exception as close_exc:
+                        logger.warning(
+                            "sandbox_mcp_close_failed_after_tool_error",
+                            tool_name=tool_name,
+                            error=str(close_exc),
+                            exc_info=True,
+                        )
                     if attempt_index == 0:
                         continue
                     raise
@@ -1165,7 +1211,15 @@ class McpSandboxRunner:
         self._session_stack = None
         self._client_session = None
         if stack is not None:
-            await stack.aclose()
+            try:
+                await stack.aclose()
+            except RuntimeError as exc:
+                if _CROSS_TASK_CANCEL_SCOPE_ERROR not in str(exc):
+                    raise
+                logger.warning(
+                    "sandbox_mcp_close_suppressed_cross_task_cancel_scope",
+                    error=str(exc),
+                )
 
     def _map_call_result(self, call_result: Any) -> SandboxResult:
         structured = getattr(call_result, "structuredContent", None)

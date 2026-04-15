@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Build123d Runtime 两日进展报告</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <nav class="nav" aria-label="章节导航">
+    <div class="progress-bar" id="progress-bar" aria-hidden="true"></div>
+    <div class="nav-inner">
+      <div class="nav-brand">
+        <span class="brand-kicker">2026-04-14 至 2026-04-15</span>
+        <span class="nav-title">Build123d Runtime 两日进展报告</span>
+      </div>
+      <div class="nav-dots" role="tablist" aria-label="章节">
+        <button class="nav-dot active" data-target="module-0" data-tooltip="结论总览" aria-label="结论总览"></button>
+        <button class="nav-dot" data-target="module-1" data-tooltip="两天主线" aria-label="两天主线"></button>
+        <button class="nav-dot" data-target="module-2" data-tooltip="流程作用" aria-label="流程作用"></button>
+        <button class="nav-dot" data-target="module-3" data-tooltip="系统效果" aria-label="系统效果"></button>
+        <button class="nav-dot" data-target="module-4" data-tooltip="案例证据" aria-label="案例证据"></button>
+        <button class="nav-dot" data-target="module-5" data-tooltip="配图演示" aria-label="配图演示"></button>
+        <button class="nav-dot" data-target="module-6" data-tooltip="证据链路" aria-label="证据链路"></button>
+        <button class="nav-dot" data-target="module-7" data-tooltip="当前判断" aria-label="当前判断"></button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="main">
+    <section class="module module-hero" id="module-0">
+      <div class="module-shell">
+        <div class="hero-grid">
+          <article class="hero-panel glass reveal">
+            <p class="eyebrow">Build123d-first / 主路径收敛</p>
+            <h1 class="hero-title">这两天最重要的进展，不是“又多过了几题”，而是迁移后的主路径开始进入稳定收敛阶段。</h1>
+            <p class="hero-summary">
+              这份页面把两天工作重新收成一条清楚的主线：先把 Build123d 迁移后的问题真正缩小到
+              validator 闭环、写后控制流、path-sweep 契约和 canary 回归入口；再用真实 run 证明这些修改如何在流程里起作用；
+              最后把当前剩余问题压缩到两个高价值 family，让后续优化目标足够集中。
+            </p>
+            <div class="hero-ribbon">
+              <span class="chip chip-accent">固定 canary</span>
+              <span class="chip chip-secondary">验证闭环</span>
+              <span class="chip chip-secondary">Build123d 契约治理</span>
+              <span class="chip chip-muted">按 family 泛化</span>
+            </div>
+            <div class="summary-band">
+              <span class="summary-kicker">一句话结论</span>
+              <p>
+                当前仓库已经证明两件事：第一，Build123d 主路径可以在真实 sampled L1/L2 上完整运行；
+                第二，效果提升开始来自通用 runtime 治理，而不是靠单题提示词运气。
+              </p>
+            </div>
+          </article>
+
+          <aside class="hero-side glass reveal">
+            <div class="side-label">核心结论</div>
+            <p class="side-summary">
+              现在最适合汇报的，不是“迁移已经全部完成”，而是“系统已经具备发现问题、归类问题、收紧契约、复跑验证的稳定闭环”。
+            </p>
+            <ul class="signal-list">
+              <li>`benchmark/runs/20260415_113200/summary.json`：sampled L1 为 `8 PASS / 1 NO_STEP / 1 INCOMPLETE`。</li>
+              <li>`benchmark/runs/20260416_002500/summary.json`：canary 为 `6 PASS / 1 NO_STEP / 1 INCOMPLETE`。</li>
+              <li>当前剩余热点已经明显收缩到两个家族：`L2_149` path-sweep 与 `L2_172` countersink。</li>
+            </ul>
+          </aside>
+        </div>
+
+        <div class="stats-grid">
+          <article class="stat-card glass reveal">
+            <div class="stat-value">8 / 10</div>
+            <div class="stat-label">sampled L1 通过数</div>
+            <p>来源：`benchmark/runs/20260415_113200/summary.json`。说明 L1 主路径已经具备真实运行能力，而不是只能做 smoke。</p>
+          </article>
+          <article class="stat-card glass reveal">
+            <div class="stat-value">6 / 8</div>
+            <div class="stat-label">canary 通过数</div>
+            <p>来源：`benchmark/runs/20260416_002500/summary.json`。说明 canary 已经可以作为正式回归入口，而不只是临时抽查。</p>
+          </article>
+          <article class="stat-card glass reveal">
+            <div class="stat-value">4 轮 → 1 轮</div>
+            <div class="stat-label">`L1_122` 收敛速度</div>
+            <p>`20260415_203500` 还停在 `read_stall_gap`，`20260415_205500` 已变成 `post_write_validated_complete`。</p>
+          </article>
+          <article class="stat-card glass reveal">
+            <div class="stat-value">8 轮失败 → 5 轮通过</div>
+            <div class="stat-label">`L2_149` 路径扫掠闭环</div>
+            <p>`20260415_120527` 未收敛，`20260415_122001` 已达到 `validation_complete=true` 且 evaluator `final_score=1.0`。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-1">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">01 / 两天主线</span>
+          <h2>这两天不是散点修补，而是沿着同一条主线推进：先缩小主矛盾，再把修复入口、回归入口和证据入口接起来。</h2>
+          <p class="module-desc">这里按问题推进顺序来讲，不按文件顺序罗列。这样更容易理解为什么这些修改会直接反映到 benchmark 表现上。</p>
+        </header>
+
+        <div class="timeline">
+          <article class="timeline-card glass reveal">
+            <div class="timeline-date">2026-04-14</div>
+            <h3>先把“问题是什么”讲清楚</h3>
+            <ul class="flat-list">
+              <li>完成 Build123d demo、README、HTML 报告材料的中文化，先把迁移工作的说明面整理干净。</li>
+              <li>用真实 benchmark 把当前最值得投资的 family 收拢出来：half-shell、countersink、path-sweep。</li>
+              <li>明确下一步不再继续堆零散 prompt，而是优先修主路径控制流、validator mismatch、read-stall 与 runner exception。</li>
+            </ul>
+            <p class="card-note">相关材料：`docs/work_logs/2026-04-14.md`、`report-20260414-build123d-vs-cadquery-benchmark/`。</p>
+          </article>
+
+          <article class="timeline-card glass reveal">
+            <div class="timeline-date">2026-04-15</div>
+            <h3>再把“系统怎样稳定变好”接成闭环</h3>
+            <ul class="flat-list">
+              <li>新增 `benchmark/canary_case_sets.json`，把 canary 回归入口固定下来。</li>
+              <li>把 `first_solid_success_rate`、`requirement_complete_rate`、`runtime_rewrite_rate`、`tokens_per_successful_case` 等指标接入 benchmark 报表。</li>
+              <li>收紧成功写后的 validation / read-stall policy，修正 `validate_requirement` 的取消异常传播。</li>
+              <li>补齐 path-sweep 与 top-face channel 的 clause interpretation，让 validator 能真正复用已有几何证据。</li>
+            </ul>
+            <p class="card-note">相关材料：`docs/work_logs/2026-04-15.md`、`docs/cad_iteration/CANONICAL_BASELINE.md`。</p>
+          </article>
+        </div>
+
+        <div class="narrative-grid">
+          <article class="narrative-card glass reveal">
+            <h3>这两天真正改变的，不只是代码量</h3>
+            <p>
+              更重要的变化是：Build123d 迁移后的问题不再表现为“代码根本跑不动”，而是越来越明确地落在
+              validator 证据面、写后 closure、path-sweep 契约和 countersink family 这些可治理表面上。
+            </p>
+          </article>
+          <article class="narrative-card glass reveal">
+            <h3>这也是为什么现在更适合继续投</h3>
+            <p>
+              当问题能被稳定归类，runtime 才能把修复沉淀成共享规则、共享 repair lane 和共享 benchmark 指标，
+              而不是继续靠人工盯单题做 patch。
+            </p>
+          </article>
+        </div>
+
+        <div class="narrative-grid">
+          <article class="narrative-card glass reveal">
+            <h3>这里说的 canary，到底是什么</h3>
+            <p>
+              canary 不是“随手挑几题 smoke 一下”，而是一组固定的小切片回归集，用来代表当前最关键的 failure family 和两三个相对稳定的 guardrail case。
+              这组 case 固定写在 `benchmark/canary_case_sets.json`，当前包含 `L1_122`、`L1_148`、`L1_157`、`L1_159`、`L2_88`、`L2_130`、`L2_149`、`L2_172`。
+            </p>
+            <ul class="flat-list">
+              <li>它覆盖了三类问题：`validator mismatch / read-stall`、`runner exception`、`half-shell / path-sweep / countersink`。</li>
+              <li>它的作用不是替代 full L1/L2，而是作为每次主路径改动后的第一道固定回归入口。</li>
+              <li>定义文档在 `docs/cad_iteration/CANONICAL_BASELINE.md`，运行入口是 `benchmark/run_prompt_benchmark.py` 的 `--case-set canary`。</li>
+            </ul>
+          </article>
+          <article class="narrative-card glass reveal">
+            <h3>为什么要先固定 canary</h3>
+            <p>
+              因为 runtime 的问题往往不是“这一题过没过”这么简单，而是会反复出现在同一种控制流或同一个 feature family 上。
+              先固定 canary，后续每一次改动都能用同一把尺子回答三个问题：first write 是否更稳、validator 是否更容易闭环、repair packet 是否真的帮到收敛。
+            </p>
+            <p>
+              这也是为什么页面里既展示 sampled L1/L2，也展示 canary：前者证明仓库整体可运行，后者负责稳定暴露主矛盾。
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-2">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">02 / 流程作用</span>
+          <h2>这些改动不是停留在文件层面，它们已经开始改变 runtime 每一轮是怎么走的。</h2>
+          <p class="module-desc">下面按运行顺序说明“改动如何起作用”，每一步都给出对应代码位置和代表性证据。</p>
+        </header>
+
+        <div class="flow-grid">
+          <article class="flow-card glass reveal">
+            <span class="flow-index">1</span>
+            <h3>首轮写模仍以 `execute_build123d` 为主，但首轮方向更明确</h3>
+            <p>
+              Build123d 仍是 canonical first write。区别在于，现在首轮更容易被引导到正确 family 的 skeleton，
+              而不是写出一个“有实体但方向错”的初稿。
+            </p>
+            <p class="card-note">代码：`src/sub_agent_runtime/skill_pack.py`。相关 case：`L2_130`、`L2_149`。</p>
+          </article>
+
+          <article class="flow-card glass reveal">
+            <span class="flow-index">2</span>
+            <h3>写前校验先把已知错法拦住</h3>
+            <p>
+              Build123d API 猜错、builder method reference、annular same-sketch face splitting、path-sweep 参数错法，
+              现在会优先在 preflight lint 阶段暴露，而不是直接浪费一轮 sandbox 失败。
+            </p>
+            <p class="card-note">代码：`src/sub_agent_runtime/tool_runtime.py`。代表现象：`code_path_family_gap` 不再完全无结构。</p>
+          </article>
+
+          <article class="flow-card glass reveal">
+            <span class="flow-index">3</span>
+            <h3>写成功以后，validator 不再轻易把系统拖进 read-stall</h3>
+            <p>
+              fresh `insufficient_evidence` 写后验证现在会被更积极地导向 semantic refresh，
+              而不是继续 generic read / validation ping-pong。
+            </p>
+            <p class="card-note">代码：`src/sub_agent_runtime/agent_loop_v2.py`。直接受益：`L1_122`、`L1_148`。</p>
+          </article>
+
+          <article class="flow-card glass reveal">
+            <span class="flow-index">4</span>
+            <h3>validator clause interpretation 能真正复用已有几何证据</h3>
+            <p>
+              top-face full-span channel、bbox 单维度条款、bottom/top on Z、slot/notch/channel alignment、
+              path-sweep 的 rail/frame/profile 条款，已经开始复用 family-level evidence，而不是继续报“证据不足”。
+            </p>
+            <p class="card-note">代码：`src/sandbox_mcp_server/validation_interpretation.py`、`registry.py`、`validation_llm.py`。</p>
+          </article>
+
+          <article class="flow-card glass reveal">
+            <span class="flow-index">5</span>
+            <h3>最后把效果落成统一 baseline，而不是只留零散 run</h3>
+            <p>
+              sampled L1/L2、canary、brief report、summary、run diagnostics 现在已经共享一套指标，
+              这意味着后续优化可以稳定对比，不再靠主观感觉判断是否有效。
+            </p>
+            <p class="card-note">代码：`benchmark/run_prompt_benchmark.py`。入口：`benchmark/canary_case_sets.json`。</p>
+          </article>
+        </div>
+
+        <div class="code-grid">
+          <article class="code-card glass reveal">
+            <div class="code-head">
+              <span class="code-tag">控制流</span>
+              <span class="code-path">src/sub_agent_runtime/agent_loop_v2.py</span>
+            </div>
+            <h3>写后 closure policy 收紧</h3>
+            <p>核心变化是：写后 fresh insufficient-evidence validation 不再被视作普通读操作，而是会更明确地进入 semantic refresh lane；没有新写入、没有新证据的连续 validation 也不再允许无限扩散。</p>
+          </article>
+
+          <article class="code-card glass reveal">
+            <div class="code-head">
+              <span class="code-tag">Runner 稳定性</span>
+              <span class="code-path">src/sandbox/mcp_runner.py + src/sub_agent_runtime/tool_runtime.py</span>
+            </div>
+            <h3>`validate_requirement` 取消异常不再炸穿 runner</h3>
+            <p>把 `CancelledError`、close-path error、gather 中单工具取消统一压成结构化返回。这样失败会回到正常的 `INCOMPLETE` 或后续收敛，而不是先被 transport 噪声抬升成 `RUN_ERROR`。</p>
+          </article>
+
+          <article class="code-card glass reveal">
+            <div class="code-head">
+              <span class="code-tag">Validator</span>
+              <span class="code-path">src/sandbox_mcp_server/validation_interpretation.py + validation_llm.py + registry.py</span>
+            </div>
+            <h3>clause interpretation 与 family inference 补全</h3>
+            <p>重点不是“让 validator 更宽松”，而是让 validator 能把 requirement clause 正确地绑定到已经存在的几何证据上。这样实体正确时就不会继续因为证据链不完整而空转。</p>
+          </article>
+
+          <article class="code-card glass reveal">
+            <div class="code-head">
+              <span class="code-tag">Build123d 契约</span>
+              <span class="code-path">src/sub_agent_runtime/skill_pack.py + tool_runtime.py + service.py</span>
+            </div>
+            <h3>path-sweep / annular profile / fallback 规则产品化</h3>
+            <p>这条线让 `L2_149` 从“首轮有实体但无法收口”推进到了“可以通过 validator 与 evaluator”，同时也暴露出哪类 fallback 仍然过宽，方便继续收紧。</p>
+          </article>
+        </div>
+
+        <div class="case-stack">
+          <article class="case-card glass reveal">
+            <div class="case-head">
+              <span class="case-kicker">实现细节 A / 写后收口</span>
+              <h3>`agent_loop_v2.py` 具体改了什么，为什么能压住 read-stall</h3>
+            </div>
+            <p>
+              这一层不是简单加一句 prompt，而是直接改写后控制流。`_latest_validation_is_fresh_for_write(...)` 负责判断当前 validation 是否真的是“刚刚这次写入”的新结果；
+              `_has_repeated_validation_without_new_evidence_after_write(...)` 负责识别“没有新写入、没有新 kernel/probe 证据，却还在重复 validation”的空转。
+            </p>
+            <ul class="flat-list">
+              <li>当 fresh validation 已经 `complete`，stop reason 会直接落成 `post_write_validated_complete`。</li>
+              <li>当 fresh validation 是 `insufficient_evidence`，runtime 不再继续 generic read/validation ping-pong，而是强制回到 semantic refresh lane。</li>
+              <li>这条修改直接对应 `L1_122` 从 `20260415_203500` 的 `read_stall_gap`，变成 `20260415_205500` 的单轮 `PASS`。</li>
+            </ul>
+          </article>
+
+          <article class="case-card glass reveal">
+            <div class="case-head">
+              <span class="case-kicker">实现细节 B / Build123d 契约</span>
+              <h3>`tool_runtime.py` 不是“报错更多了”，而是在更早的位置把错法拦住</h3>
+            </div>
+            <p>
+              这轮对 `tool_runtime.py` 的增强，核心是把以前会浪费完整一轮 sandbox 的常见错法提前升格成 preflight lint，并给出对应 repair recipe。
+              这样模型不会先把 session 写坏，再靠下一轮猜为什么几何不对。
+            </p>
+            <ul class="flat-list">
+              <li>`invalid_build123d_contract.active_builder_temporary_primitive_arithmetic`：拦截 active `BuildPart` 里直接拿临时 `Cylinder` / `Cone` / `Box` 做后续布尔算术的错法。</li>
+              <li>`invalid_build123d_contract.explicit_anchor_manual_cutter_requires_subtract_mode`：拦截 explicit-anchor hole family 里忘记 `mode=Mode.SUBTRACT` 的手写 cutter。</li>
+              <li>`invalid_build123d_keyword.countersink_*_alias`：拦截 `CounterSinkHole(...)` 的错误关键字，比如 `angle=`、`head_radius=`，要求改回 Build123d 的字面契约。</li>
+            </ul>
+          </article>
+
+          <article class="case-card glass reveal">
+            <div class="case-head">
+              <span class="case-kicker">实现细节 C / 语义状态</span>
+              <h3>`blocker_taxonomy.py` + `feature_graph.py` 负责把“修对了”真正反映回 prompt 和 repair</h3>
+            </div>
+            <p>
+              仅有 lint 还不够，如果旧 blocker 继续挂在 `general_geometry` 或旧 family 上，下一轮 prompt 仍然会被过期信息带偏。
+              这轮修改把 `head_diameter_*`、`cone_angle_*`、`through_hole_diameter_*`、`countersink`、`conical_recess`、`activate_the_hole_wizard_or_the_revolved_cut_tool`
+              这类 blocker 重新映射回 `explicit_anchor_hole`，同时把已被新 validation 覆盖的旧 feature instance 标成 `resolved`。
+            </p>
+            <ul class="flat-list">
+              <li>效果是：新的 countersink blocker 不会再被错误塞进 `general_geometry`。</li>
+              <li>旧的孔位 blocker 不会继续留在 `domain_kernel_digest` 里污染后续 repair。</li>
+              <li>这一点在 `L2_172` 的新旧 run 对照里非常明显，后面的案例 D 会给出完整证据链。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-3">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">03 / 系统效果</span>
+          <h2>效果提升已经能在 full slice 和 canary 两个层面同时观察到，而不是只存在于某几个精选案例。</h2>
+          <p class="module-desc">这一节先给聚合结果，再解释这些数字各自说明什么。</p>
+        </header>
+
+        <div class="narrative-grid">
+          <article class="narrative-card glass reveal">
+            <h3>页面里的“问题归类”具体怎么做</h3>
+            <p>
+              这份报告里的归类不是人工写备注，而是 benchmark 聚合时从 case 产物里算出来的，核心代码在 `benchmark/run_prompt_benchmark.py`。
+              它分三层：
+            </p>
+            <ul class="flat-list">
+              <li>`status / failure_category`：先回答“哪一层先坏了”，例如 `RUN_ERROR`、`NO_STEP`、`VALIDATOR_MISMATCH`、`INCOMPLETE`。</li>
+              <li>`failure_cluster`：再回答“这类失败在行为上属于哪一族”，例如 `read_stall_gap`、`code_path_family_gap`、`runtime_gap`、`tool_gap`。</li>
+              <li>`recommended_fix_layer`：最后给出优先修哪一层，比如 `kernel_binding_gap`、`tool_runtime`、`validator`、`prompt/code path`。</li>
+            </ul>
+          </article>
+          <article class="narrative-card glass reveal">
+            <h3>三层归类分别看什么证据</h3>
+            <p>
+              `status / failure_category` 主要来自 return code、STEP 产物是否存在、validator 与 evaluator 是否分歧、run 是否 converged；
+              `failure_cluster` 主要继承 runtime summary 里的聚合判断；`recommended_fix_layer` 会结合 validation lanes、domain-kernel mismatch 和 stop reason。
+            </p>
+            <ul class="flat-list">
+              <li>如果 runner 非零退出，就是 `runner_exception / RUN_ERROR`。</li>
+              <li>如果 evaluator 过了但 validator 没闭环，就是 `validator_evaluator_disagreement / VALIDATOR_MISMATCH`。</li>
+              <li>如果有 STEP 但 inspection-only rounds 很多，就会落到 `excessive_reinspection / INCOMPLETE`，再进一步看是不是 `read_stall_gap`。</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="comparison-table glass reveal">
+          <div class="comparison-row comparison-head">
+            <span>运行集</span>
+            <span>状态分布</span>
+            <span>关键指标</span>
+            <span>含义</span>
+          </div>
+          <div class="comparison-row">
+            <span><strong>sampled L1</strong><small>`20260415_113200`</small></span>
+            <span>`8 PASS / 1 NO_STEP / 1 INCOMPLETE`</span>
+            <span>`first_solid=0.9` `complete=0.8`</span>
+            <span>L1 主路径已经能完整运行，失败面收敛为 `code_path_family_gap` 与 `read_stall_gap` 两类。</span>
+          </div>
+          <div class="comparison-row">
+            <span><strong>sampled L2</strong><small>`20260415_113201`</small></span>
+            <span>`4 PASS / 3 NO_STEP / 2 INCOMPLETE / 1 RUNTIME_ERROR`</span>
+            <span>热点已集中到高价值 family</span>
+            <span>L2 仍然更难，但问题不再散乱，已经可以按 family 与 fix layer 收口。</span>
+          </div>
+          <div class="comparison-row">
+            <span><strong>canary</strong><small>`20260416_002500`</small></span>
+            <span>`6 PASS / 1 NO_STEP / 1 INCOMPLETE`</span>
+            <span>`first_solid=0.875` `complete=0.75`</span>
+            <span>canary 已经足够稳定地指出当前剩余主矛盾：`L2_149` 和 `L2_172`。</span>
+          </div>
+        </div>
+
+        <div class="evidence-grid">
+          <article class="insight-card glass reveal">
+            <span class="insight-label">效果 1</span>
+            <h3>仓库已经证明“能完整运行”</h3>
+            <p>这一点来自 sampled L1/L2 全量切片，而不是单个 smoke。后续所有改动都可以直接在 full slice 和 canary 上比较。</p>
+          </article>
+          <article class="insight-card glass reveal">
+            <span class="insight-label">效果 2</span>
+            <h3>失败面正在集中，而不是扩散</h3>
+            <p>现在不再需要人工翻很多 run 才知道主要问题在哪里。canary 的结果已经能稳定指向 path-sweep 和 countersink 两个主战场。</p>
+          </article>
+          <article class="insight-card glass reveal">
+            <span class="insight-label">效果 3</span>
+            <h3>提升越来越来自通用治理，而不是单题 patch</h3>
+            <p>本轮最重要的收益来自 closure policy、clause interpretation reuse、lint/repair contract 与 baseline 回归入口，这些修改天然会外溢到未知 case。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-4">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">04 / 案例证据</span>
+          <h2>四个代表性目录，分别证明四类进展：收口、runner 稳定性、path-sweep 闭环，以及当前剩余边界。</h2>
+          <p class="module-desc">每个案例都只回答一个问题，并明确写出该先打开哪个目录、哪个文件、看哪些值。</p>
+        </header>
+
+        <div class="case-stack">
+          <article class="case-card glass reveal">
+            <div class="case-head">
+              <span class="case-kicker">案例 A / 收口</span>
+              <h3>`L1_122`：从 write 后 read-stall 拉回首轮完成</h3>
+            </div>
+            <div class="mini-table">
+              <div class="mini-row mini-head"><span>run</span><span>状态</span><span>轮数 / token</span><span>关键信号</span></div>
+              <div class="mini-row"><span>`20260415_203500`</span><span>`INCOMPLETE`</span><span>`4轮 / 23472`</span><span>`failure_cluster=read_stall_gap`，3 个 inspection-only round</span></div>
+              <div class="mini-row"><span>`20260415_204500`</span><span>`INCOMPLETE`</span><span>`4轮 / 27677`</span><span>family bias 已开始从局部编辑回到更合理的组合</span></div>
+              <div class="mini-row"><span>`20260415_205500`</span><span>`PASS`</span><span>`1轮 / 4888`</span><span>`stop_reason=post_write_validated_complete`</span></div>
+            </div>
+            <p>
+              这个 case 最适合说明 validator 证据面的价值。几何本身并不复杂，真正的问题是：实体已经正确时，
+              validator 能不能停止继续要求无意义重读。4/15 这组修改把 full-span top-face channel、bbox 单维度条款、
+              Z0 条款和 notch/channel alignment 接到了同一组证据上，结果就是首轮写后直接闭环。
+            </p>
+            <ul class="flat-list">
+              <li>目录：`benchmark/runs/20260415_205500/L1_122`。</li>
+              <li>先看：`trace/stop_reason.json`。</li>
+              <li>再看：`queries/round_01_validate_requirement_post_write.json`。</li>
+              <li>最后看：`../20260415_205500/brief_report.md` 里的 `baseline_metrics`。</li>
+            </ul>
+          </article>
+
+          <article class="case-card glass reveal">
+            <div class="case-head">
+              <span class="case-kicker">案例 B / runner 稳定性</span>
+              <h3>`L1_148`：从取消异常干扰，收敛到 1 轮通过</h3>
+            </div>
+            <div class="mini-table">
+              <div class="mini-row mini-head"><span>run</span><span>状态</span><span>轮数 / token</span><span>关键信号</span></div>
+              <div class="mini-row"><span>`20260415_183000`</span><span>`INCOMPLETE`</span><span>`4轮 / 22992`</span><span>`validation_call_count=4`，还带 `read_stall_gap`</span></div>
+              <div class="mini-row"><span>`20260415_195500`</span><span>`INCOMPLETE`</span><span>`4轮 / 25232`</span><span>校验通道已稳定，但收口还没完全收干净</span></div>
+              <div class="mini-row"><span>`20260416_001500`</span><span>`PASS`</span><span>`1轮 / 4630`</span><span>`validation_complete=true`，`planner_rounds=1`</span></div>
+            </div>
+            <p>
+              这一题之前真正拖累表现的，不是几何难，而是 `validate_requirement` 的 transport cancellation 会把问题抬升成 runner 层噪声。
+              当取消异常和 close-path error 被压回结构化返回后，系统终于能先看到真实几何问题，再把它收敛掉。
+            </p>
+            <ul class="flat-list">
+              <li>目录：`benchmark/runs/20260416_001500/L1_148`。</li>
+              <li>先看：`trace/stop_reason.json`。</li>
+              <li>再看：`../20260416_002500/brief_report.md` 中 `L1_148` 的 canary 记录。</li>
+            </ul>
+          </article>
+
+          <article class="case-card glass reveal">
+            <div class="case-head">
+              <span class="case-kicker">案例 C / family 治理闭环</span>
+              <h3>`L2_149`：path-sweep 家族已经进入“能闭环、能识别误判、能继续收紧”的阶段</h3>
+            </div>
+            <div class="mini-table">
+              <div class="mini-row mini-head"><span>run</span><span>状态</span><span>轮数 / token</span><span>关键信号</span></div>
+              <div class="mini-row"><span>`20260415_120527`</span><span>`INCOMPLETE`</span><span>`8轮 / 66088`</span><span>已出实体，但多条 clause 仍是 `insufficient_evidence`</span></div>
+              <div class="mini-row"><span>`20260415_122001`</span><span>`PASS`</span><span>`5轮 / 41796`</span><span>`validation_complete=true`，evaluator `final_score=1.0`</span></div>
+              <div class="mini-row"><span>`20260415_122633`</span><span>`EVAL_FAIL`</span><span>`3轮 / 29155`</span><span>runtime validator 通过，但 evaluator 识别出 face family 错误</span></div>
+            </div>
+            <p>
+              这一组证据最能说明 Build123d 迁移后的“长期价值”。第一阶段，系统已经能写出实体，但 validator 还无法把 path sketch、
+              reference plane、two concentric circles 这些 requirement clause 对齐到已有证据；第二阶段补齐 clause interpretation 后，
+              case 通过 validator 和 evaluator；第三阶段又立刻暴露出 fallback 过宽的问题，于是继续收紧几何判定条件。
+            </p>
+            <ul class="flat-list">
+              <li>目录一：`benchmark/runs/20260415_120527/L2_149`，看 `queries/round_06_validate_requirement.json`。</li>
+              <li>目录二：`benchmark/runs/20260415_122001/L2_149`，看 `evaluation/benchmark_eval.json`。</li>
+              <li>目录三：`benchmark/runs/20260415_122633/L2_149`，看 `evaluation/benchmark_eval.json`。</li>
+            </ul>
+          </article>
+
+          <article class="case-card glass reveal">
+            <div class="case-head">
+              <span class="case-kicker">案例 D / 关键实现链</span>
+              <h3>`L2_172`：taxonomy、lint、stale-blocker 清理是怎样一起把 countersink case 拉回通过的</h3>
+            </div>
+            <div class="mini-table">
+              <div class="mini-row mini-head"><span>阶段</span><span>目录 / 文件</span><span>状态</span><span>说明</span></div>
+              <div class="mini-row"><span>旧错法</span><span>`20260415_163643/actions/round_08_execute_build123d.json`</span><span>`lint fail`</span><span>`CounterSinkHole(...)` 仍写成 `angle=` 这类错误关键字</span></div>
+              <div class="mini-row"><span>前置拦截</span><span>`20260415_164609/actions/round_01_execute_build123d.json`</span><span>`lint fail`</span><span>手写 `Cone/Cylinder` cutter 但没用 `Mode.SUBTRACT`，被 preflight 提前拦下</span></div>
+              <div class="mini-row"><span>最终收敛</span><span>`20260415_164609/queries/round_03_validate_requirement_post_write.json`</span><span>`PASS`</span><span>`head_diameter=12.0`、孔位、外形尺寸全部闭环</span></div>
+            </div>
+            <p>
+              这一条证据链最适合解释“很多改动到底怎样一起生效”。第一步，preflight lint 把显然错误的 Build123d contract 在落盘前拦住；
+              第二步，blocker taxonomy 把 countersink/head-diameter 这类条款继续挂回 `explicit_anchor_hole`，而不是掉回 `general_geometry`；
+              第三步，feature graph 把已被替换的旧 blocker 置为 `resolved`，避免 prompt 继续围绕已经修好的孔位问题空转。
+            </p>
+            <ul class="flat-list">
+              <li>先看：`benchmark/runs/20260415_163643/L2_172/actions/round_08_execute_build123d.json`，确认旧错法是什么。</li>
+              <li>再看：`benchmark/runs/20260415_164609/L2_172/actions/round_01_execute_build123d.json` 与 `round_02_execute_build123d.json`，确认 preflight 在哪里介入。</li>
+              <li>最后看：`benchmark/runs/20260415_164609/L2_172/queries/round_03_validate_requirement_post_write.json` 与 `../summary.json`，确认它怎样从第 3 次写入闭环到 `PASS`。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-5">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">05 / 配图演示</span>
+          <h2>这份两日进展页也需要“看得见的证据”：一张图说明 path-sweep 已经闭环，一张图说明 half-shell 已经恢复健康，一张图说明 countersink 仍是主战场。</h2>
+          <p class="module-desc">这部分可以直接投屏讲，不需要额外口头补很多上下文。</p>
+        </header>
+
+        <div class="figure-grid">
+          <article class="figure-card glass reveal">
+            <div class="figure-copy">
+              <span class="figure-kicker">图 A / path-sweep 闭环</span>
+              <h3>`L2_149` 成功 run 已经达到 validator 与 evaluator 一致</h3>
+              <p>
+                左图是 `20260415_122001/L2_149` 的生成结果，右图是 ground truth。
+                这一组图最适合说明：path-sweep 家族已经从“会不会写 sweep”推进到“validator、fallback、几何签名是否一致”这个更高阶阶段。
+              </p>
+              <p class="card-note">
+                证据文件：`benchmark/runs/20260415_122001/L2_149/evaluation/benchmark_eval.json`。
+              </p>
+            </div>
+            <div class="media-pair">
+              <figure>
+                <img src="assets/l2_149_generated_iso.png" alt="L2_149 当前生成结果">
+                <figcaption>`20260415_122001` 生成结果</figcaption>
+              </figure>
+              <figure>
+                <img src="assets/l2_149_ground_truth_iso.png" alt="L2_149 ground truth">
+                <figcaption>ground truth</figcaption>
+              </figure>
+            </div>
+          </article>
+
+          <article class="figure-card glass reveal">
+            <div class="figure-copy">
+              <span class="figure-kicker">图 B / half-shell 健康度</span>
+              <h3>`L2_130` 已经不再是主要矛盾</h3>
+              <p>
+                这一组图来自前一日的 Build123d vs CadQuery 对照报告，适合配合本页的 canary 结果一起讲。
+                它能说明：half-shell + directional hole 的问题形态已经从“Build123d API 猜错”推进到更具体的坐标和几何组织问题，
+                而这条线在今天的定向修复后，已经从旧 run `20260415_164854` 的 `EVAL_FAIL / code_path_family_gap`
+                收敛到新 run `20260415_170236` 的 `PASS`。
+              </p>
+              <p class="card-note">
+                证据文件：`benchmark/runs/20260415_170236/summary.json`、`benchmark/runs/20260415_164854/summary.json` 与 `report-20260414-build123d-vs-cadquery-benchmark/assets/`。
+              </p>
+            </div>
+            <div class="media-triptych">
+              <figure>
+                <img src="assets/l2_130_build123d_iso.png" alt="L2_130 Build123d 结果">
+                <figcaption>Build123d 结果</figcaption>
+              </figure>
+              <figure>
+                <img src="assets/l2_130_cadquery_iso.png" alt="L2_130 CadQuery 结果">
+                <figcaption>CadQuery 结果</figcaption>
+              </figure>
+              <figure>
+                <img src="assets/l2_130_ground_truth_iso.png" alt="L2_130 ground truth">
+                <figcaption>ground truth</figcaption>
+              </figure>
+            </div>
+          </article>
+
+          <article class="figure-card glass reveal">
+            <div class="figure-copy">
+              <span class="figure-kicker">图 C / 当前主战场</span>
+              <h3>`L2_172` 仍是 countersink family 的集中暴露面</h3>
+              <p>
+                这一组图最适合说明“还有哪些事没做完”。当前 Build123d 版本已经能把很多局部坐标和孔位问题做对，
+                但 countersink helper、host face、cone geometry、family repair lane 的统一还没有完全收口。
+              </p>
+              <p class="card-note">
+                证据文件：`benchmark/runs/20260416_002500/summary.json` 与 `report-20260414-build123d-vs-cadquery-benchmark/assets/`。
+              </p>
+            </div>
+            <div class="media-triptych">
+              <figure>
+                <img src="assets/l2_172_build123d_iso.png" alt="L2_172 Build123d 结果">
+                <figcaption>Build123d 结果</figcaption>
+              </figure>
+              <figure>
+                <img src="assets/l2_172_cadquery_iso.png" alt="L2_172 CadQuery 结果">
+                <figcaption>CadQuery 结果</figcaption>
+              </figure>
+              <figure>
+                <img src="assets/l2_172_ground_truth_iso.png" alt="L2_172 ground truth">
+                <figcaption>ground truth</figcaption>
+              </figure>
+            </div>
+          </article>
+        </div>
+
+        <div class="demo-grid">
+          <article class="demo-card glass reveal">
+            <h3>演示材料一：Build123d demo 中文说明</h3>
+            <p>目录：`demos/build123d_foundations/README.md`</p>
+            <p>这套材料适合配合汇报使用，已经把 Build123d 相对 CadQuery 的优势、容器改造方式、三组 demo 的启动方法和落盘产物都整理成中文说明。</p>
+          </article>
+
+          <article class="demo-card glass reveal">
+            <h3>演示材料二：三组中文 demo 脚本</h3>
+            <p>文件：`demo_local_frame_countersink.py`、`demo_half_shell_directional_holes.py`、`demo_enclosure_body_lid.py`</p>
+            <p>这三组 demo 分别对应局部坐标、half-shell 与 enclosure body/lid 生命周期，正好能补足汇报中的“原理解释面”。</p>
+          </article>
+
+          <article class="demo-card glass reveal">
+            <h3>演示材料三：统一落盘清单</h3>
+            <p>文件：`demos/build123d_foundations/artifacts/summary.json`</p>
+            <p>这里已经整理了每个 demo 的 `title`、`narrative`、`talking_points`、`bbox` 和 `step_path`，适合直接当讲稿提纲。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-6">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">06 / 证据链路</span>
+          <h2>这轮工作最大的变化之一，是效果已经能被完整复盘，而不是只能靠截图或口头描述。</h2>
+          <p class="module-desc">如果需要把任何一条结论展开，可以按下面顺序取证，不必从目录树盲翻。</p>
+        </header>
+
+        <div class="artifact-grid">
+          <article class="path-card glass reveal">
+            <div class="path-title">1. 决策层</div>
+            <p><code>plans/round_*_response.json</code></p>
+            <p>用于说明模型这一轮为什么选 `execute_build123d`、`query_feature_probes` 或 `validate_requirement`。</p>
+          </article>
+          <article class="path-card glass reveal">
+            <div class="path-title">2. 执行层</div>
+            <p><code>actions/round_*_execute_build123d.json</code></p>
+            <p>用于说明 preflight lint、实际写入成功与否、结构化错误以及 snapshot geometry。</p>
+          </article>
+          <article class="path-card glass reveal">
+            <div class="path-title">3. 验证层</div>
+            <p><code>queries/round_*_validate_requirement*.json</code></p>
+            <p>用于说明 check、blocker、clause interpretation、coverage confidence 为什么高或低。</p>
+          </article>
+          <article class="path-card glass reveal">
+            <div class="path-title">4. 收敛层</div>
+            <p><code>trace/stop_reason.json</code> + <code>summary.json</code></p>
+            <p>用于说明这条 run 最终是 `post_write_validated_complete`、`max_rounds_reached` 还是其他停止原因。</p>
+          </article>
+          <article class="path-card glass reveal">
+            <div class="path-title">5. 几何评估层</div>
+            <p><code>evaluation/benchmark_eval.json</code></p>
+            <p>用于说明 runtime validator 与 evaluator 是否一致，以及几何差异具体落在哪些面或 anchor 上。</p>
+          </article>
+          <article class="path-card glass reveal">
+            <div class="path-title">6. 汇总层</div>
+            <p><code>brief_report.md</code> + <code>run_diagnostics.md</code> + <code>summary.json</code></p>
+            <p>用于说明整个 run root 的状态分布、主导 failure cluster、baseline 指标和待修重点。</p>
+          </article>
+        </div>
+
+        <div class="narrative-grid">
+          <article class="narrative-card glass reveal">
+            <h3>最值得直接打开的几个目录</h3>
+            <ul class="flat-list">
+              <li>`benchmark/canary_case_sets.json`：看 canary 的固定 case 切片到底包含哪些 case。</li>
+              <li>`docs/cad_iteration/CANONICAL_BASELINE.md`：看 canary 与 baseline 的正式定义。</li>
+              <li>`benchmark/run_prompt_benchmark.py`：看 `status / failure_category / failure_cluster / baseline_metrics` 是怎样算出来的。</li>
+              <li>`benchmark/runs/20260415_205500/L1_122`：看 closure 收口。</li>
+              <li>`benchmark/runs/20260416_001500/L1_148`：看 runner 稳定性问题是如何被压平的。</li>
+              <li>`benchmark/runs/20260415_122001/L2_149`：看 path-sweep 成功闭环。</li>
+              <li>`benchmark/runs/20260415_164609/L2_172`：看 countersink 修复链条怎样从 lint 走到 validator complete。</li>
+              <li>`benchmark/runs/20260416_002500`：看 canary 总表。</li>
+            </ul>
+          </article>
+          <article class="narrative-card glass reveal">
+            <h3>这套证据链为什么重要</h3>
+            <p>
+              因为这代表后续优化不再需要“先靠人记住上次发生了什么”。每次改动都可以回到同一套
+              `plans → actions → queries → trace → evaluation → report` 链路里复盘。
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" id="module-7">
+      <div class="module-shell">
+        <header class="module-header reveal">
+          <span class="module-number">07 / 当前判断</span>
+          <h2>现在最值得汇报的，不是“已经全部做完”，而是“系统已经进入正确的收敛形态”。</h2>
+          <p class="module-desc">最后一页把成果、边界和下一步一起说清，避免只报喜或只报问题。</p>
+        </header>
+
+        <div class="closing-grid">
+          <article class="closing-card glass reveal">
+            <span class="closing-label">已经拿到的成果</span>
+            <ul class="flat-list">
+              <li>Build123d 主路径已经在 sampled L1/L2 上完整运行，仓库可跑性有实证。</li>
+              <li>canary、baseline、brief report、summary 的口径已经统一。</li>
+              <li>L1 的 validator/read-stall 家族已经明显后退，`L1_122` 和 `L1_148` 都给出了清楚的改善证据。</li>
+              <li>path-sweep 家族已经出现“成功闭环 + 暴露误判 + 继续收紧”的完整治理链条。</li>
+            </ul>
+          </article>
+
+          <article class="closing-card glass reveal">
+            <span class="closing-label">仍需继续推进的重点</span>
+            <ul class="flat-list">
+              <li>`L2_172` countersink family 仍未收敛完成，下一阶段应继续围绕 countersink geometry recognition 与 explicit-anchor hole contract 推进。</li>
+              <li>`L2_149` 虽然已有成功 run，但 canary 仍显示 first-turn bias 和 code path 稳定性不够，需要继续提高 path-sweep recipe 命中率。</li>
+              <li>后续优化仍应坚持 family-first 泛化，不应该回到针对单个 case 堆硬规则的老路上。</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="summary-band reveal">
+          <span class="summary-kicker">一句话收束</span>
+          <p>这两天最大的进展，不是多过了几题，而是 Build123d 迁移后的 runtime 已经开始具备“发现问题、归类问题、收紧契约、复跑验证”的稳定闭环能力。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

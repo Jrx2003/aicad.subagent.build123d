@@ -1839,8 +1839,9 @@ class SandboxMCPService:
                         f"{normalized_centers}"
                     )
         else:
-            confidence = 0.35 if solids > 0 and volume > 0.0 else 0.15
-            success = solids > 0 and volume > 0.0 and family == "general_geometry"
+            material_volume = abs(float(volume)) if isinstance(volume, (int, float)) else 0.0
+            confidence = 0.35 if solids > 0 and material_volume > 0.0 else 0.15
+            success = solids > 0 and material_volume > 0.0 and family == "general_geometry"
             summary = (
                 f"{family}: no dedicated validator checks mapped yet; using generic solid/volume signals"
             )
@@ -1900,6 +1901,10 @@ class SandboxMCPService:
         filenames: list[str],
         requirement_text: str | None,
     ) -> dict[str, Any]:
+        probe_family_ids = infer_requirement_probe_families(
+            {"description": requirement_text} if requirement_text else None,
+            requirement_text,
+        )
         snapshot = self._parse_snapshot(result)
         geometry = snapshot.geometry if snapshot is not None else None
         summary = {
@@ -1925,14 +1930,24 @@ class SandboxMCPService:
             ),
         }
         if snapshot is None or not result.success:
-            if requirement_requests_path_sweep(None, requirement_text):
+            if "path_sweep" in probe_family_ids or requirement_requests_path_sweep(
+                None, requirement_text
+            ):
                 self._apply_path_sweep_probe_diagnostics_to_summary(
                     summary=summary,
                     stdout=result.stdout,
                     stderr=result.stderr,
                 )
+            if "explicit_anchor_hole" in probe_family_ids:
+                self._apply_explicit_anchor_hole_probe_diagnostics_to_summary(
+                    summary=summary,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                )
             return summary
-        if requirement_requests_path_sweep(None, requirement_text):
+        if "path_sweep" in probe_family_ids or requirement_requests_path_sweep(
+            None, requirement_text
+        ):
             path_sweep_ok, path_sweep_evidence = (
                 self._snapshot_has_execute_build123d_path_sweep_fallback(
                     snapshot=snapshot,
@@ -1962,6 +1977,12 @@ class SandboxMCPService:
                     stdout=result.stdout,
                     stderr=result.stderr,
                 )
+        if "explicit_anchor_hole" in probe_family_ids:
+            self._apply_explicit_anchor_hole_probe_diagnostics_to_summary(
+                summary=summary,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
         return summary
 
     def _apply_path_sweep_probe_diagnostics_to_summary(
@@ -1986,11 +2007,21 @@ class SandboxMCPService:
         has_connected_path = bool(signal_values.get("path_chain_connected")) or bool(
             signal_values.get("workplane_path_wire_valid")
         )
+        has_repair_ready_rail = has_connected_path and int(
+            signal_values.get("path_segment_count", 0) or 0
+        ) >= 2
         if has_valid_profile and has_connected_path:
             summary["actionable"] = True
             summary["actionable_family_ids"] = ["path_sweep"]
             summary["actionable_reason"] = (
                 "path_sweep probe produced repair-ready wire/profile diagnostics; "
+                f"signals={signal_values}"
+            )
+        elif has_repair_ready_rail:
+            summary["actionable"] = True
+            summary["actionable_family_ids"] = ["path_sweep"]
+            summary["actionable_reason"] = (
+                "path_sweep probe produced repair-ready rail diagnostics; "
                 f"signals={signal_values}"
             )
 
@@ -2033,6 +2064,11 @@ class SandboxMCPService:
         profile_face_area = _extract_float("Profile face area")
         if profile_face_area is not None:
             signals["profile_face_area"] = profile_face_area
+        profile_face_count = _extract_float("Profile face count")
+        if profile_face_count is not None:
+            signals["profile_face_count"] = int(profile_face_count)
+            if int(profile_face_count) >= 1:
+                signals["profile_face_valid"] = True
         edge_gap_1 = _extract_float("Edge1 end to Edge2 start distance")
         edge_gap_2 = _extract_float("Edge2 end to Edge3 start distance")
         if edge_gap_1 is not None or edge_gap_2 is not None:
@@ -2053,7 +2089,114 @@ class SandboxMCPService:
         workplane_path_wire_valid = _extract_bool("Path wire via Workplane")
         if workplane_path_wire_valid is not None:
             signals["workplane_path_wire_valid"] = workplane_path_wire_valid
+        if "workplane_path_wire_valid" not in signals and re.search(
+            r"Path wire:\s*<build123d\.topology\.Wire\b",
+            combined,
+            flags=re.IGNORECASE,
+        ):
+            signals["workplane_path_wire_valid"] = True
+        segment_count = len(
+            re.findall(
+                r"\b(?:Line\s*\d+|Arc)\s*:\s*start=.*?end=",
+                combined,
+                flags=re.IGNORECASE,
+            )
+        )
+        if segment_count == 0:
+            path_edges_match = re.search(r"Path edges:\s*\[(.*?)\]", combined, flags=re.DOTALL)
+            if path_edges_match is not None:
+                segment_count = len(
+                    re.findall(
+                        r"<build123d\.topology\.Edge\b",
+                        str(path_edges_match.group(1)),
+                        flags=re.IGNORECASE,
+                    )
+                )
+        if segment_count:
+            signals["path_segment_count"] = segment_count
+        if (
+            "path_chain_connected" not in signals
+            and segment_count >= 3
+            and re.search(r"Path endpoint:\s*Vector\(", combined, flags=re.IGNORECASE)
+        ):
+            signals["path_chain_connected"] = True
+        if (
+            "path_chain_connected" not in signals
+            and bool(signals.get("workplane_path_wire_valid"))
+            and segment_count >= 2
+        ):
+            signals["path_chain_connected"] = True
+        if (
+            "workplane_path_wire_valid" not in signals
+            and segment_count >= 3
+            and re.search(
+                r"Positional args work:\s*<build123d\.objects_curve\.CenterArc\b",
+                combined,
+                flags=re.IGNORECASE,
+            )
+        ):
+            signals["workplane_path_wire_valid"] = True
         return signals
+
+    def _apply_explicit_anchor_hole_probe_diagnostics_to_summary(
+        self,
+        *,
+        summary: dict[str, Any],
+        stdout: str | None,
+        stderr: str | None,
+    ) -> None:
+        signal_values = self._extract_explicit_anchor_hole_probe_signal_values(
+            stdout=stdout,
+            stderr=stderr,
+        )
+        if not signal_values:
+            return
+        signal_map = dict(summary.get("signal_values_by_family") or {})
+        signal_map["explicit_anchor_hole"] = signal_values
+        summary["signal_values_by_family"] = signal_map
+        anchor_keys = sorted(signal_values.keys())
+        anchor_map = dict(summary.get("anchor_signal_keys_by_family") or {})
+        anchor_map["explicit_anchor_hole"] = anchor_keys
+        summary["anchor_signal_keys_by_family"] = anchor_map
+        if not summary.get("recommended_repair_lane"):
+            summary["recommended_repair_lane"] = "subtree_rebuild"
+        if bool(signal_values.get("countersink_helper_signature_valid")):
+            summary["actionable"] = True
+            summary["actionable_family_ids"] = ["explicit_anchor_hole"]
+            summary["actionable_reason"] = (
+                "explicit_anchor_hole probe produced repair-ready CounterSinkHole "
+                f"contract diagnostics; signals={signal_values}"
+            )
+
+    def _extract_explicit_anchor_hole_probe_signal_values(
+        self,
+        *,
+        stdout: str | None,
+        stderr: str | None,
+    ) -> dict[str, Any]:
+        combined = "\n".join(
+            part for part in (stdout or "", stderr or "") if isinstance(part, str) and part.strip()
+        )
+        if not combined:
+            return {}
+        lowered = combined.lower()
+        signature_present = "countersinkhole signature" in lowered
+        helper_contract_present = all(
+            token in lowered
+            for token in ("radius", "counter_sink_radius", "depth", "counter_sink_angle")
+        )
+        if not signature_present and not helper_contract_present:
+            return {}
+        return {
+            "countersink_helper_signature_present": signature_present,
+            "countersink_helper_signature_valid": signature_present and helper_contract_present,
+            "counter_sink_radius_keyword_valid": "counter_sink_radius" in lowered,
+            "counter_sink_angle_keyword_valid": "counter_sink_angle" in lowered,
+            "counter_sink_radius_contract_hint": (
+                "CounterSinkHole(radius=..., counter_sink_radius=..., depth=..., "
+                "counter_sink_angle=...)"
+            ),
+        }
 
     def _build_sketch_state(
         self,
@@ -4351,10 +4494,16 @@ class SandboxMCPService:
         torus_count = sum(
             1 for face in faces if str(getattr(face, "geom_type", "")).strip().upper() == "TORUS"
         )
+        revolution_count = sum(
+            1
+            for face in faces
+            if str(getattr(face, "geom_type", "")).strip().upper() == "REVOLUTION"
+        )
         cylinder_count = sum(
             1 for face in faces if str(getattr(face, "geom_type", "")).strip().upper() == "CYLINDER"
         )
-        realized = torus_count >= 1 and cylinder_count >= 2
+        curved_transition_count = torus_count + revolution_count
+        realized = curved_transition_count >= 1 and cylinder_count >= 2
         return self._make_relation_signal(
             relation_id="bend_realized",
             relation_type="bend_realized",
@@ -4362,7 +4511,11 @@ class SandboxMCPService:
             status=RelationStatus.PASS if realized else (RelationStatus.FAIL if blocking else RelationStatus.INFO),
             entities=[],
             blocking=blocking,
-            measured={"torus_faces": torus_count, "cylinder_faces": cylinder_count},
+            measured={
+                "torus_faces": torus_count,
+                "revolution_faces": revolution_count,
+                "cylinder_faces": cylinder_count,
+            },
             why=(
                 "Curved transition plus multiple cylindrical branches indicate a realized bend."
                 if realized
@@ -4448,6 +4601,7 @@ class SandboxMCPService:
             if isinstance(snapshot.geometry.volume, (int, float))
             else 0.0
         )
+        material_volume = abs(actual_volume)
         entities = self._normalize_string_list(
             [
                 path.path_ref if path is not None else "",
@@ -4466,6 +4620,7 @@ class SandboxMCPService:
                 measured={
                     "expected_volume": expected_volume,
                     "actual_volume": actual_volume,
+                    "actual_volume_magnitude": material_volume,
                     "source": expected_meta.get("source"),
                 },
                 why="No material sweep result exists yet, so volume consistency is not ready for scoring.",
@@ -4481,14 +4636,15 @@ class SandboxMCPService:
                 measured={
                     "expected_volume": expected_volume,
                     "actual_volume": actual_volume,
+                    "actual_volume_magnitude": material_volume,
                     "source": expected_meta.get("source"),
                 },
                 why="Expected sweep volume could not be estimated robustly from the current requirement/profile/path evidence.",
             )
-        volume_ratio = actual_volume / float(expected_volume)
+        volume_ratio = material_volume / float(expected_volume)
         passes = (
             snapshot.geometry.solids > 0
-            and actual_volume > 1e-6
+            and material_volume > 1e-6
             and 0.35 <= volume_ratio <= 1.65
         )
         score = max(0.0, 1.0 - (abs(volume_ratio - 1.0) / 0.8))
@@ -4502,6 +4658,7 @@ class SandboxMCPService:
             measured={
                 "expected_volume": round(float(expected_volume), 6),
                 "actual_volume": round(actual_volume, 6),
+                "actual_volume_magnitude": round(material_volume, 6),
                 "volume_ratio": round(volume_ratio, 6),
                 "source": expected_meta.get("source"),
             },
@@ -5196,7 +5353,9 @@ class SandboxMCPService:
 
         has_solid = snapshot.geometry.solids > 0
         has_positive_volume = (
-            has_solid and isinstance(snapshot.geometry.volume, (int, float)) and snapshot.geometry.volume > 1e-6
+            has_solid
+            and isinstance(snapshot.geometry.volume, (int, float))
+            and abs(float(snapshot.geometry.volume)) > 1e-6
         )
         checks.append(
             RequirementCheck(
@@ -5458,7 +5617,7 @@ class SandboxMCPService:
             has_material_sweep
             and snapshot.geometry.solids > 0
             and isinstance(snapshot.geometry.volume, (int, float))
-            and float(snapshot.geometry.volume) > 1e-6
+            and abs(float(snapshot.geometry.volume)) > 1e-6
             and "feature_path_sweep_result" not in blockers
             and (not bend_required or realized_bend)
         )
@@ -5610,7 +5769,7 @@ class SandboxMCPService:
             (has_material_loft or snapshot_loft_fallback)
             and snapshot.geometry.solids > 0
             and isinstance(snapshot.geometry.volume, (int, float))
-            and float(snapshot.geometry.volume) > 1e-6
+            and abs(float(snapshot.geometry.volume)) > 1e-6
             and (
                 "feature_loft_result" not in blockers
                 or snapshot_loft_fallback
@@ -9141,22 +9300,47 @@ class SandboxMCPService:
         self,
         history: list[ActionHistoryEntry],
     ) -> bool:
-        if not history:
+        snapshot_entry = next(
+            (entry for entry in reversed(history) if entry.action_type == CADActionType.SNAPSHOT),
+            None,
+        )
+        if snapshot_entry is None:
             return False
-        first_entry = history[0]
-        if first_entry.action_type != CADActionType.SNAPSHOT:
-            return False
-        params = first_entry.action_params if isinstance(first_entry.action_params, dict) else {}
+        params = (
+            snapshot_entry.action_params
+            if isinstance(snapshot_entry.action_params, dict)
+            else {}
+        )
         return str(params.get("source") or "").strip().lower() == "execute_build123d"
 
     def _history_execute_build123d_code(
         self,
         history: list[ActionHistoryEntry],
     ) -> str:
-        if not self._history_starts_from_execute_build123d_snapshot(history):
+        snapshot_entry = next(
+            (
+                entry
+                for entry in reversed(history)
+                if entry.action_type == CADActionType.SNAPSHOT
+                and str(
+                    (
+                        entry.action_params.get("source")
+                        if isinstance(entry.action_params, dict)
+                        else ""
+                    )
+                    or ""
+                ).strip().lower()
+                == "execute_build123d"
+            ),
+            None,
+        )
+        if snapshot_entry is None:
             return ""
-        first_entry = history[0]
-        params = first_entry.action_params if isinstance(first_entry.action_params, dict) else {}
+        params = (
+            snapshot_entry.action_params
+            if isinstance(snapshot_entry.action_params, dict)
+            else {}
+        )
         build123d_code = params.get("build123d_code")
         if not isinstance(build123d_code, str):
             return ""
@@ -9215,8 +9399,17 @@ class SandboxMCPService:
             or "make_face(" in normalized
             or normalized.count("circle(") >= 2
         )
+        has_named_plane = any(
+            token in normalized
+            for token in (
+                "plane.xy",
+                "plane.xz",
+                "plane.yz",
+            )
+        )
         has_frame = (
             "plane(" in normalized
+            or has_named_plane
             or "location(" in normalized
             or "locations(" in normalized
             or "isfrenet=" in normalized
@@ -10532,13 +10725,16 @@ class SandboxMCPService:
         hollow_profile_required: bool,
         bend_required: bool,
     ) -> tuple[bool, str]:
-        if int(snapshot.geometry.solids) <= 0 or float(snapshot.geometry.volume) <= 1e-6:
+        if int(snapshot.geometry.solids) <= 0 or abs(float(snapshot.geometry.volume)) <= 1e-6:
             return False, ""
         faces = list((snapshot.geometry_objects.faces if snapshot.geometry_objects else []) or [])
         if not faces:
             return False, ""
         torus_faces = sum(
             1 for face in faces if str(face.geom_type).strip().upper() == "TORUS"
+        )
+        revolution_faces = sum(
+            1 for face in faces if str(face.geom_type).strip().upper() == "REVOLUTION"
         )
         cylinder_faces = sum(
             1 for face in faces if str(face.geom_type).strip().upper() == "CYLINDER"
@@ -10553,14 +10749,26 @@ class SandboxMCPService:
         ]
         bbox_ok = len(bbox) >= 3 and min(bbox[:3]) > 1e-6
         hollow_ok = not hollow_profile_required or cylinder_faces >= 2
-        bend_ok = not bend_required or torus_faces >= 1
+        bend_ok = not bend_required or (torus_faces + revolution_faces) >= 1
         cap_ok = plane_faces >= 2
-        geometry_ok = bbox_ok and bend_ok and hollow_ok and cap_ok and cylinder_faces >= 2
+        straight_leg_ok = not (
+            hollow_profile_required and bend_required
+        ) or cylinder_faces >= 4
+        geometry_ok = (
+            bbox_ok
+            and bend_ok
+            and hollow_ok
+            and cap_ok
+            and cylinder_faces >= 2
+            and straight_leg_ok
+        )
         return (
             geometry_ok,
             "execute_build123d_geometry_fallback="
             f"{str(geometry_ok).lower()}, torus_faces={torus_faces}, "
+            f"revolution_faces={revolution_faces}, "
             f"cylinder_faces={cylinder_faces}, plane_faces={plane_faces}, "
+            f"straight_leg_ok={str(straight_leg_ok).lower()}, "
             f"bbox={list(snapshot.geometry.bbox or [])}, volume={snapshot.geometry.volume}",
         )
 

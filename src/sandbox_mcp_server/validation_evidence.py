@@ -272,6 +272,9 @@ class RequirementEvidenceBuilder:
         face_radii: list[float] = []
         face_summaries: list[dict[str, Any]] = []
         face_summary_index: dict[str, dict[str, Any]] = {}
+        edge_radii: list[float] = []
+        edge_summaries: list[dict[str, Any]] = []
+        edge_summary_index: dict[str, dict[str, Any]] = {}
 
         def _record_face(face: Any) -> None:
             face_type = str(getattr(face, "geom_type", "") or "").strip().upper()
@@ -326,18 +329,70 @@ class RequirementEvidenceBuilder:
             if not existing.get("geom_type") and summary.get("geom_type"):
                 existing["geom_type"] = summary["geom_type"]
 
+        def _record_edge(edge: Any) -> None:
+            edge_type = str(getattr(edge, "geom_type", "") or "").strip().upper()
+            radius = getattr(edge, "radius", None)
+            rounded_radius = (
+                round(float(radius), 3)
+                if isinstance(radius, (int, float)) and radius > 0
+                else None
+            )
+            if rounded_radius is not None:
+                edge_radii.append(rounded_radius)
+            bbox = getattr(edge, "bbox", None)
+            if bbox is None:
+                return
+            summary = {
+                "edge_id": str(getattr(edge, "edge_id", "") or "").strip() or None,
+                "geom_type": edge_type,
+                "radius": rounded_radius,
+                "center": _as_float_list(getattr(edge, "center", None)),
+                "axis_origin": _as_float_list(getattr(edge, "axis_origin", None)),
+                "axis_direction": _as_float_list(getattr(edge, "axis_direction", None)),
+                "bbox": {
+                    "xmin": round(float(getattr(bbox, "xmin", 0.0)), 3),
+                    "xmax": round(float(getattr(bbox, "xmax", 0.0)), 3),
+                    "ymin": round(float(getattr(bbox, "ymin", 0.0)), 3),
+                    "ymax": round(float(getattr(bbox, "ymax", 0.0)), 3),
+                    "zmin": round(float(getattr(bbox, "zmin", 0.0)), 3),
+                    "zmax": round(float(getattr(bbox, "zmax", 0.0)), 3),
+                },
+            }
+            edge_id = summary.get("edge_id")
+            if not isinstance(edge_id, str) or not edge_id:
+                edge_summaries.append(summary)
+                return
+            existing = edge_summary_index.get(edge_id)
+            if existing is None:
+                edge_summary_index[edge_id] = summary
+                edge_summaries.append(summary)
+                return
+            if existing.get("radius") is None and summary.get("radius") is not None:
+                existing["radius"] = summary["radius"]
+            for key in ("center", "axis_origin", "axis_direction"):
+                if not existing.get(key) and summary.get(key):
+                    existing[key] = summary[key]
+            if not existing.get("geom_type") and summary.get("geom_type"):
+                existing["geom_type"] = summary["geom_type"]
+
         if geometry_objects is not None:
             for face in geometry_objects.faces:
                 _record_face(face)
+            for edge in geometry_objects.edges:
+                _record_edge(edge)
         if topology_index is not None:
             for face in topology_index.faces:
                 _record_face(face)
+            for edge in topology_index.edges:
+                _record_edge(edge)
         return {
             "has_geometry_objects": geometry_objects is not None,
             "has_topology_index": topology_index is not None,
             "face_geom_types": list(dict.fromkeys(face_types)),
             "face_radii": list(dict.fromkeys(face_radii)),
             "face_summaries": face_summaries,
+            "edge_radii": list(dict.fromkeys(edge_radii)),
+            "edge_summaries": edge_summaries,
             "topology_faces": len(topology_index.faces) if topology_index is not None else 0,
             "topology_edges": len(topology_index.edges) if topology_index is not None else 0,
         }

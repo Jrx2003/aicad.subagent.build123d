@@ -45,11 +45,13 @@ class ValidationLLMAdjudicator:
         *,
         max_prompt_chars: int = 12000,
         max_response_tokens: int = 1200,
-        request_timeout_seconds: float = 45.0,
+        request_timeout_seconds: float = 20.0,
     ) -> None:
         self._llm_client = llm_client
         self._max_prompt_chars = max_prompt_chars
         self._max_response_tokens = max_response_tokens
+        # Keep the validation adjudicator inside the default 30s MCP validate budget
+        # so a slow judge degrades to "no adjudication" instead of timing out the tool.
         self._request_timeout_seconds = max(0.1, float(request_timeout_seconds))
 
     async def adjudicate(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -122,6 +123,74 @@ async def test_mcp_runner_reopens_session_once_after_transport_failure(
     assert stdio_entries == 2
     assert created_session_ids == [0, 1]
     assert initialized_session_ids == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_returns_structured_failure_on_cancelled_transport() -> None:
+    runner = McpSandboxRunner(command="fake-mcp")
+
+    async def fake_call_named_tool(tool_name: str, arguments: dict[str, object]):
+        raise asyncio.CancelledError()
+
+    runner._call_named_tool = fake_call_named_tool  # type: ignore[method-assign]
+
+    result = await runner.validate_requirement(
+        session_id="session-cancelled",
+        requirements={"description": "noop"},
+        timeout=5,
+    )
+
+    assert result.success is False
+    assert result.error_code == "execution_error"
+    assert result.blockers == ["execution_error"]
+    assert result.summary == "Validation failed"
+    assert "cancelled" in (result.error_message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_call_named_tool_preserves_cancelled_error_when_close_fails() -> None:
+    runner = McpSandboxRunner(command="fake-mcp")
+
+    class FakeClientSession:
+        async def call_tool(self, tool_name: str, arguments: dict[str, object]):
+            raise asyncio.CancelledError()
+
+    async def fake_ensure_client_session() -> FakeClientSession:
+        return FakeClientSession()
+
+    async def fake_aclose() -> None:
+        raise RuntimeError("close failed")
+
+    runner._ensure_client_session = fake_ensure_client_session  # type: ignore[method-assign]
+    runner.aclose = fake_aclose  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._call_named_tool("validate_requirement", {"session_id": "s1"})
+
+
+@pytest.mark.asyncio
+async def test_aclose_suppresses_cross_task_cancel_scope_runtime_error() -> None:
+    runner = McpSandboxRunner(command="fake-mcp")
+
+    class FakeStack:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+            raise RuntimeError(
+                "Attempted to exit cancel scope in a different task than it was entered in"
+            )
+
+    fake_stack = FakeStack()
+    runner._session_stack = fake_stack  # type: ignore[assignment]
+    runner._client_session = object()  # type: ignore[assignment]
+
+    await runner.aclose()
+
+    assert fake_stack.closed is True
+    assert runner._session_stack is None
+    assert runner._client_session is None
 
 
 @pytest.mark.asyncio

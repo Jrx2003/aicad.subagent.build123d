@@ -97,14 +97,24 @@ def test_build_runtime_skill_pack_discourages_nested_buildpart_cutters_for_hole_
     assert "nested `BuildPart()` cutter" in hygiene_guidance
     assert "`part.part -= cutter.part`" in hygiene_guidance
     assert "`CounterSinkHole(...)` belongs in `BuildPart`, not `BuildSketch`" in hygiene_guidance
+    assert "There is no `Workplanes(...)` helper" in hygiene_guidance
+    assert "Use capitalized `Hole(...)`, not lowercase `hole(...)`" in hygiene_guidance
     assert "there is no `filter_by_direction(...)` helper" in hygiene_guidance
     assert "do not call `edge.is_parallel(Axis.Y)`" in hygiene_guidance
     assert "use lowercase `make_face()`" in hygiene_guidance
     assert "Do not instantiate a detached `Cylinder(...)` cutter inside an active `BuildPart`" in hygiene_guidance
     assert "top-face plane is at `+height/2`, not `+height`" in hygiene_guidance
     assert "sketch on `Plane.XY` and extrude upward" in hygiene_guidance
+    assert "Curve helpers such as `Polyline(...)`, `Line(...)`, `CenterArc(...)`, and `RadiusArc(...)` belong inside `BuildLine`" in hygiene_guidance
+    assert "For non-XY planar polygons that keep failing inside `BuildSketch`, prefer `Wire.make_polygon(...)`" in hygiene_guidance
+    assert "If a `BuildSketch` only contains wire geometry from `BuildLine`" in hygiene_guidance
+    assert "do not invent `angle=` inside `revolve(...)`" in hygiene_guidance
+    assert "For explicit countersink arrays on a planar host face, prefer one `CounterSinkHole(...)` pass on the first attempt" in hygiene_guidance
     assert "same active `BuildPart`" in hole_guidance
     assert "Locations((x, y, top_z), ...)" in hole_guidance
+    assert "Only fall back to an explicit same-builder cylinder+cone or revolved countersink recipe" in hole_guidance
+    assert "prefer a corner-anchored host sketch/extrude" in hole_guidance
+    assert "declaring `top_face_plane` or `host_plane` is not enough by itself" in hole_guidance
 
 
 def test_build_runtime_skill_pack_prioritizes_clean_cylindrical_slot_boolean() -> None:
@@ -124,6 +134,38 @@ def test_build_runtime_skill_pack_prioritizes_clean_cylindrical_slot_boolean() -
     guidance = "\n".join(skills[1]["guidance"])
     assert "YZ plane" in guidance
     assert "result = host.part - cutter" in guidance
+
+
+def test_build_runtime_skill_pack_path_sweep_guidance_emphasizes_single_connected_wire() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Use the Sweep feature to construct a hollow bent pipe by sweeping an annular profile "
+                "along an L-shaped path with a tangent arc."
+            )
+        },
+        latest_validation={
+            "blockers": ["feature_path_sweep_rail"],
+        },
+        latest_write_health={"tool": "execute_build123d"},
+    )
+
+    path_sweep_skill = next(
+        item for item in skills if item["skill_id"] == "path_sweep_wire_profile_frame_repair"
+    )
+    guidance = "\n".join(path_sweep_skill["guidance"])
+
+    assert "must start from the previous segment endpoint such as `arc @ 1`" in guidance
+    assert "repair the rail continuity first" in guidance
+    assert "`sweep(profile.sketch, path=path_wire)`" in guidance
+    assert "one face with inner wires" in guidance
+    assert "one explicit solid boolean" in guidance
+    assert "rebuild the rail/profile in a stable local frame" in guidance
+    assert "named front/top/side view plane" in guidance
+    assert "`CenterArc(...)` with `start_angle=` and `arc_size=`" in guidance
+    assert "pass plain degree numbers directly" in guidance
+    assert "`DEGREE` or `DEGREES`" in guidance
+    assert "`TangentArc(...)` or `JernArc(...)`" in guidance
 
 
 def test_build_runtime_skill_pack_prioritizes_builder_native_spherical_recess_recipe() -> None:
@@ -253,6 +295,10 @@ def test_build_runtime_skill_pack_strengthens_half_shell_builder_native_subtract
     assert "Do not guess `Circle(..., arc_size=180)`" in guidance
     assert "`Semicircle(...)` is not a Build123d helper" in guidance
     assert "prefer the lower-risk same-builder cylinder-subtract-then-intersect recipe on the first pass" in guidance
+    assert "outer cylinder -> subtract inner cylinder -> intersect/trim to the half-plane -> add pad/lugs -> cut the bore -> drill the lug holes" in guidance
+    assert "merge the pad/lugs, then run the bore cut on that combined host" in guidance
+    assert "Do not write `outer_cyl = Cylinder(...)`" in guidance
+    assert "`Cylinder(outer_radius, length)` -> `Cylinder(inner_radius, length, mode=Mode.SUBTRACT)` -> `Box(..., mode=Mode.INTERSECT)`" in guidance
 
 
 def test_build_runtime_skill_pack_discourages_nested_annular_groove_band_builders() -> None:
@@ -271,6 +317,48 @@ def test_build_runtime_skill_pack_discourages_nested_annular_groove_band_builder
 
     assert "same active `BuildPart`" in guidance
     assert "close the host and subtract the annular groove band once" in guidance
+    assert "There is no `Ring(...)` helper in Build123d" in guidance
+
+
+def test_build_runtime_skill_pack_strengthens_explicit_revolve_profile_recipe() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Select the front plane, draw a closed profile with a stepped outline and a centerline "
+                "through the origin, and revolve it 360 degrees around the center axis."
+            )
+        },
+        latest_validation={},
+        latest_write_health={"tool": "execute_build123d"},
+    )
+
+    revolve_skill = next(
+        item for item in skills if item["skill_id"] == "explicit_revolve_profile_recipe"
+    )
+    guidance = "\n".join(revolve_skill["guidance"])
+
+    assert "inside `BuildLine`" in guidance
+    assert "call `make_face()` before revolving" in guidance
+    assert "do not invent `angle=`" in guidance
+
+
+def test_build_runtime_skill_pack_preserves_named_plane_mixed_section_extrude_contract() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={"description": _ANNULAR_GROOVE_REQUIREMENT},
+        latest_validation={},
+        latest_write_health={"tool": "execute_build123d"},
+    )
+
+    plane_skill = next(
+        item
+        for item in skills
+        if item["skill_id"] == "positive_extrude_from_named_plane_is_not_centered"
+    )
+    guidance = "\n".join(plane_skill["guidance"])
+
+    assert "draws multiple closed section elements" in guidance
+    assert "outer-circle plus inner-square/rectangle families" in guidance
+    assert "centered `Cylinder(...)`" in guidance
 
 
 def test_build_runtime_skill_pack_preserves_named_feature_face_for_shelled_hosts() -> None:

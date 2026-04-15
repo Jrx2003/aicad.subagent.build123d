@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ast
 from dataclasses import asdict, dataclass, field
 import io
@@ -347,6 +348,56 @@ class ToolRuntime:
                 error=result.error,
             )
 
+        if len(normalized_calls) == 1 and normalized_calls[0].name == "validate_requirement":
+            judge_call = normalized_calls[0]
+            execution_events.append(
+                ToolExecutionEvent(
+                    round_no=round_no,
+                    tool_name=judge_call.name,
+                    phase="started",
+                    category=judge_call.category,
+                    detail={"arguments": judge_call.arguments},
+                )
+            )
+            try:
+                result = await self._execute_single_guarded(
+                    tool_call=judge_call,
+                    session_id=session_id,
+                    requirements=requirements,
+                    requirement_text=requirement_text,
+                    sandbox_timeout=sandbox_timeout,
+                    round_no=round_no,
+                    run_state=run_state,
+                )
+            except asyncio.CancelledError:
+                _clear_current_task_cancellation_state()
+                result = ToolResultRecord(
+                    name=judge_call.name,
+                    category=judge_call.category,
+                    success=False,
+                    payload={},
+                    error="CancelledError: tool execution cancelled",
+                )
+            return ToolBatchResult(
+                tool_calls=normalized_calls,
+                tool_results=[result],
+                execution_events=execution_events
+                + [
+                    ToolExecutionEvent(
+                        round_no=round_no,
+                        tool_name=result.name,
+                        phase="finished",
+                        category=result.category,
+                        success=result.success,
+                        detail={
+                            "error": result.error,
+                            "artifact_files": result.artifact_files,
+                        },
+                    )
+                ],
+                error=result.error,
+            )
+
         execution_events.extend(
             ToolExecutionEvent(
                 round_no=round_no,
@@ -359,7 +410,7 @@ class ToolRuntime:
         )
         results = await _gather_results(
             [
-                self._execute_single(
+                self._execute_single_guarded(
                     tool_call=tool_call,
                     session_id=session_id,
                     requirements=requirements,
@@ -369,7 +420,8 @@ class ToolRuntime:
                     run_state=run_state,
                 )
                 for tool_call in normalized_calls
-            ]
+            ],
+            fallback_tool_calls=normalized_calls,
         )
         return ToolBatchResult(
             tool_calls=normalized_calls,
@@ -391,6 +443,44 @@ class ToolRuntime:
             ],
             error=next((result.error for result in results if result.error), None),
         )
+
+    async def _execute_single_guarded(
+        self,
+        *,
+        tool_call: ToolCallRecord,
+        session_id: str,
+        requirements: dict[str, Any],
+        requirement_text: str,
+        sandbox_timeout: int,
+        round_no: int,
+        run_state: RunState | None = None,
+    ) -> ToolResultRecord:
+        try:
+            return await self._execute_single(
+                tool_call=tool_call,
+                session_id=session_id,
+                requirements=requirements,
+                requirement_text=requirement_text,
+                sandbox_timeout=sandbox_timeout,
+                round_no=round_no,
+                run_state=run_state,
+            )
+        except asyncio.CancelledError:
+            return ToolResultRecord(
+                name=tool_call.name,
+                category=tool_call.category,
+                success=False,
+                payload={},
+                error="CancelledError: tool execution cancelled",
+            )
+        except BaseException as exc:  # noqa: BLE001
+            return ToolResultRecord(
+                name=tool_call.name,
+                category=tool_call.category,
+                success=False,
+                payload={},
+                error=f"{exc.__class__.__name__}: {exc}",
+            )
 
     async def _execute_single(
         self,
@@ -432,6 +522,24 @@ class ToolRuntime:
                 )
             result.payload["hook_trace"] = _trace_to_dict(hook_trace)
             return result
+        except asyncio.CancelledError:
+            error_message = "CancelledError: tool execution cancelled"
+            if self._hook_manager is not None:
+                hook_trace.post_failure = self._hook_manager.emit_post_tool_failure(
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    error=error_message,
+                    round_no=round_no,
+                    session_id=session_id,
+                    recommend_execute_build123d=(tool_call.name == "apply_cad_action"),
+                )
+            return ToolResultRecord(
+                name=tool_call.name,
+                category=tool_call.category,
+                success=False,
+                payload={"hook_trace": _trace_to_dict(hook_trace)},
+                error=error_message,
+            )
         except Exception as exc:  # noqa: BLE001
             error_message = f"{exc.__class__.__name__}: {exc}"
             if self._hook_manager is not None:
@@ -884,9 +992,43 @@ def build_default_tool_specs() -> dict[str, ToolSpec]:
     return {spec.name: spec for spec in specs}
 
 
-async def _gather_results(tasks: list[Any]) -> list[ToolResultRecord]:
-    raw_results = await __import__("asyncio").gather(*tasks)
-    return [result for result in raw_results if isinstance(result, ToolResultRecord)]
+async def _gather_results(
+    tasks: list[Any],
+    *,
+    fallback_tool_calls: list[ToolCallRecord],
+) -> list[ToolResultRecord]:
+    raw_results = await __import__("asyncio").gather(*tasks, return_exceptions=True)
+    results: list[ToolResultRecord] = []
+    saw_cancellation = False
+    for tool_call, raw_result in zip(fallback_tool_calls, raw_results):
+        if isinstance(raw_result, ToolResultRecord):
+            results.append(raw_result)
+            continue
+        if isinstance(raw_result, asyncio.CancelledError):
+            saw_cancellation = True
+            results.append(
+                ToolResultRecord(
+                    name=tool_call.name,
+                    category=tool_call.category,
+                    success=False,
+                    payload={},
+                    error="CancelledError: tool batch cancelled before completion",
+                )
+            )
+            continue
+        if isinstance(raw_result, BaseException):
+            results.append(
+                ToolResultRecord(
+                    name=tool_call.name,
+                    category=tool_call.category,
+                    success=False,
+                    payload={},
+                    error=f"{raw_result.__class__.__name__}: {raw_result}",
+                )
+            )
+    if saw_cancellation:
+        _clear_current_task_cancellation_state()
+    return results
 
 
 def _strip_python_comments_and_strings(code: str) -> str:
@@ -915,6 +1057,18 @@ def _strip_python_comments_and_strings(code: str) -> str:
     except Exception:
         return code
     return "".join(output)
+
+
+def _clear_current_task_cancellation_state() -> None:
+    task = asyncio.current_task()
+    if task is None:
+        return
+    uncancel = getattr(task, "uncancel", None)
+    cancelling = getattr(task, "cancelling", None)
+    if not callable(uncancel) or not callable(cancelling):
+        return
+    while cancelling():
+        uncancel()
 
 
 def _preflight_lint_execute_build123d(
@@ -949,6 +1103,10 @@ def _preflight_lint_execute_build123d(
             }
         )
     if parsed_tree is not None:
+        candidate_family_ids = _candidate_lint_family_ids(
+            requirement_text=requirement_text,
+            run_state=run_state,
+        )
         for nested_hit in _find_nested_buildpart_part_arithmetic_hits(parsed_tree):
             line_no = int(nested_hit.get("line_no") or 0)
             hits.append(
@@ -968,6 +1126,35 @@ def _preflight_lint_execute_build123d(
                             f"Repair the nested cutter arithmetic at line {line_no}."
                             if line_no > 0
                             else "Repair the nested cutter arithmetic."
+                        )
+                    ),
+                }
+            )
+        for nested_subtractive_hit in _find_nested_subtractive_buildpart_hits(parsed_tree):
+            line_no = int(nested_subtractive_hit.get("line_no") or 0)
+            inside_locations = bool(nested_subtractive_hit.get("inside_locations"))
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_context.nested_subtractive_buildpart_inside_active_builder",
+                    "message": (
+                        "Do not open a nested `BuildPart(mode=Mode.SUBTRACT)` inside an "
+                        "active `BuildPart`; that pattern does not reliably preserve the "
+                        "host placement/workplane context for repeated local subtractive features."
+                        + (
+                            " This is especially brittle when the nested subtractive builder sits "
+                            "inside an outer `Locations(...)` placement."
+                            if inside_locations
+                            else ""
+                        )
+                    ),
+                    "repair_hint": (
+                        "Keep repeated subtractive features in the same active `BuildPart` with "
+                        "direct builder-native subtractive calls, or close the host builder before "
+                        "doing an explicit `result = host.part - cutter` boolean. "
+                        + (
+                            f"Repair the nested subtractive BuildPart at line {line_no}."
+                            if line_no > 0
+                            else "Repair the nested subtractive BuildPart."
                         )
                     ),
                 }
@@ -1005,6 +1192,34 @@ def _preflight_lint_execute_build123d(
                     ),
                 }
             )
+        if "explicit_anchor_hole" in candidate_family_ids:
+            for cutter_hit in _find_explicit_anchor_manual_cutter_missing_subtract_hits(
+                parsed_tree
+            ):
+                line_no = int(cutter_hit.get("line_no") or 0)
+                primitive_name = str(cutter_hit.get("primitive_name") or "primitive").strip()
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_contract.explicit_anchor_manual_cutter_requires_subtract_mode",
+                        "message": (
+                            "Manual countersink / through-hole cutters inside an active "
+                            "`BuildPart` placement must use `mode=Mode.SUBTRACT` (or stay "
+                            "`mode=Mode.PRIVATE` for a later boolean), otherwise they add "
+                            "material instead of cutting it."
+                        ),
+                        "repair_hint": (
+                            "When realizing explicit hole arrays with manual "
+                            f"`{primitive_name}(...)` cutters inside `Locations(...)`, add "
+                            "`mode=Mode.SUBTRACT` on the cutter itself, or build the cutter "
+                            "privately and subtract it after the host builder closes. "
+                            + (
+                                f"Repair the non-subtractive manual cutter at line {line_no}."
+                                if line_no > 0
+                                else "Repair the non-subtractive manual cutter."
+                            )
+                        ),
+                    }
+                )
         for rotated_hit in _find_plane_rotated_origin_guess_hits(parsed_tree):
             line_no = int(rotated_hit.get("line_no") or 0)
             hits.append(
@@ -1074,6 +1289,497 @@ def _preflight_lint_execute_build123d(
                     ),
                 }
             )
+        for alias_hit in _find_countersink_keyword_alias_hits(parsed_tree):
+            line_no = int(alias_hit.get("line_no") or 0)
+            alias_name = str(alias_hit.get("alias_name") or "").strip()
+            if alias_name == "countersink_radius":
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_keyword.countersink_radius_alias",
+                        "message": (
+                            "`CounterSinkHole(...)` uses `counter_sink_radius=...`, not "
+                            "`countersink_radius=...`."
+                        ),
+                        "repair_hint": (
+                            "Rename the keyword to `counter_sink_radius=` when calling "
+                            "`CounterSinkHole(...)`."
+                            + (
+                                f" Repair the countersink radius keyword at line {line_no}."
+                                if line_no > 0
+                                else ""
+                            )
+                        ),
+                    }
+                )
+            if alias_name in {
+                "head_diameter",
+                "head_radius",
+                "countersink_diameter",
+                "counter_sink_diameter",
+                "countersink_radius",
+                "counter_sink_head_radius",
+                "head_dia",
+                "countersink_dia",
+                "counter_sink_dia",
+            }:
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_keyword.countersink_head_diameter_alias",
+                        "message": (
+                            "`CounterSinkHole(...)` uses `counter_sink_radius=...`, not "
+                            f"`{alias_name}=`."
+                        ),
+                        "repair_hint": (
+                            "Convert the requested countersink head diameter to a radius and pass "
+                            "it as `counter_sink_radius=` when calling `CounterSinkHole(...)`."
+                            + (
+                                f" Repair the countersink head-diameter keyword at line {line_no}."
+                                if line_no > 0
+                                else ""
+                            )
+                        ),
+                    }
+                )
+            if alias_name in {
+                "thru_diameter",
+                "through_diameter",
+                "through_hole_diameter",
+                "hole_diameter",
+                "diameter",
+                "thru_dia",
+                "through_dia",
+                "hole_dia",
+            }:
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_keyword.countersink_through_diameter_alias",
+                        "message": (
+                            "`CounterSinkHole(...)` uses `radius=...` for the through-hole size, "
+                            f"not `{alias_name}=`."
+                        ),
+                        "repair_hint": (
+                            "Convert the requested through-hole diameter to a radius and pass it "
+                            "as `radius=` when calling `CounterSinkHole(...)`."
+                            + (
+                                f" Repair the countersink through-hole keyword at line {line_no}."
+                                if line_no > 0
+                                else ""
+                            )
+                        ),
+                    }
+                )
+            if alias_name in {"countersink_angle", "angle", "cone_angle"}:
+                wrong_keyword = (
+                    "`countersink_angle=`"
+                    if alias_name == "countersink_angle"
+                    else ("`cone_angle=`" if alias_name == "cone_angle" else "`angle=`")
+                )
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_keyword.countersink_angle_alias",
+                        "message": (
+                            "`CounterSinkHole(...)` uses `counter_sink_angle=...`, not "
+                            f"{wrong_keyword}."
+                        ),
+                        "repair_hint": (
+                            "Rename the keyword to `counter_sink_angle=` when calling "
+                            "`CounterSinkHole(...)`."
+                            + (
+                                f" Repair the countersink angle keyword at line {line_no}."
+                                if line_no > 0
+                                else ""
+                            )
+                        ),
+                    }
+                )
+        for alias_hit in _find_regular_polygon_keyword_alias_hits(parsed_tree):
+            line_no = int(alias_hit.get("line_no") or 0)
+            alias_name = str(alias_hit.get("alias_name") or "").strip()
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_keyword.regular_polygon_sides_alias",
+                    "message": (
+                        "`RegularPolygon(...)` uses `side_count=...`, not "
+                        f"`{alias_name}=`."
+                    ),
+                    "repair_hint": (
+                        "Rename the keyword to `side_count=` when calling "
+                        "`RegularPolygon(...)`."
+                        + (
+                            f" Repair the regular-polygon side-count keyword at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for alias_hit in _find_plane_keyword_alias_hits(parsed_tree):
+            line_no = int(alias_hit.get("line_no") or 0)
+            alias_name = str(alias_hit.get("alias_name") or "").strip()
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_keyword.plane_normal_alias",
+                    "message": (
+                        "`Plane(...)` uses `z_dir=...` for its normal direction, not "
+                        f"`{alias_name}=`."
+                    ),
+                    "repair_hint": (
+                        "Construct the plane with `Plane(origin=..., z_dir=...)`, and "
+                        "only add `x_dir=` when you need to pin the in-plane rotation."
+                        + (
+                            f" Repair the plane normal keyword at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for alias_hit in _find_cone_keyword_alias_hits(parsed_tree):
+            line_no = int(alias_hit.get("line_no") or 0)
+            alias_name = str(alias_hit.get("alias_name") or "").strip()
+            expected_keyword = "top_radius" if alias_name == "upper_radius" else "bottom_radius"
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_keyword.cone_radius_alias",
+                    "message": (
+                        "`Cone(...)` uses `bottom_radius=` and `top_radius=...`, not "
+                        f"`{alias_name}=`."
+                    ),
+                    "repair_hint": (
+                        f"Rename `{alias_name}=` to `{expected_keyword}=` when calling `Cone(...)`."
+                        + (
+                            f" Repair the cone radius keyword at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for alias_hit in _find_center_arc_keyword_alias_hits(parsed_tree):
+            line_no = int(alias_hit.get("line_no") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_keyword.center_arc_arc_angle_alias",
+                    "message": (
+                        "`CenterArc(...)` uses `arc_size=...`, not `arc_angle=...`."
+                    ),
+                    "repair_hint": (
+                        "Rename `arc_angle=` to `arc_size=` when calling `CenterArc(...)`."
+                        + (
+                            f" Repair the CenterArc keyword at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for missing_hit in _find_center_arc_missing_start_angle_hits(parsed_tree):
+            line_no = int(missing_hit.get("line_no") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.center_arc_missing_start_angle",
+                    "message": (
+                        "`CenterArc(...)` requires an explicit `start_angle` before the arc "
+                        "span. Omitting it leaves the arc under-specified."
+                    ),
+                    "repair_hint": (
+                        "Provide `start_angle=...` (or the third positional argument) and keep "
+                        "`arc_size=` for the sweep span when calling `CenterArc(...)`."
+                        + (
+                            f" Repair the CenterArc call at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for symbolic_hit in _find_symbolic_degree_constant_hits(code_for_lint):
+            line_no = int(symbolic_hit.get("line_no") or 0)
+            symbol_name = str(symbolic_hit.get("symbol_name") or "DEGREES").strip()
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_api.symbolic_degree_constant",
+                    "message": (
+                        "Build123d angle parameters already take plain degree-valued floats; "
+                        f"`{symbol_name}` is not a supported symbolic angle constant."
+                    ),
+                    "repair_hint": (
+                        "Pass literal degree numbers such as `start_angle=-90` and "
+                        "`arc_size=90` directly instead of multiplying by "
+                        f"`{symbol_name}`."
+                        + (
+                            f" Repair the symbolic angle constant at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        if _requirement_prefers_center_arc_for_explicit_radius_path(requirement_lower):
+            for helper_hit in _find_explicit_radius_arc_helper_hits(parsed_tree):
+                line_no = int(helper_hit.get("line_no") or 0)
+                helper_name = str(helper_hit.get("helper_name") or "arc helper").strip()
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_contract.explicit_radius_arc_prefers_center_arc",
+                        "message": (
+                            "For a path-sweep rail with an explicit tangent-arc radius, "
+                            f"`{helper_name}(...)` is a higher-risk construction lane than an "
+                            "explicit `CenterArc(...)` definition and often fails after the "
+                            "model guesses the elbow endpoint or tangent."
+                        ),
+                        "repair_hint": (
+                            "Prefer `CenterArc(center=..., radius=..., start_angle=..., arc_size=...)` "
+                            "for the explicit-radius elbow, and connect the downstream line from `arc @ 1`."
+                            + (
+                                f" Repair the arc helper at line {line_no}."
+                                if line_no > 0
+                                else ""
+                            )
+                        ),
+                    }
+                )
+        for method_hit in _find_sweep_path_method_reference_hits(parsed_tree):
+            line_no = int(method_hit.get("line_no") or 0)
+            attribute_name = str(method_hit.get("attribute_name") or "").strip()
+            if attribute_name == "line":
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_contract.sweep_path_line_alias",
+                        "message": (
+                            "`BuildLine.line` exposes only one curve member and can silently drop "
+                            "the full multi-segment rail that a path sweep requires."
+                        ),
+                        "repair_hint": (
+                            "Pass `path.wire()` or another real connected `Wire`/`Edge` rail into "
+                            "`sweep(...)` instead of `path.line`."
+                            + (
+                                f" Repair the sweep path object at line {line_no}."
+                                if line_no > 0
+                                else ""
+                            )
+                        ),
+                    }
+                )
+            else:
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_contract.sweep_path_wire_method_reference",
+                        "message": (
+                            "`BuildLine.wire` is a method. `sweep(..., path=path.wire)` passes "
+                            "a bound method object instead of the path wire itself."
+                        ),
+                        "repair_hint": (
+                            "Call `path.wire()` when passing the captured path into `sweep(...)`, "
+                            "or pass another real `Wire`/`Edge` object as the path."
+                            + (
+                                f" Repair the sweep path object at line {line_no}."
+                                if line_no > 0
+                                else ""
+                            )
+                        ),
+                    }
+                )
+        for alias_hit in _find_sweep_section_keyword_alias_hits(parsed_tree):
+            line_no = int(alias_hit.get("line_no") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_keyword.sweep_section_alias",
+                    "message": (
+                        "`sweep(...)` uses `sections=` (plural) or a positional first "
+                        "argument, not `section=`."
+                    ),
+                    "repair_hint": (
+                        "Pass the profile as the first positional argument to `sweep(...)`, "
+                        "or rename `section=` to `sections=`."
+                        + (
+                            f" Repair the sweep profile keyword at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for keyword_hit in _find_solid_sweep_invalid_keyword_hits(parsed_tree):
+            line_no = int(keyword_hit.get("line_no") or 0)
+            alias_name = str(keyword_hit.get("alias_name") or "").strip()
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_keyword.solid_sweep_unsupported_keyword",
+                    "message": (
+                        "`Solid.sweep(...)` only accepts the verified Build123d keywords "
+                        "`section`, `path`, `inner_wires`, `make_solid`, `is_frenet`, "
+                        "`mode`, and `transition`; "
+                        f"`{alias_name}=` is not part of that contract."
+                    ),
+                    "repair_hint": (
+                        "Repair the call to use the real `Solid.sweep(...)` signature, or "
+                        "prefer `sweep(profile.sketch, path=path_wire)` when the section is "
+                        "one annular sketch with inner wires."
+                        + (
+                            f" Repair the Solid.sweep keyword at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for method_hit in _find_sweep_profile_face_method_reference_hits(parsed_tree):
+            line_no = int(method_hit.get("line_no") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.sweep_profile_face_method_reference",
+                    "message": (
+                        "`BuildSketch.face` is a method. Passing `profile.face` into "
+                        "`sweep(...)` uses a bound method object instead of the actual profile face."
+                    ),
+                    "repair_hint": (
+                        "Call `profile.face()` when extracting a face from the builder, or "
+                        "pass `profile.sketch` / another real face object into `sweep(...)`."
+                        + (
+                            f" Repair the sweep profile object at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for split_hit in _find_annular_profile_face_splitting_hits(parsed_tree):
+            line_no = int(split_hit.get("line_no") or 0)
+            builder_alias = str(split_hit.get("builder_alias") or "profile").strip()
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.annular_profile_face_splitting",
+                    "message": (
+                        "A single subtractive annular `BuildSketch` yields one face with "
+                        "inner wires, not a stable pair of separate outer/inner faces."
+                    ),
+                    "repair_hint": (
+                        f"Do not index `{builder_alias}.faces()[1]` or sorted-face variants "
+                        "after one annular sketch. Sweep the annular sketch directly with "
+                        "`sweep(profile.sketch, path=path_wire)`, or rebuild truly separate "
+                        "outer/inner section faces before doing a solid boolean."
+                        + (
+                            f" Repair the annular face extraction at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for extraction_hit in _find_annular_profile_face_extraction_sweep_hits(parsed_tree):
+            line_no = int(extraction_hit.get("line_no") or 0)
+            builder_alias = str(extraction_hit.get("builder_alias") or "profile").strip()
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.annular_profile_face_extraction",
+                    "message": (
+                        "Extracting `BuildSketch.face()` from one subtractive annular sketch "
+                        "and sweeping that face often collapses the inner-wire boolean lane "
+                        "and can fail with a null sweep result."
+                    ),
+                    "repair_hint": (
+                        f"Do not sweep `{builder_alias}.face()` or a face variable captured "
+                        f"from `{builder_alias}` when the section is one annular sketch. "
+                        "Prefer `sweep(profile.sketch, path=path_wire)` for the same-sketch "
+                        "annular section, or rebuild truly separate outer/inner section faces "
+                        "before doing one explicit solid boolean."
+                        + (
+                            f" Repair the annular sweep section at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for vector_hit in _find_vector_component_indexing_hits(parsed_tree):
+            line_no = int(vector_hit.get("line_no") or 0)
+            index_value = int(vector_hit.get("index_value") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.vector_component_indexing",
+                    "message": (
+                        "Build123d points/vectors returned by curve endpoint or tangent "
+                        "expressions are not subscriptable sequence objects."
+                    ),
+                    "repair_hint": (
+                        "Use `.X`, `.Y`, and `.Z` (or explicitly convert to a tuple) "
+                        f"instead of `[{index_value}]` when reading Build123d vector components."
+                        + (
+                            f" Repair the vector component access at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for assignment_hit in _find_builder_method_reference_assignment_hits(parsed_tree):
+            line_no = int(assignment_hit.get("line_no") or 0)
+            builder_name = str(assignment_hit.get("builder_name") or "Builder").strip()
+            method_name = str(assignment_hit.get("method_name") or "method").strip()
+            builder_alias = str(assignment_hit.get("builder_alias") or "builder").strip()
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.builder_method_reference_assignment",
+                    "message": (
+                        f"`{builder_name}.{method_name}` is a method. Assigning "
+                        f"`{builder_alias}.{method_name}` stores a bound method object instead "
+                        "of the actual geometry."
+                    ),
+                    "repair_hint": (
+                        f"Call `{builder_alias}.{method_name}()` when capturing that geometry, "
+                        "or keep the builder-native sketch/wire object instead of storing the method reference."
+                        + (
+                            f" Repair the builder method assignment at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for curve_hit in _find_buildsketch_curve_context_hits(parsed_tree):
+            line_no = int(curve_hit.get("line_no") or 0)
+            helper_name = str(curve_hit.get("helper_name") or "CurveHelper").strip()
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_context.curve_requires_buildline",
+                    "message": (
+                        f"`{helper_name}(...)` is a Build123d curve helper that belongs "
+                        "inside `BuildLine`, not directly inside `BuildSketch`."
+                    ),
+                    "repair_hint": (
+                        "Move the curve construction into `with BuildLine():`, close the "
+                        "wire explicitly when needed, then call `make_face()` before "
+                        "extruding or revolving."
+                        + (
+                            f" Repair the `{helper_name}` builder context at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for missing_face_hit in _find_buildsketch_wire_profile_missing_make_face_hits(parsed_tree):
+            line_no = int(missing_face_hit.get("line_no") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.buildsketch_wire_requires_make_face",
+                    "message": (
+                        "A `BuildSketch` that only contains wire geometry from `BuildLine` "
+                        "must call lowercase `make_face()` before downstream extrude/revolve "
+                        "operations; otherwise the sketch can stay empty."
+                    ),
+                    "repair_hint": (
+                        "After the closed `BuildLine` wire is complete, call lowercase "
+                        "`make_face()` in the same `BuildSketch` before extruding or revolving."
+                        + (
+                            f" Repair the missing face conversion at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
 
     if re.search(r"^\s*(import|from)\s+cadquery\b", code_for_lint, flags=re.MULTILINE):
         hits.append(
@@ -1108,21 +1814,52 @@ def _preflight_lint_execute_build123d(
                 ),
             }
         )
-    if re.search(r"\b(?:CountersinkHole|CounterSink)\s*\(", code_for_lint):
+    if re.search(r"\b(?:CountersinkHole|CounterSink|countersink_hole)\s*\(", code_for_lint):
         hits.append(
             {
                 "rule_id": "invalid_build123d_api.countersink_helper_name",
                 "message": (
                     "Build123d uses `CounterSinkHole(...)`, not helper-name guesses such "
-                    "as `CountersinkHole(...)` or `CounterSink(...)`."
+                    "as `CountersinkHole(...)`, `CounterSink(...)`, or `countersink_hole(...)`."
                 ),
                 "repair_hint": (
-                    "Use the exact Build123d helper name `CounterSinkHole(...)` and keep "
-                    "its keyword names literal."
+                    "Do not guess countersink helper names. If you truly use the helper, "
+                    "the exact name is `CounterSinkHole(...)`; for explicit planar countersink "
+                    "arrays, prefer one `CounterSinkHole(...)` pass first with explicit host-face "
+                    "placement. Only fall back to an explicit same-builder cone/cylinder or "
+                    "revolved countersink recipe when the helper contract cannot express the "
+                    "host/placement semantics cleanly or prior evidence shows the helper result "
+                    "is dimensionally wrong for that family."
                 ),
             }
         )
-    if re.search(r"\bcountersink_radius\s*=", code_for_lint):
+    if re.search(r"\bWorkplanes\s*\(", code_for_lint):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_api.workplanes_helper_name",
+                "message": (
+                    "Build123d does not provide a `Workplanes(...)` helper or context "
+                    "manager."
+                ),
+                "repair_hint": (
+                    "Use the target plane directly with `BuildSketch(plane)` or place the "
+                    "feature on that face/workplane with `Locations(...)` instead of "
+                    "guessing `Workplanes(...)`."
+                ),
+            }
+        )
+    if re.search(r"(?<![\w.])hole\s*\(", code_for_lint):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_api.lowercase_hole_helper_name",
+                "message": "Build123d uses capitalized `Hole(...)`, not lowercase `hole(...)`.",
+                "repair_hint": (
+                    "Rename the helper to `Hole(...)` and keep it on the intended "
+                    "face/workplane placement instead of calling lowercase `hole(...)`."
+                ),
+            }
+        )
+    if parsed_tree is None and re.search(r"\bcountersink_radius\s*=", code_for_lint):
         hits.append(
             {
                 "rule_id": "invalid_build123d_keyword.countersink_radius_alias",
@@ -1136,7 +1873,7 @@ def _preflight_lint_execute_build123d(
                 ),
             }
         )
-    if re.search(r"\bcountersink_angle\s*=", code_for_lint):
+    if parsed_tree is None and re.search(r"\bcountersink_angle\s*=", code_for_lint):
         hits.append(
             {
                 "rule_id": "invalid_build123d_keyword.countersink_angle_alias",
@@ -1147,6 +1884,40 @@ def _preflight_lint_execute_build123d(
                 "repair_hint": (
                     "Rename the keyword to `counter_sink_angle=` when calling "
                     "`CounterSinkHole(...)`."
+                ),
+            }
+        )
+    if parsed_tree is None and re.search(
+        r"\bRegularPolygon\s*\([^)]*\b(?:sides|n_sides|num_sides|regular_sides)\s*=",
+        code_for_lint,
+        flags=re.DOTALL,
+    ):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_keyword.regular_polygon_sides_alias",
+                "message": (
+                    "`RegularPolygon(...)` uses `side_count=...`, not guessed side-count "
+                    "keyword aliases such as `sides=`."
+                ),
+                "repair_hint": (
+                    "Rename the keyword to `side_count=` when calling `RegularPolygon(...)`."
+                ),
+            }
+        )
+    if parsed_tree is None and re.search(
+        r"\bCone\s*\([^)]*\b(?:upper_radius|lower_radius)\s*=",
+        code_for_lint,
+        flags=re.DOTALL,
+    ):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_keyword.cone_radius_alias",
+                "message": (
+                    "`Cone(...)` uses `bottom_radius=` and `top_radius=...`, not "
+                    "legacy aliases such as `upper_radius=` or `lower_radius=`."
+                ),
+                "repair_hint": (
+                    "Rename the keywords to `bottom_radius=` / `top_radius=` when calling `Cone(...)`."
                 ),
             }
         )
@@ -1171,6 +1942,17 @@ def _preflight_lint_execute_build123d(
                     "Use Build123d transforms on the shape itself, for example "
                     "`Rot(Y=90) * solid` or `solid.rotate(Axis.Y, 90)`, instead of "
                     "calling a guessed top-level rotate helper."
+                ),
+            }
+        )
+    if re.search(r"\brevolve\s*\([^)]*\bangle\s*=", code_for_lint, flags=re.DOTALL):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_keyword.revolve_angle_alias",
+                "message": "Build123d `revolve(...)` does not accept an `angle=` keyword.",
+                "repair_hint": (
+                    "Use the default 360-degree revolve, or pass the supported "
+                    "`revolution_arc=` keyword when you need an explicit revolve span."
                 ),
             }
         )
@@ -1265,6 +2047,142 @@ def _preflight_lint_execute_build123d(
                 ),
             }
         )
+    if re.search(r"\bCenterArc\s*\([^)]*\barc_angle\s*=", code_for_lint, flags=re.DOTALL):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_keyword.center_arc_arc_angle_alias",
+                "message": (
+                    "`CenterArc(...)` uses `arc_size=...`, not `arc_angle=...`."
+                ),
+                "repair_hint": (
+                    "Rename the keyword to `arc_size=` when calling `CenterArc(...)`."
+                ),
+            }
+        )
+    if re.search(
+        r"\bCenterArc\s*\(",
+        code_for_lint,
+        flags=re.DOTALL,
+    ) and not re.search(
+        r"\bCenterArc\s*\([^)]*\bstart_angle\s*=",
+        code_for_lint,
+        flags=re.DOTALL,
+    ) and re.search(
+        r"\bCenterArc\s*\([^)]*\barc_size\s*=",
+        code_for_lint,
+        flags=re.DOTALL,
+    ):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_contract.center_arc_missing_start_angle",
+                "message": (
+                    "`CenterArc(...)` requires an explicit `start_angle` before the arc "
+                    "span and cannot infer it from `arc_size=` alone."
+                ),
+                "repair_hint": (
+                    "Provide `start_angle=...` (or the third positional argument) before "
+                    "`arc_size=` when calling `CenterArc(...)`."
+                ),
+            }
+        )
+    if re.search(
+        r"\bsweep\s*\([^)]*\bpath\s*=\s*[A-Za-z_][A-Za-z0-9_]*\.wire\b(?!\s*\()",
+        code_for_lint,
+        flags=re.DOTALL,
+    ) or re.search(
+        r"\bsweep\s*\([^)]*,\s*[A-Za-z_][A-Za-z0-9_]*\.wire\b(?!\s*\()",
+        code_for_lint,
+        flags=re.DOTALL,
+    ):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_contract.sweep_path_wire_method_reference",
+                "message": (
+                    "`BuildLine.wire` is a method. Passing `path.wire` into `sweep(...)` "
+                    "uses a bound method object instead of the actual wire."
+                ),
+                "repair_hint": (
+                    "Call `path.wire()` when passing the path into `sweep(...)`, or pass "
+                    "another real `Wire`/`Edge` object."
+                ),
+            }
+        )
+    if re.search(
+        r"\bsweep\s*\([^)]*\bpath\s*=\s*[A-Za-z_][A-Za-z0-9_]*\.line\b(?!\s*\()",
+        code_for_lint,
+        flags=re.DOTALL,
+    ) or re.search(
+        r"\bsweep\s*\([^)]*,\s*[A-Za-z_][A-Za-z0-9_]*\.line\b(?!\s*\()",
+        code_for_lint,
+        flags=re.DOTALL,
+    ):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_contract.sweep_path_line_alias",
+                "message": (
+                    "`BuildLine.line` exposes only one curve member and can silently "
+                    "drop the full multi-segment rail that a path sweep requires."
+                ),
+                "repair_hint": (
+                    "Pass `path.wire()` or another real connected `Wire`/`Edge` rail "
+                    "into `sweep(...)` instead of `path.line`."
+                ),
+            }
+        )
+    if re.search(r"\bsweep\s*\([^)]*\bsection\s*=", code_for_lint, flags=re.DOTALL):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_keyword.sweep_section_alias",
+                "message": (
+                    "`sweep(...)` uses `sections=` (plural) or a positional first "
+                    "argument, not `section=`."
+                ),
+                "repair_hint": (
+                    "Pass the profile as the first positional argument to `sweep(...)`, "
+                    "or rename `section=` to `sections=`."
+                ),
+            }
+        )
+    if re.search(
+        r"\bsweep\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\.face\b(?!\s*\()",
+        code_for_lint,
+        flags=re.DOTALL,
+    ) or re.search(
+        r"\bsweep\s*\([^)]*\b(?:sections|section)\s*=\s*[A-Za-z_][A-Za-z0-9_]*\.face\b(?!\s*\()",
+        code_for_lint,
+        flags=re.DOTALL,
+    ):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_contract.sweep_profile_face_method_reference",
+                "message": (
+                    "`BuildSketch.face` is a method. Passing `profile.face` into "
+                    "`sweep(...)` uses a bound method object instead of the actual face."
+                ),
+                "repair_hint": (
+                    "Call `profile.face()` when extracting the face, or pass `profile.sketch` "
+                    "/ another real face object into `sweep(...)`."
+                ),
+            }
+        )
+    if re.search(
+        r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*[A-Za-z_][A-Za-z0-9_]*\.(?:wire|face)\b(?!\s*\()",
+        code_for_lint,
+        flags=re.MULTILINE,
+    ):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_contract.builder_method_reference_assignment",
+                "message": (
+                    "Build123d builder accessors such as `.wire` and `.face` are methods. "
+                    "Assigning them without `()` stores a bound method object instead of geometry."
+                ),
+                "repair_hint": (
+                    "Call the builder method, for example `path_builder.wire()` or "
+                    "`profile_builder.face()`, when capturing that geometry."
+                ),
+            }
+        )
     if re.search(r"\bSemicircle\s*\(", code_for_lint):
         hits.append(
             {
@@ -1276,6 +2194,18 @@ def _preflight_lint_execute_build123d(
                     "Use `CenterArc(...)` or `RadiusArc(...)` inside `BuildLine`, close "
                     "the split edge explicitly, and turn the closed wire into a face with "
                     "`make_face()`."
+                ),
+            }
+        )
+    if re.search(r"\bRing\s*\(", code_for_lint):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_api.ring_helper_name",
+                "message": "`Ring(...)` is not a Build123d helper.",
+                "repair_hint": (
+                    "For annular bands or grooves, build the outer coaxial solid/profile "
+                    "and subtract the inner coaxial solid/profile instead of guessing "
+                    "a `Ring(...)` primitive."
                 ),
             }
         )
@@ -1508,6 +2438,71 @@ def _find_nested_buildpart_part_arithmetic_hits(tree: ast.AST) -> list[dict[str,
     return hits
 
 
+def _find_nested_subtractive_buildpart_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._builder_stack: list[str] = []
+            self._locations_depth = 0
+            self._hits: list[dict[str, Any]] = []
+            self._seen: set[tuple[int, bool]] = set()
+
+        @property
+        def hits(self) -> list[dict[str, Any]]:
+            return self._hits
+
+        def visit_With(self, node: ast.With) -> None:  # noqa: N802
+            self._visit_with_like(node.items, node.body)
+
+        def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802
+            self._visit_with_like(node.items, node.body)
+
+        def _visit_with_like(
+            self,
+            items: list[ast.withitem],
+            body: list[ast.stmt],
+        ) -> None:
+            pushed_builders = 0
+            pushed_locations = 0
+            try:
+                for item in items:
+                    context_expr = item.context_expr
+                    if _with_context_builder_name(context_expr) == "BuildPart":
+                        if _call_is_subtractive_buildpart(context_expr) and self._builder_stack:
+                            line_no = int(
+                                getattr(context_expr, "lineno", 0)
+                                or getattr(item, "lineno", 0)
+                                or 0
+                            )
+                            cache_key = (line_no, self._locations_depth > 0)
+                            if cache_key not in self._seen:
+                                self._seen.add(cache_key)
+                                self._hits.append(
+                                    {
+                                        "line_no": line_no,
+                                        "inside_locations": self._locations_depth > 0,
+                                    }
+                                )
+                        self._builder_stack.append("BuildPart")
+                        pushed_builders += 1
+                        continue
+                    if _with_context_is_locations(context_expr):
+                        self._locations_depth += 1
+                        pushed_locations += 1
+                for statement in body:
+                    self.visit(statement)
+            finally:
+                for _ in range(pushed_builders):
+                    self._builder_stack.pop()
+                self._locations_depth = max(0, self._locations_depth - pushed_locations)
+
+    visitor = _Visitor()
+    visitor.visit(tree)
+    return visitor.hits
+
+
 def _find_active_buildpart_temporary_primitive_arithmetic_hits(
     tree: ast.AST,
 ) -> list[dict[str, Any]]:
@@ -1561,6 +2556,126 @@ def _find_active_buildpart_temporary_primitive_arithmetic_hits(
                 }
             )
     return hits
+
+
+def _find_explicit_anchor_manual_cutter_missing_subtract_hits(
+    tree: ast.AST,
+) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+
+    class _Visitor(ast.NodeVisitor):
+        _primitive_names = {"Cone", "Cylinder"}
+
+        def __init__(self) -> None:
+            self._context_stack: list[str] = []
+            self._feature_locations_stack: list[bool] = []
+            self._hits: list[dict[str, Any]] = []
+            self._seen: set[tuple[str, int]] = set()
+
+        @property
+        def hits(self) -> list[dict[str, Any]]:
+            return self._hits
+
+        def visit_With(self, node: ast.With) -> None:  # noqa: N802
+            self._visit_with_like(node.items, node.body)
+
+        def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802
+            self._visit_with_like(node.items, node.body)
+
+        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+            primitive_name = next(
+                (
+                    name
+                    for name in self._primitive_names
+                    if _ast_name_matches(node.func, name)
+                ),
+                None,
+            )
+            if (
+                primitive_name is not None
+                and "BuildPart" in self._context_stack
+                and any(self._feature_locations_stack)
+                and not _call_uses_mode_subtract(node)
+                and not _call_uses_mode_private(node)
+            ):
+                line_no = int(getattr(node, "lineno", 0) or 0)
+                cache_key = (primitive_name, line_no)
+                if cache_key not in self._seen:
+                    self._seen.add(cache_key)
+                    self._hits.append(
+                        {"line_no": line_no, "primitive_name": primitive_name}
+                    )
+            self.generic_visit(node)
+
+        def _visit_with_like(
+            self,
+            items: list[ast.withitem],
+            body: list[ast.stmt],
+        ) -> None:
+            pushed_contexts = 0
+            pushed_feature_locations = 0
+            try:
+                for item in items:
+                    context_expr = item.context_expr
+                    builder_name = _with_context_builder_name(context_expr)
+                    if builder_name is not None:
+                        self._context_stack.append(builder_name)
+                        pushed_contexts += 1
+                        continue
+                    if _with_context_is_locations(context_expr):
+                        self._feature_locations_stack.append(
+                            _locations_context_suggests_local_feature_placement(
+                                context_expr
+                            )
+                        )
+                        pushed_feature_locations += 1
+                for statement in body:
+                    self.visit(statement)
+            finally:
+                for _ in range(pushed_contexts):
+                    self._context_stack.pop()
+                for _ in range(pushed_feature_locations):
+                    if self._feature_locations_stack:
+                        self._feature_locations_stack.pop()
+
+    visitor = _Visitor()
+    visitor.visit(tree)
+    return visitor.hits
+
+
+def _locations_context_suggests_local_feature_placement(node: ast.AST) -> bool:
+    if not (isinstance(node, ast.Call) and _ast_name_matches(node.func, "Locations")):
+        return False
+    if not node.args and not node.keywords:
+        return False
+
+    location_exprs = list(node.args)
+    for keyword in node.keywords:
+        if str(getattr(keyword, "arg", "") or "").strip() in {"locs", "locations"}:
+            location_exprs.append(keyword.value)
+
+    return any(
+        _location_expression_has_non_origin_anchor(expr) for expr in location_exprs
+    )
+
+
+def _location_expression_has_non_origin_anchor(expr: ast.AST) -> bool:
+    if isinstance(expr, (ast.Tuple, ast.List)):
+        elements = list(expr.elts)
+        if not elements:
+            return False
+        return any(not _ast_expr_is_zero_like(item) for item in elements)
+    return not _ast_expr_is_zero_like(expr)
+
+
+def _ast_expr_is_zero_like(expr: ast.AST) -> bool:
+    if isinstance(expr, ast.Constant):
+        value = expr.value
+        return isinstance(value, (int, float)) and float(value) == 0.0
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, (ast.UAdd, ast.USub)):
+        return _ast_expr_is_zero_like(expr.operand)
+    return False
 
 
 def _find_plane_rotated_origin_guess_hits(tree: ast.AST) -> list[dict[str, Any]]:
@@ -1667,6 +2782,706 @@ def _find_buildsketch_countersink_context_hits(tree: ast.AST) -> list[dict[str, 
     return visitor.hits
 
 
+def _find_buildsketch_curve_context_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+
+    class _Visitor(ast.NodeVisitor):
+        _curve_helper_names = {"Polyline", "Line", "CenterArc", "RadiusArc"}
+
+        def __init__(self) -> None:
+            self._context_stack: list[str] = []
+            self._hits: list[dict[str, Any]] = []
+            self._seen: set[tuple[int, str]] = set()
+
+        @property
+        def hits(self) -> list[dict[str, Any]]:
+            return self._hits
+
+        def visit_With(self, node: ast.With) -> None:  # noqa: N802
+            self._visit_with_like(node.items, node.body)
+
+        def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802
+            self._visit_with_like(node.items, node.body)
+
+        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+            helper_name = next(
+                (
+                    name
+                    for name in self._curve_helper_names
+                    if _ast_name_matches(node.func, name)
+                ),
+                None,
+            )
+            if (
+                helper_name is not None
+                and "BuildSketch" in self._context_stack
+                and "BuildLine" not in self._context_stack
+            ):
+                line_no = int(getattr(node, "lineno", 0) or 0)
+                cache_key = (line_no, helper_name)
+                if cache_key not in self._seen:
+                    self._seen.add(cache_key)
+                    self._hits.append(
+                        {"line_no": line_no, "helper_name": helper_name}
+                    )
+            self.generic_visit(node)
+
+        def _visit_with_like(
+            self,
+            items: list[ast.withitem],
+            body: list[ast.stmt],
+        ) -> None:
+            added_contexts: list[str] = []
+            for item in items:
+                builder_name = _with_context_builder_name(item.context_expr)
+                if builder_name is None:
+                    continue
+                added_contexts.append(builder_name)
+                self._context_stack.append(builder_name)
+            try:
+                for statement in body:
+                    self.visit(statement)
+            finally:
+                for _ in added_contexts:
+                    self._context_stack.pop()
+
+    visitor = _Visitor()
+    visitor.visit(tree)
+    return visitor.hits
+
+
+def _find_buildsketch_wire_profile_missing_make_face_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        if not any(
+            _with_context_builder_name(item.context_expr) == "BuildSketch" for item in node.items
+        ):
+            continue
+        body_module = ast.Module(body=node.body, type_ignores=[])
+        has_make_face = any(
+            isinstance(child, ast.Call) and _ast_name_matches(child.func, "make_face")
+            for child in ast.walk(body_module)
+        )
+        if has_make_face:
+            continue
+        has_nested_buildline = any(
+            isinstance(child, ast.With)
+            and any(
+                _with_context_builder_name(item.context_expr) == "BuildLine"
+                for item in child.items
+            )
+            for child in ast.walk(body_module)
+        )
+        if not has_nested_buildline:
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        hits.append({"line_no": line_no})
+    return hits
+
+
+def _find_countersink_keyword_alias_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    valid_helper_names = {"CounterSinkHole", "CountersinkHole", "CounterSink"}
+    alias_names = {
+        "countersink_radius",
+        "countersink_angle",
+        "angle",
+        "cone_angle",
+        "head_diameter",
+        "head_radius",
+        "countersink_diameter",
+        "counter_sink_head_radius",
+        "counter_sink_diameter",
+        "head_dia",
+        "countersink_dia",
+        "counter_sink_dia",
+        "thru_diameter",
+        "through_diameter",
+        "through_hole_diameter",
+        "hole_diameter",
+        "diameter",
+        "thru_dia",
+        "through_dia",
+        "hole_dia",
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not any(_ast_name_matches(node.func, helper_name) for helper_name in valid_helper_names):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        for keyword in node.keywords:
+            alias_name = str(getattr(keyword, "arg", "") or "").strip()
+            if alias_name not in alias_names:
+                continue
+            cache_key = (line_no, alias_name)
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "alias_name": alias_name})
+    return hits
+
+
+def _find_regular_polygon_keyword_alias_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    alias_names = {"sides", "n_sides", "num_sides", "regular_sides"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "RegularPolygon"):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        for keyword in node.keywords:
+            alias_name = str(getattr(keyword, "arg", "") or "").strip()
+            if alias_name not in alias_names:
+                continue
+            cache_key = (line_no, alias_name)
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "alias_name": alias_name})
+    return hits
+
+
+def _find_plane_keyword_alias_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    alias_names = {"normal"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "Plane"):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        for keyword in node.keywords:
+            alias_name = str(getattr(keyword, "arg", "") or "").strip()
+            if alias_name not in alias_names:
+                continue
+            cache_key = (line_no, alias_name)
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "alias_name": alias_name})
+    return hits
+
+
+def _find_cone_keyword_alias_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    alias_names = {"upper_radius", "lower_radius"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "Cone"):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        for keyword in node.keywords:
+            alias_name = str(getattr(keyword, "arg", "") or "").strip()
+            if alias_name not in alias_names:
+                continue
+            cache_key = (line_no, alias_name)
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "alias_name": alias_name})
+    return hits
+
+
+def _find_center_arc_keyword_alias_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "CenterArc"):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        for keyword in node.keywords:
+            alias_name = str(getattr(keyword, "arg", "") or "").strip()
+            if alias_name != "arc_angle":
+                continue
+            cache_key = (line_no, alias_name)
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "alias_name": alias_name})
+    return hits
+
+
+def _find_explicit_radius_arc_helper_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        helper_name = None
+        if _ast_name_matches(node.func, "TangentArc"):
+            helper_name = "TangentArc"
+        elif _ast_name_matches(node.func, "JernArc"):
+            helper_name = "JernArc"
+        if helper_name is None:
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        cache_key = (line_no, helper_name)
+        if cache_key in seen:
+            continue
+        seen.add(cache_key)
+        hits.append({"line_no": line_no, "helper_name": helper_name})
+    return hits
+
+
+def _find_sweep_path_method_reference_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "sweep"):
+            continue
+        candidate_nodes: list[ast.AST] = []
+        if len(node.args) >= 2:
+            candidate_nodes.append(node.args[1])
+        for keyword in node.keywords:
+            if str(getattr(keyword, "arg", "") or "").strip() == "path":
+                candidate_nodes.append(keyword.value)
+        for candidate in candidate_nodes:
+            if not isinstance(candidate, ast.Attribute) or candidate.attr not in {"wire", "line"}:
+                continue
+            line_no = int(getattr(candidate, "lineno", 0) or getattr(node, "lineno", 0) or 0)
+            cache_key = (line_no, str(candidate.attr))
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "attribute_name": str(candidate.attr)})
+    return hits
+
+
+def _find_center_arc_missing_start_angle_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "CenterArc"):
+            continue
+        keyword_names = {
+            str(getattr(keyword, "arg", "") or "").strip()
+            for keyword in node.keywords
+            if str(getattr(keyword, "arg", "") or "").strip()
+        }
+        if "start_angle" in keyword_names:
+            continue
+        if len(node.args) >= 3:
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        if line_no in seen:
+            continue
+        seen.add(line_no)
+        hits.append({"line_no": line_no})
+    return hits
+
+
+def _find_symbolic_degree_constant_hits(code: str) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    try:
+        token_stream = tokenize.generate_tokens(io.StringIO(code).readline)
+    except (tokenize.TokenError, IndentationError):
+        return hits
+
+    pending_name: tokenize.TokenInfo | None = None
+    last_significant: tokenize.TokenInfo | None = None
+    for token in token_stream:
+        if token.type in {
+            tokenize.NL,
+            tokenize.NEWLINE,
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.COMMENT,
+            tokenize.ENDMARKER,
+        }:
+            continue
+        if token.type == tokenize.NAME and token.string in {"DEGREE", "DEGREES"}:
+            line_no = int(token.start[0] or 0)
+            cache_key = (line_no, token.string)
+            if last_significant is not None and last_significant.string in {"*", "/"}:
+                if cache_key not in seen:
+                    seen.add(cache_key)
+                    hits.append({"line_no": line_no, "symbol_name": token.string})
+                pending_name = None
+            else:
+                pending_name = token
+            last_significant = token
+            continue
+        if pending_name is not None and token.string in {"*", "/"}:
+            line_no = int(pending_name.start[0] or 0)
+            cache_key = (line_no, pending_name.string)
+            if cache_key not in seen:
+                seen.add(cache_key)
+                hits.append({"line_no": line_no, "symbol_name": pending_name.string})
+        pending_name = None
+        last_significant = token
+    return hits
+
+
+def _requirement_prefers_center_arc_for_explicit_radius_path(requirement_lower: str) -> bool:
+    lowered = str(requirement_lower or "").strip().lower()
+    return (
+        "sweep" in lowered
+        and any(token in lowered for token in ("path", "rail"))
+        and "arc" in lowered
+        and "radius" in lowered
+        and any(token in lowered for token in ("tangent arc", "90-degree", "90 degree"))
+    )
+
+
+def _find_sweep_section_keyword_alias_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "sweep"):
+            continue
+        for keyword in node.keywords:
+            if str(getattr(keyword, "arg", "") or "").strip() != "section":
+                continue
+            line_no = int(getattr(keyword, "lineno", 0) or getattr(node, "lineno", 0) or 0)
+            if line_no in seen:
+                continue
+            seen.add(line_no)
+            hits.append({"line_no": line_no})
+    return hits
+
+
+def _find_solid_sweep_invalid_keyword_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    allowed_keywords = {
+        "section",
+        "path",
+        "inner_wires",
+        "make_solid",
+        "is_frenet",
+        "mode",
+        "transition",
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "sweep"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "Solid"
+        ):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        for keyword in node.keywords:
+            alias_name = str(getattr(keyword, "arg", "") or "").strip()
+            if not alias_name or alias_name in allowed_keywords:
+                continue
+            cache_key = (line_no, alias_name)
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "alias_name": alias_name})
+    return hits
+
+
+def _find_sweep_profile_face_method_reference_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "sweep"):
+            continue
+        candidate_nodes: list[ast.AST] = []
+        if node.args:
+            candidate_nodes.append(node.args[0])
+        for keyword in node.keywords:
+            if str(getattr(keyword, "arg", "") or "").strip() in {"sections", "section"}:
+                candidate_nodes.append(keyword.value)
+        for candidate in candidate_nodes:
+            if not isinstance(candidate, ast.Attribute) or candidate.attr != "face":
+                continue
+            line_no = int(getattr(candidate, "lineno", 0) or getattr(node, "lineno", 0) or 0)
+            if line_no in seen:
+                continue
+            seen.add(line_no)
+            hits.append({"line_no": line_no})
+    return hits
+
+
+def _ast_is_mode_subtract(node: ast.AST) -> bool:
+    return isinstance(node, ast.Attribute) and node.attr == "SUBTRACT" and _ast_name_matches(
+        node.value, "Mode"
+    )
+
+
+def _call_is_subtractive_buildpart(node: ast.AST) -> bool:
+    if not (isinstance(node, ast.Call) and _ast_name_matches(node.func, "BuildPart")):
+        return False
+    for keyword in node.keywords:
+        if str(getattr(keyword, "arg", "") or "").strip() != "mode":
+            continue
+        if _ast_is_mode_subtract(keyword.value):
+            return True
+    return False
+
+
+def _call_uses_mode_subtract(node: ast.Call) -> bool:
+    for keyword in node.keywords:
+        if str(getattr(keyword, "arg", "") or "").strip() != "mode":
+            continue
+        if _ast_is_mode_subtract(keyword.value):
+            return True
+    return False
+
+
+def _buildsketch_aliases_with_subtractive_entities(tree: ast.AST) -> set[str]:
+    if not isinstance(tree, ast.Module):
+        return set()
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        for item in node.items:
+            if not (
+                isinstance(item.context_expr, ast.Call)
+                and _ast_name_matches(item.context_expr.func, "BuildSketch")
+            ):
+                continue
+            if not isinstance(item.optional_vars, ast.Name):
+                continue
+            builder_alias = str(item.optional_vars.id)
+            for child in ast.walk(ast.Module(body=node.body, type_ignores=[])):
+                if not isinstance(child, ast.Call):
+                    continue
+                for keyword in child.keywords:
+                    if str(getattr(keyword, "arg", "") or "").strip() != "mode":
+                        continue
+                    if _ast_is_mode_subtract(keyword.value):
+                        aliases.add(builder_alias)
+                        break
+                if builder_alias in aliases:
+                    break
+    return aliases
+
+
+def _expr_anchors_to_builder_faces(expr: ast.AST, *, builder_alias: str) -> bool:
+    if isinstance(expr, ast.Call):
+        func = expr.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "faces"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == builder_alias
+        ):
+            return True
+        if isinstance(func, ast.Attribute):
+            return _expr_anchors_to_builder_faces(func.value, builder_alias=builder_alias)
+    if isinstance(expr, ast.Attribute):
+        return _expr_anchors_to_builder_faces(expr.value, builder_alias=builder_alias)
+    return False
+
+
+def _subscript_index_value(node: ast.Subscript) -> int | None:
+    slice_node = node.slice
+    if isinstance(slice_node, ast.Constant) and isinstance(slice_node.value, int):
+        return int(slice_node.value)
+    if isinstance(slice_node, ast.UnaryOp) and isinstance(slice_node.op, ast.USub) and isinstance(
+        slice_node.operand, ast.Constant
+    ) and isinstance(slice_node.operand.value, int):
+        return -int(slice_node.operand.value)
+    return None
+
+
+def _find_annular_profile_face_splitting_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    subtractive_aliases = _buildsketch_aliases_with_subtractive_entities(tree)
+    if not subtractive_aliases:
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript):
+            continue
+        index_value = _subscript_index_value(node)
+        if index_value is None or index_value < 1:
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        for builder_alias in subtractive_aliases:
+            if not _expr_anchors_to_builder_faces(node.value, builder_alias=builder_alias):
+                continue
+            cache_key = (builder_alias, line_no)
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "builder_alias": builder_alias})
+    return hits
+
+
+def _find_annular_profile_face_extraction_sweep_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    subtractive_aliases = _buildsketch_aliases_with_subtractive_entities(tree)
+    if not subtractive_aliases:
+        return []
+
+    extracted_face_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        if not (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "face"
+            and isinstance(value.func.value, ast.Name)
+            and value.func.value.id in subtractive_aliases
+        ):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id:
+                extracted_face_aliases[target.id] = value.func.value.id
+
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _ast_name_matches(node.func, "sweep"):
+            continue
+        candidate_nodes: list[ast.AST] = []
+        if node.args:
+            candidate_nodes.append(node.args[0])
+        for keyword in node.keywords:
+            if str(getattr(keyword, "arg", "") or "").strip() in {"section", "sections"}:
+                candidate_nodes.append(keyword.value)
+        for candidate in candidate_nodes:
+            builder_alias = None
+            if isinstance(candidate, ast.Name):
+                builder_alias = extracted_face_aliases.get(candidate.id)
+            elif (
+                isinstance(candidate, ast.Call)
+                and isinstance(candidate.func, ast.Attribute)
+                and candidate.func.attr == "face"
+                and isinstance(candidate.func.value, ast.Name)
+                and candidate.func.value.id in subtractive_aliases
+            ):
+                builder_alias = candidate.func.value.id
+            if not builder_alias:
+                continue
+            line_no = int(getattr(candidate, "lineno", 0) or getattr(node, "lineno", 0) or 0)
+            cache_key = (builder_alias, line_no)
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            hits.append({"line_no": line_no, "builder_alias": builder_alias})
+    return hits
+
+
+def _expr_is_build123d_vector_like(node: ast.AST) -> bool:
+    return isinstance(node, ast.BinOp) and isinstance(node.op, (ast.MatMult, ast.Mod))
+
+
+def _find_vector_component_indexing_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    vector_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not _expr_is_build123d_vector_like(node.value):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id:
+                vector_aliases.add(target.id)
+
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript):
+            continue
+        index_value = _subscript_index_value(node)
+        if index_value not in {0, 1, 2}:
+            continue
+        value = node.value
+        if not (
+            _expr_is_build123d_vector_like(value)
+            or (isinstance(value, ast.Name) and value.id in vector_aliases)
+        ):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        cache_key = (line_no, index_value)
+        if cache_key in seen:
+            continue
+        seen.add(cache_key)
+        hits.append({"line_no": line_no, "index_value": index_value})
+    return hits
+
+
+def _find_builder_method_reference_assignment_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    builder_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.With, ast.AsyncWith)):
+            continue
+        for item in node.items:
+            builder_name = _with_context_builder_name(item.context_expr)
+            if builder_name not in {"BuildLine", "BuildSketch"}:
+                continue
+            optional_vars = getattr(item, "optional_vars", None)
+            if isinstance(optional_vars, ast.Name) and optional_vars.id:
+                builder_aliases[optional_vars.id] = builder_name
+    if not builder_aliases:
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        if not (
+            isinstance(value, ast.Attribute)
+            and isinstance(value.value, ast.Name)
+            and value.value.id in builder_aliases
+            and value.attr in {"wire", "face"}
+        ):
+            continue
+        line_no = int(getattr(value, "lineno", 0) or getattr(node, "lineno", 0) or 0)
+        cache_key = (line_no, value.attr)
+        if cache_key in seen:
+            continue
+        seen.add(cache_key)
+        hits.append(
+            {
+                "line_no": line_no,
+                "builder_alias": value.value.id,
+                "builder_name": builder_aliases[value.value.id],
+                "method_name": value.attr,
+            }
+        )
+    return hits
+
+
 def _buildpart_with_alias(node: ast.AST) -> str | None:
     if not isinstance(node, (ast.With, ast.AsyncWith)):
         return None
@@ -1689,6 +3504,13 @@ def _with_context_builder_name(node: ast.AST) -> str | None:
         if _ast_name_matches(context_expr, builder_name):
             return builder_name
     return None
+
+
+def _with_context_is_locations(node: ast.AST) -> bool:
+    context_expr = node
+    if isinstance(context_expr, ast.Call):
+        context_expr = context_expr.func
+    return _ast_name_matches(context_expr, "Locations")
 
 
 def _ast_name_matches(node: ast.AST, expected: str) -> bool:
@@ -1919,8 +3741,29 @@ def _candidate_lint_family_ids(
                 families.append(family_id)
     lowered_requirement = requirement_text.lower()
     if (
+        "sweep" in lowered_requirement
+        and any(
+            token in lowered_requirement
+            for token in (
+                "path",
+                "rail",
+                "profile sketch",
+                "concentric",
+                "reference plane",
+                "tangent arc",
+            )
+        )
+        and "path_sweep" not in families
+    ):
+        families.append("path_sweep")
+    if (
         any(token in lowered_requirement for token in ("countersink", "countersunk"))
         and "explicit_anchor_hole" not in families
+    ):
+        families.append("explicit_anchor_hole")
+    if (
+        "explicit_anchor_hole" not in families
+        and _requirement_mentions_explicit_hole_anchors(lowered_requirement)
     ):
         families.append("explicit_anchor_hole")
     if (
@@ -1995,6 +3838,34 @@ def _candidate_lint_family_ids(
     return families
 
 
+def _requirement_mentions_explicit_hole_anchors(requirement_lower: str) -> bool:
+    if not requirement_lower:
+        return False
+    if "hole" not in requirement_lower:
+        return False
+    coordinate_tokens = (
+        "coordinates (",
+        "coordinate (",
+        "centered at x",
+        "centered at y",
+        "centered at z",
+        "at x =",
+        "at y =",
+        "at z =",
+        "x =",
+        "y =",
+        "z =",
+    )
+    if any(token in requirement_lower for token in coordinate_tokens):
+        return True
+    return bool(
+        re.search(
+            r"\(\s*-?[0-9]+(?:\.[0-9]+)?\s*,\s*-?[0-9]+(?:\.[0-9]+)?(?:\s*,\s*-?[0-9]+(?:\.[0-9]+)?)?\s*\)",
+            requirement_lower,
+        )
+    )
+
+
 def _build_preflight_repair_recipe(
     *,
     family_ids: list[str],
@@ -2005,6 +3876,7 @@ def _build_preflight_repair_recipe(
         for item in lint_hits
         if isinstance(item, dict)
     }
+    family_id_set = {str(item).strip() for item in family_ids if str(item).strip()}
     if not lint_ids:
         return {}
     if "slots" in family_ids and lint_ids.intersection(
@@ -2056,7 +3928,9 @@ def _build_preflight_repair_recipe(
         }
     if (
         "explicit_anchor_hole" in family_ids
-        and "invalid_build123d_api.nested_buildpart_cutter_part_arithmetic" in lint_ids
+        and "pattern_distribution" in family_ids
+        and "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic"
+        in lint_ids
     ):
         return {
             "recipe_id": "explicit_anchor_hole_same_builder_subtract_recipe",
@@ -2064,21 +3938,90 @@ def _build_preflight_repair_recipe(
                 "For repeated countersunk hole layouts, keep the host in one BuildPart, "
                 "convert explicit point coordinates into the correct host-face frame, and "
                 "realize the hole/countersink cutters through one supported subtractive "
-                "pattern instead of nesting BuildPart cutters and mutating `part.part` in-place."
+                "pattern instead of nesting BuildPart cutters or reusing temporary "
+                "primitive staging solids for later `part.part` arithmetic."
             ),
             "recipe_skeleton": {
                 "mode": "subtree_rebuild_via_execute_build123d",
                 "steps": [
                     "with BuildPart() as part: build the host body first",
                     "compute the full hole center set in the host-face coordinate frame before cutting",
+                    "for explicit planar countersink arrays where the requirement already gives the through-hole diameter, head diameter, and cone angle, prefer one `CounterSinkHole(...)` pass first with the exact helper contract and explicit host-face placement",
+                    "Only fall back to an explicit same-builder cylinder+cone or revolved countersink recipe when the helper contract cannot express the host/placement semantics cleanly or when prior validation/evaluation evidence shows the helper result is dimensionally wrong for that family",
                     "either keep the cutters in the same active BuildPart with explicit subtractive placement, or close the host builder and subtract fully positioned cutters with `result = host.part - cutter`",
                     "do not use nested `with BuildPart() as cutter:` blocks followed by `part.part -= cutter.part` inside the host builder",
+                    "do not create `cone = Cone(...)` or `cyl = Cylinder(...)` staging solids inside the active host and reuse them later in explicit boolean arithmetic unless they were created as `mode=Mode.PRIVATE`",
+                ],
+            },
+        }
+    if (
+        "explicit_anchor_hole" in family_ids
+        and lint_ids.intersection(
+            {
+                "invalid_build123d_api.nested_buildpart_cutter_part_arithmetic",
+                "invalid_build123d_context.nested_subtractive_buildpart_inside_active_builder",
+                "invalid_build123d_contract.explicit_anchor_manual_cutter_requires_subtract_mode",
+            }
+        )
+    ):
+        return {
+            "recipe_id": "explicit_anchor_hole_same_builder_subtract_recipe",
+            "recipe_summary": (
+                "For repeated countersunk hole layouts, keep the host in one BuildPart, "
+                "convert explicit point coordinates into the correct host-face frame, and "
+                "realize the hole/countersink cutters through one supported subtractive "
+                "pattern instead of nesting BuildPart cutters or reusing temporary "
+                "primitive staging solids for later `part.part` arithmetic."
+            ),
+            "recipe_skeleton": {
+                "mode": "subtree_rebuild_via_execute_build123d",
+                "steps": [
+                    "with BuildPart() as part: build the host body first",
+                    "compute the full hole center set in the host-face coordinate frame before cutting",
+                    "for explicit planar countersink arrays where the requirement already gives the through-hole diameter, head diameter, and cone angle, prefer one `CounterSinkHole(...)` pass first with the exact helper contract and explicit host-face placement",
+                    "Only fall back to an explicit same-builder cylinder+cone or revolved countersink recipe when the helper contract cannot express the host/placement semantics cleanly or when prior validation/evaluation evidence shows the helper result is dimensionally wrong for that family",
+                    "either keep the cutters in the same active BuildPart with explicit subtractive placement, or close the host builder and subtract fully positioned cutters with `result = host.part - cutter`",
+                    "do not use nested `with BuildPart() as cutter:` blocks followed by `part.part -= cutter.part` inside the host builder",
+                    "do not create `cone = Cone(...)` or `cyl = Cylinder(...)` staging solids inside the active host and reuse them later in explicit boolean arithmetic unless they were created as `mode=Mode.PRIVATE`",
+                ],
+            },
+        }
+    if (
+        "explicit_anchor_hole" in family_ids
+        and lint_ids.intersection(
+            {
+                "invalid_build123d_keyword.cylinder_axis",
+            }
+        )
+    ):
+        return {
+            "recipe_id": "explicit_anchor_directional_hole_cylinder_contract",
+            "recipe_summary": (
+                "For explicit directional through-holes, keep the host body authoritative, "
+                "place the hole centers with literal local anchors, build a plain Cylinder "
+                "cutter without `axis=`, and orient it with `Rot(...)` plus explicit "
+                "placement instead of guessing unsupported cylinder keywords."
+            ),
+            "recipe_skeleton": {
+                "mode": "subtree_rebuild_via_execute_build123d",
+                "steps": [
+                    "with BuildPart() as part: build the host solid and any shell/pad geometry first",
+                    "keep the requested hole centers literal in the target local frame, for example explicit `(x, y, z)` anchors or a face-local workplane placement",
+                    "create a plain cutter such as `cutter = Cylinder(radius=..., height=..., align=(Align.CENTER, Align.CENTER, Align.CENTER))` without an `axis=` keyword",
+                    "orient the cutter with `Rot(...)`, for example `Rot(Y=90) * cutter` for a Y-direction drill, then place it with `Pos(...)` or a non-origin `Locations(...)` anchor",
+                    "either subtract inside the active builder with a verified subtractive path, or close the host builder and do one explicit boolean such as `result = part.part - cutter`",
+                    "before finishing, verify that the realized centers still match the requested anchor coordinates on the actual host geometry",
                 ],
             },
         }
     if (
         ("annular_groove" in family_ids or "axisymmetric_profile" in family_ids)
-        and "invalid_build123d_api.nested_buildpart_cutter_part_arithmetic" in lint_ids
+        and lint_ids.intersection(
+            {
+                "invalid_build123d_api.nested_buildpart_cutter_part_arithmetic",
+                "invalid_build123d_api.ring_helper_name",
+            }
+        )
     ):
         return {
             "recipe_id": "annular_groove_same_builder_band_subtract_recipe",
@@ -2093,7 +4036,34 @@ def _build_preflight_repair_recipe(
                     "with BuildPart() as part: build the base solid first and keep its outer envelope authoritative",
                     "derive the groove outer_radius, inner_radius, and axial window directly from the requirement",
                     "either keep the annular groove subtraction in the same active `BuildPart` with builder-native subtractive geometry, or close the host and subtract the annular groove band once",
+                    "do not guess `Ring(...)`; realize the band as an outer coaxial solid/profile minus the inner coaxial solid/profile",
                     "do not use `with BuildPart() as groove_band:` inside the host builder followed by `part.part -= groove_band.part`",
+                ],
+            },
+        }
+    if (
+        "nested_hollow_section" in family_ids
+        and "axisymmetric_profile" in family_ids
+        and "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic"
+        in lint_ids
+    ):
+        return {
+            "recipe_id": "half_shell_semi_profile_extrude_contract",
+            "recipe_summary": (
+                "For half-shell or split-shell hosts, do not stage full cylinders and trim "
+                "them inside an active BuildPart. Build one closed semi-profile on the named "
+                "plane, extrude it once for the host envelope, then add pads and explicit "
+                "hole cutters after the host geometry is stable."
+            ),
+            "recipe_skeleton": {
+                "mode": "whole_part_rebuild_via_execute_build123d",
+                "steps": [
+                    "open `with BuildSketch(named_plane):` on the requirement plane and build the shell cross-section there first",
+                    "inside `BuildLine`, draw the outer semicircle and inner semicircle, then close the split side with explicit `Line(...)` segments so the semi-annulus becomes one closed face",
+                    "call `make_face()` and `extrude(amount=...)` once to create the half-shell host, preserving the named-plane lower bound and the one-sided split envelope",
+                    "realize any bottom pad or lug body as a separate additive host step after the shell profile is valid, not by trimming temporary cylinders inside the same active builder",
+                    "if an inner clearance or drill cutter still needs explicit solid arithmetic, close the host builder first and subtract that external cutter from `host.part` afterward",
+                    "only after the host shell and pad are stable should directional holes be placed with literal anchors and rotated cutters",
                 ],
             },
         }
@@ -2163,6 +4133,22 @@ def _build_preflight_repair_recipe(
                     "define the three host spans explicitly as length, width, and height",
                     "call `Box(length=..., width=..., height=...)` or `Box(length, width, height)`",
                     "if your variable name is `depth`, pass that variable as the second width dimension instead of `depth=...`",
+                ],
+            },
+        }
+    if "invalid_build123d_keyword.regular_polygon_sides_alias" in lint_ids:
+        return {
+            "recipe_id": "build123d_regular_polygon_keyword_contract",
+            "recipe_summary": (
+                "When using Build123d `RegularPolygon(...)`, keep the side-count contract "
+                "literal with `side_count=` instead of guessed aliases such as `sides=`."
+            ),
+            "recipe_skeleton": {
+                "mode": "local_edit_via_execute_build123d",
+                "steps": [
+                    "rewrite the polygon call as `RegularPolygon(radius=..., side_count=..., major_radius=True)`",
+                    "if the requirement gives side length instead of circumradius, derive the radius first and still pass the polygon count with `side_count=`",
+                    "keep same-sketch nested polygon subtraction builder-native with `mode=Mode.SUBTRACT` instead of changing the overall recipe structure just to repair the keyword",
                 ],
             },
         }
@@ -2242,7 +4228,28 @@ def _build_preflight_repair_recipe(
                 ],
             },
         }
-    if "invalid_build123d_api.makeface_helper_case" in lint_ids:
+    explicit_anchor_hole_countersink_recipe_lint_ids = {
+        "legacy_api.countersink_workplane_method",
+        "invalid_build123d_api.countersink_helper_name",
+        "invalid_build123d_api.workplanes_helper_name",
+        "invalid_build123d_api.lowercase_hole_helper_name",
+        "invalid_build123d_keyword.cone_radius_alias",
+        "invalid_build123d_keyword.countersink_radius_alias",
+        "invalid_build123d_keyword.countersink_head_diameter_alias",
+        "invalid_build123d_keyword.countersink_through_diameter_alias",
+        "invalid_build123d_keyword.countersink_angle_alias",
+        "invalid_build123d_context.countersinkhole_requires_buildpart",
+        "legacy_api.workplane_chain",
+    }
+    if lint_ids.intersection(
+        {
+            "invalid_build123d_api.makeface_helper_case",
+            "invalid_build123d_contract.buildsketch_wire_requires_make_face",
+        }
+    ) and not (
+        {"explicit_anchor_hole", "pattern_distribution"} & family_id_set
+        and lint_ids.intersection(explicit_anchor_hole_countersink_recipe_lint_ids)
+    ):
         return {
             "recipe_id": "build123d_make_face_helper_contract",
             "recipe_summary": (
@@ -2261,8 +4268,77 @@ def _build_preflight_repair_recipe(
         }
     if lint_ids.intersection(
         {
+            "invalid_build123d_context.curve_requires_buildline",
+            "invalid_build123d_keyword.revolve_angle_alias",
+        }
+    ):
+        return {
+            "recipe_id": "build123d_revolve_profile_contract",
+            "recipe_summary": (
+                "For Build123d revolve profiles, keep curve construction inside "
+                "`BuildLine`, convert the closed wire with `make_face()`, and call "
+                "`revolve(...)` with the supported default or `revolution_arc=` keyword."
+            ),
+            "recipe_skeleton": {
+                "mode": "whole_part_rebuild_via_execute_build123d",
+                "steps": [
+                    "open `with BuildSketch(target_plane):` on the plane containing the rotation axis",
+                    "inside `BuildLine`, create the closed profile with `Polyline(...)`, `Line(...)`, and/or arc helpers",
+                    "call lowercase `make_face()` after the wire closes",
+                    "revolve that profile with `revolve(axis=Axis.Z)` or `revolve(axis=Axis.Z, revolution_arc=360)` instead of using `angle=`",
+                ],
+            },
+        }
+    path_sweep_specific_lint_ids = {
+        "invalid_build123d_contract.explicit_radius_arc_prefers_center_arc",
+        "invalid_build123d_keyword.center_arc_arc_angle_alias",
+        "invalid_build123d_contract.center_arc_missing_start_angle",
+        "invalid_build123d_contract.sweep_path_wire_method_reference",
+        "invalid_build123d_contract.sweep_path_line_alias",
+        "invalid_build123d_keyword.sweep_section_alias",
+        "invalid_build123d_keyword.solid_sweep_unsupported_keyword",
+        "invalid_build123d_contract.sweep_profile_face_method_reference",
+        "invalid_build123d_contract.annular_profile_face_splitting",
+        "invalid_build123d_contract.annular_profile_face_extraction",
+        "invalid_build123d_contract.vector_component_indexing",
+        "invalid_build123d_keyword.plane_normal_alias",
+    }
+    if lint_ids.intersection(path_sweep_specific_lint_ids) or (
+        "path_sweep" in family_ids
+        and (
+            "invalid_build123d_contract.builder_method_reference_assignment" in lint_ids
+            or "invalid_build123d_api.symbolic_degree_constant" in lint_ids
+        )
+    ):
+        return {
+            "recipe_id": "build123d_path_sweep_contract",
+            "recipe_summary": (
+                "For Build123d path sweeps, keep the rail in `BuildLine`, keep the profile "
+                "as a real closed section, and keep annular same-sketch sweeps on the verified "
+                "Build123d API contract before escalating to more fragile split-profile lanes."
+            ),
+            "recipe_skeleton": {
+                "mode": "whole_part_rebuild_via_execute_build123d",
+                "steps": [
+                    "open `with BuildLine() as path:` and build the full rail there",
+                    "when the requirement gives an explicit elbow radius or quarter-turn, prefer a directly specified `CenterArc(...)` rail segment over guessed `TangentArc(...)` / `JernArc(...)` endpoint constructions",
+                    "construct the profile plane with `Plane(origin=..., z_dir=path_tangent)` or an equivalent named plane; do not pass `normal=` to `Plane(...)`",
+                    "if the section is one same-sketch annular profile built with an outer loop plus `mode=Mode.SUBTRACT`, treat it as one face with inner wires and prefer `sweep(profile.sketch, path=path_wire)`",
+                    "do not split one subtractive annular sketch into guessed `outer_face` / `inner_face` objects by indexing `profile.faces()[1]` or similar sorted-face shortcuts",
+                    "only if the annular sketch sweep already produced shell/null geometry should you rebuild truly separate outer/inner closed section faces and then compute one explicit solid boolean such as `result = outer_tube - inner_tube`",
+                    "when using `Solid.sweep(...)`, stay on the verified signature such as `Solid.sweep(section_face, path_wire)` or `Solid.sweep(section=..., path=...)`; do not invent keywords like `path_wire=` or `profile_plane=`",
+                    "if the requested world-space rail orientation keeps collapsing to zero-volume sweep output, rebuild the rail/profile in a stable local frame first and rotate/translate the finished tube into the target pose afterward",
+                    "assign the final material solid back to `result` or `pipe.part` instead of leaving only builders in scope",
+                ],
+            },
+        }
+    if lint_ids.intersection(
+        {
             "invalid_build123d_keyword.circle_arc_size",
+            "invalid_build123d_keyword.center_arc_arc_angle_alias",
+            "invalid_build123d_contract.center_arc_missing_start_angle",
             "invalid_build123d_api.semicircle_helper_name",
+            "invalid_build123d_api.symbolic_degree_constant",
         }
     ):
         return {
@@ -2279,6 +4355,23 @@ def _build_preflight_repair_recipe(
                     "inside `BuildLine`, draw the needed outer/inner `CenterArc(...)` or `RadiusArc(...)` segments",
                     "close the split edge explicitly with `Line(...)` segments and call `make_face()`",
                     "extrude the resulting closed profile instead of guessing `Circle(..., arc_size=...)` or `Semicircle(...)`",
+                ],
+            },
+        }
+    if "invalid_build123d_contract.builder_method_reference_assignment" in lint_ids:
+        return {
+            "recipe_id": "build123d_builder_method_reference_contract",
+            "recipe_summary": (
+                "When capturing geometry from a Build123d builder, call accessor methods "
+                "such as `.wire()` / `.face()` instead of storing the bound method object."
+            ),
+            "recipe_skeleton": {
+                "mode": "subtree_rebuild_via_execute_build123d",
+                "steps": [
+                    "identify builder-derived assignments such as `path_builder.wire` or `profile_builder.face`",
+                    "call the accessor method when you need the actual geometry, for example `path_builder.wire()` or `profile_builder.face()`",
+                    "if a builder-native object is already sufficient, prefer `profile_builder.sketch` or the direct builder output instead of intermediate method references",
+                    "propagate the real geometry object into later sweep/revolve/boolean calls",
                 ],
             },
         }
@@ -2304,23 +4397,17 @@ def _build_preflight_repair_recipe(
                 ],
             },
         }
-    if "explicit_anchor_hole" not in family_ids and "pattern_distribution" not in family_ids:
+    if "explicit_anchor_hole" not in family_id_set and "pattern_distribution" not in family_id_set:
         return {}
-    if not (
-        "legacy_api.countersink_workplane_method" in lint_ids
-        or "invalid_build123d_api.countersink_helper_name" in lint_ids
-        or "invalid_build123d_keyword.countersink_radius_alias" in lint_ids
-        or "invalid_build123d_keyword.countersink_angle_alias" in lint_ids
-        or "invalid_build123d_context.countersinkhole_requires_buildpart" in lint_ids
-        or "legacy_api.workplane_chain" in lint_ids
-    ):
+    if not lint_ids.intersection(explicit_anchor_hole_countersink_recipe_lint_ids):
         return {}
     return {
         "recipe_id": "explicit_anchor_hole_countersink_array_safe_recipe",
         "recipe_summary": (
-            "For countersunk hole arrays, keep `CounterSinkHole(...)` inside BuildPart, map the "
-            "point coordinates into the correct host-face frame, and place each hole on the "
-            "actual target face plane instead of leaving it on the default mid-plane."
+            "For countersunk hole arrays, map the point coordinates into the correct host-face "
+            "frame and realize the through-hole plus countersink with an explicit same-builder "
+            "subtractive recipe on the actual target face plane instead of relying on guessed "
+            "helper names or a default mid-plane placement."
         ),
         "recipe_skeleton": {
             "mode": "subtree_rebuild_via_execute_build123d",
@@ -2328,7 +4415,9 @@ def _build_preflight_repair_recipe(
                 "with BuildPart() as part: ...",
                 "compute the full local hole center set in the host-face frame, including any centered-host translation from corner-based sketch coordinates",
                 "if the holes belong on a specific face such as the top face of a centered plate, include that face-plane translation in each placement, for example `Locations((x, y, top_z), ...)`",
-                "`CounterSinkHole(...)` belongs in BuildPart, not BuildSketch",
+                "for explicit planar countersink arrays where the requirement already gives the through-hole diameter, head diameter, and cone angle, prefer one `CounterSinkHole(...)` pass first with the exact helper contract and explicit host-face placement",
+                "Only fall back to an explicit same-builder cylinder+cone or revolved countersink recipe when the helper contract cannot express the host/placement semantics cleanly or when prior validation/evaluation evidence shows the helper result is dimensionally wrong for that family",
+                "if you use `CounterSinkHole(...)`, keep it in BuildPart, not BuildSketch, and keep the keyword names literal",
                 "result = part.part",
             ],
         },
