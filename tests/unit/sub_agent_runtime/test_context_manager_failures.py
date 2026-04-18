@@ -49,3 +49,43 @@ def test_classify_build123d_method_minus_cylinder_as_boolean_shape_api_failure()
         )
         == "execute_build123d_boolean_shape_api_failure"
     )
+
+
+def test_classify_build123d_broad_fillet_runtime_error_as_selector_failure() -> None:
+    assert (
+        _classify_write_failure(
+            tool_name="execute_build123d",
+            error_text="Exit code: 1",
+            stderr_text=(
+                "OCP.Standard.Standard_Failure: There are no suitable edges for chamfer or fillet"
+            ),
+        )
+        == "execute_build123d_selector_failure"
+    )
+
+
+def test_classify_build123d_fillet_not_done_runtime_error_as_selector_failure() -> None:
+    assert (
+        _classify_write_failure(
+            tool_name="execute_build123d",
+            error_text="Exit code: 1",
+            stderr_text=(
+                "OCP.StdFail.StdFail_NotDone: BRep_API: command not done\n"
+                "Traceback (most recent call last):\n"
+                "  File \"/app/aicad_runtime_main.py\", line 183, in <module>\n"
+                "    base_shell = fillet(base_shell.edges(), 3.0)\n"
+            ),
+        )
+        == "execute_build123d_selector_failure"
+    )
+
+
+def test_classify_build123d_detached_subtractive_builder_runtime_error() -> None:
+    assert (
+        _classify_write_failure(
+            tool_name="execute_build123d",
+            error_text="Exit code: 1",
+            stderr_text="RuntimeError: Nothing to subtract from",
+        )
+        == "execute_build123d_detached_subtractive_builder_failure"
+    )

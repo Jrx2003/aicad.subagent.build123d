@@ -76,6 +76,13 @@ def test_summarize_baseline_metrics_uses_existing_case_artifacts() -> None:
                 "validation_complete": True,
                 "stale_probe_carry_count": 1,
                 "evidence_conflict_count": 1,
+                "build123d_hallucination": {
+                    "event_count": 2,
+                    "weighted_score": 1.6,
+                    "primary_layer": "write_surface",
+                    "layers": {"write_surface": 2},
+                    "categories": {"invalid_api_contract": 2},
+                },
             },
             "token_usage": {"total_tokens": 100},
             "round_digest": {
@@ -114,6 +121,13 @@ def test_summarize_baseline_metrics_uses_existing_case_artifacts() -> None:
                 "validation_complete": False,
                 "stale_probe_carry_count": 0,
                 "evidence_conflict_count": 0,
+                "build123d_hallucination": {
+                    "event_count": 1,
+                    "weighted_score": 0.6,
+                    "primary_layer": "read_surface",
+                    "layers": {"read_surface": 1},
+                    "categories": {"targeting_without_readback": 1},
+                },
             },
             "token_usage": {"total_tokens": 50},
             "round_digest": {
@@ -151,6 +165,42 @@ def test_summarize_baseline_metrics_uses_existing_case_artifacts() -> None:
     assert summary["family_repair_packet_case_count"] == 1
     assert summary["family_repair_packet_hit_case_count"] == 1
     assert summary["family_repair_packet_hit_rate"] == 1.0
+    assert summary["hallucination_event_count"] == 3
+    assert summary["hallucination_weighted_score_mean"] == 1.1
+    assert summary["hallucination_primary_layer_counts"] == {
+        "write_surface": 1,
+        "read_surface": 1,
+    }
+
+
+def test_build_brief_case_row_includes_hallucination_columns() -> None:
+    module = _load_benchmark_module()
+    row = module._build_brief_case_row(
+        {
+            "case_id": "L2_172",
+            "analysis": {"status": "VALIDATOR_MISMATCH", "likely_root_cause": "demo"},
+            "evaluation": {"passed": True, "score": 0.91},
+            "runtime_summary": {
+                "planner_rounds": 5,
+                "executed_action_count": 2,
+                "validation_complete": False,
+                "build123d_hallucination": {
+                    "event_count": 4,
+                    "weighted_score": 2.1,
+                    "primary_layer": "write_surface",
+                    "layers": {"write_surface": 3, "validation_surface": 1},
+                    "categories": {"invalid_api_contract": 3, "validation_overclaim": 1},
+                },
+            },
+            "prompt_metrics": {"max_final_chars": 14000},
+            "token_usage": {"total_tokens": 222},
+            "round_digest": {"domain_kernel_summary": {"available": True}},
+        }
+    )
+
+    assert row["hallucination_events"] == 4
+    assert row["hallucination_weighted_score"] == 2.1
+    assert row["hallucination_primary_layer"] == "write_surface"
 
 
 def test_diagnose_case_keeps_concrete_runtime_error_primary(tmp_path: Path) -> None:

@@ -23,6 +23,21 @@ def _kernel_validation_assessment(
     return assessment if isinstance(assessment, dict) else {}
 
 
+def _domain_kernel_active_family_ids(
+    domain_kernel_digest: dict[str, Any] | None,
+) -> set[str]:
+    if not isinstance(domain_kernel_digest, dict):
+        return set()
+    active_feature_instances = domain_kernel_digest.get("active_feature_instances")
+    if not isinstance(active_feature_instances, list):
+        return set()
+    return {
+        str(item.get("family_id") or "").strip()
+        for item in active_feature_instances
+        if isinstance(item, dict) and str(item.get("family_id") or "").strip()
+    }
+
+
 def _validation_has_insufficient_evidence_guidance(
     latest_validation: dict[str, Any] | None,
     *,
@@ -97,6 +112,377 @@ def _failure_lint_ids(previous_tool_failure_summary: dict[str, Any] | None) -> s
     }
 
 
+def _failure_lint_hits_payload(
+    previous_tool_failure_summary: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(previous_tool_failure_summary, dict):
+        return []
+    lint_hits = previous_tool_failure_summary.get("lint_hits")
+    if not isinstance(lint_hits, list):
+        return []
+    return [item for item in lint_hits if isinstance(item, dict)]
+
+
+def _failure_repair_recipe_payload(
+    previous_tool_failure_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(previous_tool_failure_summary, dict):
+        return {}
+    repair_recipe = previous_tool_failure_summary.get("repair_recipe")
+    return repair_recipe if isinstance(repair_recipe, dict) else {}
+
+
+def _previous_failure_requires_latest_topology_face_ref(
+    previous_tool_failure_summary: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(previous_tool_failure_summary, dict):
+        return False
+    error_text = str(previous_tool_failure_summary.get("error") or "").strip().lower()
+    return (
+        "create_sketch must use face_ref from latest query_topology during local_finish"
+        in error_text
+    )
+
+
+def _previous_failure_used_candidate_set_label_as_reference(
+    previous_tool_failure_summary: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(previous_tool_failure_summary, dict):
+        return False
+    error_text = str(previous_tool_failure_summary.get("error") or "").strip().lower()
+    return (
+        "invalid_reference: malformed face_ref" in error_text
+        and "candidate-set label" in error_text
+    ) or (
+        "invalid_reference: malformed edge_ref" in error_text
+        and "candidate-set label" in error_text
+    )
+
+
+def _previous_failure_hit_detached_subtractive_builder_runtime_error(
+    previous_tool_failure_summary: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(previous_tool_failure_summary, dict):
+        return False
+    error_text = str(previous_tool_failure_summary.get("error") or "").strip().lower()
+    return "nothing to subtract from" in error_text
+
+
+def _latest_repair_packet_payload(
+    domain_kernel_digest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(domain_kernel_digest, dict):
+        return {}
+    recipe_id = str(domain_kernel_digest.get("latest_repair_packet_recipe_id") or "").strip()
+    recipe_summary = str(
+        domain_kernel_digest.get("latest_repair_packet_recipe_summary") or ""
+    ).strip()
+    family_id = str(domain_kernel_digest.get("latest_repair_packet_family_id") or "").strip()
+    repair_mode = str(
+        domain_kernel_digest.get("latest_repair_packet_repair_mode") or ""
+    ).strip()
+    skeleton_raw = domain_kernel_digest.get("latest_repair_packet_recipe_skeleton")
+    skeleton = skeleton_raw if isinstance(skeleton_raw, dict) else {}
+    target_anchor_summary_raw = domain_kernel_digest.get(
+        "latest_repair_packet_target_anchor_summary"
+    )
+    target_anchor_summary = (
+        target_anchor_summary_raw if isinstance(target_anchor_summary_raw, dict) else {}
+    )
+    host_frame_raw = domain_kernel_digest.get("latest_repair_packet_host_frame")
+    host_frame = host_frame_raw if isinstance(host_frame_raw, dict) else {}
+    if not any(
+        (
+            recipe_id,
+            recipe_summary,
+            family_id,
+            repair_mode,
+            skeleton,
+            target_anchor_summary,
+            host_frame,
+        )
+    ):
+        return {}
+    return {
+        "recipe_id": recipe_id,
+        "recipe_summary": recipe_summary,
+        "family_id": family_id,
+        "repair_mode": repair_mode,
+        "recipe_skeleton": skeleton,
+        "target_anchor_summary": target_anchor_summary,
+        "host_frame": host_frame,
+    }
+
+
+def _coerce_xy_points(points: Any) -> list[list[float]]:
+    if not isinstance(points, list):
+        return []
+    normalized: list[list[float]] = []
+    for item in points:
+        if (
+            isinstance(item, (list, tuple))
+            and len(item) >= 2
+            and isinstance(item[0], (int, float))
+            and isinstance(item[1], (int, float))
+        ):
+            normalized.append([float(item[0]), float(item[1])])
+    return normalized
+
+
+def _extract_local_center_preservation_summary(
+    domain_kernel_digest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(domain_kernel_digest, dict):
+        return {}
+    active_feature_instances = domain_kernel_digest.get("active_feature_instances")
+    if not isinstance(active_feature_instances, list):
+        return {}
+    for item in active_feature_instances:
+        if not isinstance(item, dict):
+            continue
+        parameter_bindings = (
+            item.get("parameter_bindings")
+            if isinstance(item.get("parameter_bindings"), dict)
+            else {}
+        )
+        realized_centers = _coerce_xy_points(parameter_bindings.get("realized_centers"))
+        expected_centers = _coerce_xy_points(parameter_bindings.get("expected_local_centers"))
+        expected_count_raw = parameter_bindings.get("expected_local_center_count")
+        expected_count = (
+            int(expected_count_raw)
+            if isinstance(expected_count_raw, (int, float))
+            else (len(expected_centers) if expected_centers else None)
+        )
+        if not realized_centers or expected_count is None:
+            continue
+        if len(realized_centers) != expected_count:
+            continue
+        family_id = str(item.get("family_id") or "").strip()
+        if not family_id:
+            continue
+        host_face = str(
+            parameter_bindings.get("host_face")
+            or item.get("host_ids", [""])[0]
+            or ""
+        ).strip()
+        return {
+            "family_id": family_id,
+            "host_face": host_face,
+            "expected_center_count": expected_count,
+            "realized_centers": realized_centers,
+            "source": "active_feature_instances",
+        }
+    return {}
+
+
+def _repair_packet_skeleton_summary(
+    recipe_skeleton: dict[str, Any] | None,
+    *,
+    host_frame: dict[str, Any] | None = None,
+    target_anchor_summary: dict[str, Any] | None = None,
+) -> str:
+    if not isinstance(recipe_skeleton, dict):
+        recipe_skeleton = {}
+    if not isinstance(host_frame, dict):
+        host_frame = {}
+    if not isinstance(target_anchor_summary, dict):
+        target_anchor_summary = {}
+    fields: list[tuple[str, Any]] = []
+    for key in (
+        "mode",
+        "host_face",
+        "workplane_frame",
+        "point_strategy",
+        "center_source_key",
+        "hole_call",
+        "cutter_kind",
+        "cutter_strategy",
+        "profile_kind",
+        "split_axis",
+        "half_plane",
+        "hole_axis",
+        "sphere_center_z_strategy",
+        "pad_strategy",
+    ):
+        value = recipe_skeleton.get(key)
+        if value not in (None, "", [], {}):
+            fields.append((key, value))
+    frame_kind = host_frame.get("frame_kind")
+    if frame_kind not in (None, "", [], {}):
+        fields.append(("frame_kind", frame_kind))
+    expected_local_centers = target_anchor_summary.get("expected_local_centers")
+    if isinstance(expected_local_centers, list) and expected_local_centers:
+        fields.append(("expected_local_centers", expected_local_centers[:4]))
+    requested_centers = target_anchor_summary.get("requested_centers")
+    if isinstance(requested_centers, list) and requested_centers:
+        fields.append(("requested_centers", requested_centers[:4]))
+    expected_half_profile_span = target_anchor_summary.get("expected_half_profile_span")
+    if expected_half_profile_span not in (None, ""):
+        fields.append(("expected_half_profile_span", expected_half_profile_span))
+    expected_length = target_anchor_summary.get("expected_length")
+    if expected_length not in (None, ""):
+        fields.append(("expected_length", expected_length))
+    if not fields:
+        return ""
+    return ", ".join(
+        f"{key}={json.dumps(value, ensure_ascii=False)}" for key, value in fields[:8]
+    )
+
+
+def _repair_packet_runtime_skill(
+    domain_kernel_digest: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    payload = _latest_repair_packet_payload(domain_kernel_digest)
+    if not payload:
+        return None
+    recipe_id = str(payload.get("recipe_id") or "").strip()
+    recipe_summary = str(payload.get("recipe_summary") or "").strip()
+    family_id = str(payload.get("family_id") or "").strip()
+    repair_mode = str(payload.get("repair_mode") or "").strip()
+    recipe_skeleton = (
+        payload.get("recipe_skeleton") if isinstance(payload.get("recipe_skeleton"), dict) else {}
+    )
+    target_anchor_summary = (
+        payload.get("target_anchor_summary")
+        if isinstance(payload.get("target_anchor_summary"), dict)
+        else {}
+    )
+    host_frame = payload.get("host_frame") if isinstance(payload.get("host_frame"), dict) else {}
+    guidance = [
+        "The semantic kernel already surfaced a current repair packet; use this packet-aligned lane before inventing a different whole-part rewrite.",
+    ]
+    if family_id or recipe_id or repair_mode:
+        identifiers = []
+        if family_id:
+            identifiers.append(f"family={family_id}")
+        if recipe_id:
+            identifiers.append(f"recipe={recipe_id}")
+        if repair_mode:
+            identifiers.append(f"repair_mode={repair_mode}")
+        guidance.append("Current packet identifiers: " + ", ".join(identifiers) + ".")
+    if recipe_summary:
+        guidance.append("Recipe summary: " + recipe_summary)
+    skeleton_summary = _repair_packet_skeleton_summary(
+        recipe_skeleton,
+        host_frame=host_frame,
+        target_anchor_summary=target_anchor_summary,
+    )
+    if skeleton_summary:
+        guidance.append("Recipe skeleton: " + skeleton_summary + ".")
+    center_source_key = str(recipe_skeleton.get("center_source_key") or "").strip()
+    if center_source_key == "derive_from_requirement_or_validation":
+        guidance.append(
+            "The center layout is not fully grounded yet; derive it from the requirement/validation evidence or a topology read before cutting, instead of improvising manual cutter coordinates."
+        )
+    cutter_strategy = str(recipe_skeleton.get("cutter_strategy") or "").strip()
+    helper_first_hole_call = (
+        str(recipe_skeleton.get("hole_call") or "").strip() == "CounterSinkHole_or_Hole"
+    )
+    if helper_first_hole_call or (
+        "avoid_manual_cone_cylinder_inside_active_builder" in cutter_strategy
+    ):
+        guidance.append(
+            "Prefer the native hole helper contract on the target host face, and do not fall back to manual cone/cylinder cutters inside an active BuildPart unless the helper contract is provably insufficient."
+        )
+    return {
+        "skill_id": "kernel_repair_packet_recipe",
+        "when_relevant": "Use when the domain kernel digest already exposes a concrete repair packet recipe for the active family.",
+        "guidance": guidance[:6],
+    }
+
+
+def _failure_repair_recipe_runtime_skill(
+    previous_tool_failure_summary: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    payload = _failure_repair_recipe_payload(previous_tool_failure_summary)
+    if not payload:
+        return None
+    recipe_id = str(payload.get("recipe_id") or "").strip()
+    recipe_summary = str(payload.get("recipe_summary") or "").strip()
+    repair_family = str(payload.get("repair_family") or "").strip()
+    recipe_skeleton = (
+        payload.get("recipe_skeleton") if isinstance(payload.get("recipe_skeleton"), dict) else {}
+    )
+    guidance = [
+        "The previous write failure already exposed a concrete repair recipe; keep the next execute_build123d attempt on that lane instead of improvising a fresh whole-part rewrite."
+    ]
+    if recipe_id or repair_family:
+        identifiers = []
+        if recipe_id:
+            identifiers.append(f"recipe={recipe_id}")
+        if repair_family:
+            identifiers.append(f"repair_family={repair_family}")
+        guidance.append("Failure recipe identifiers: " + ", ".join(identifiers) + ".")
+    if recipe_summary:
+        guidance.append("Failure recipe summary: " + recipe_summary)
+    skeleton_summary = _repair_packet_skeleton_summary(recipe_skeleton)
+    if skeleton_summary:
+        guidance.append("Failure recipe skeleton: " + skeleton_summary + ".")
+    recipe_steps = recipe_skeleton.get("steps")
+    if isinstance(recipe_steps, list) and recipe_steps:
+        guidance.append(
+            "Failure recipe steps: "
+            + " | ".join(
+                str(item).strip()
+                for item in recipe_steps[:4]
+                if isinstance(item, str) and str(item).strip()
+            )
+            + "."
+        )
+    return {
+        "skill_id": "execute_build123d_failure_recipe_focus",
+        "when_relevant": "Use when previous_tool_failure_summary already includes a concrete Build123d repair recipe from lint/runtime failure analysis.",
+        "guidance": guidance[:5],
+    }
+
+
+def _failure_lint_runtime_skill(
+    previous_tool_failure_summary: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    lint_hits = _failure_lint_hits_payload(previous_tool_failure_summary)
+    if not lint_hits:
+        return None
+    lint_ids = {
+        str(item.get("rule_id") or "").strip()
+        for item in lint_hits
+        if isinstance(item, dict) and str(item.get("rule_id") or "").strip()
+    }
+    structural_builder_lint_ids = {
+        "invalid_build123d_contract.detached_subtractive_builder_without_host",
+        "invalid_build123d_contract.active_builder_part_mutation",
+        "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic",
+        "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind",
+        "invalid_build123d_api.nested_buildpart_part_transform",
+    }
+    guidance = [
+        "The last execute_build123d failure already named concrete lint contracts; repair those exact contracts before changing geometry strategy."
+    ]
+    if lint_ids.intersection(structural_builder_lint_ids) and (
+        lint_ids - structural_builder_lint_ids
+    ):
+        guidance.append(
+            "When mixed lint hits include both feature-specific keyword/helper mistakes and active-builder violations, repair the builder-authority contract first; otherwise the next rewrite often stays non-executable even after syntax cleanup."
+        )
+    for item in lint_hits[:2]:
+        rule_id = str(item.get("rule_id") or "").strip()
+        repair_hint = str(item.get("repair_hint") or item.get("message") or "").strip()
+        recommended_recipe_id = str(item.get("recommended_recipe_id") or "").strip()
+        if rule_id:
+            guidance.append(f"Lint contract: rule={rule_id}.")
+        if recommended_recipe_id:
+            guidance.append(
+                "Preferred repair lane: "
+                f"recommended_recipe_id={recommended_recipe_id}."
+            )
+        if repair_hint:
+            guidance.append("Direct repair hint: " + repair_hint)
+    return {
+        "skill_id": "execute_build123d_failure_lint_contract",
+        "when_relevant": "Use when previous_tool_failure_summary exposes concrete lint hits with direct repair hints.",
+        "guidance": guidance[:6],
+    }
+
+
 def _skill_pack_prefers_code_first(
     *,
     requirement_lower: str,
@@ -147,6 +533,66 @@ def _skill_pack_prefers_code_first(
         or "orthogonal" in requirement_lower
         or _requirement_mentions_half_shell_with_split_surface(requirement_lower)
     )
+
+
+def _requirement_mentions_enclosure_host(requirement_lower: str) -> bool:
+    if any(
+        token in requirement_lower for token in ("enclosure", "housing", "clamshell")
+    ):
+        return True
+    has_lid = "lid" in requirement_lower
+    has_base = "base" in requirement_lower
+    if has_lid and has_base:
+        return True
+    if "shell" in requirement_lower and any(
+        token in requirement_lower for token in ("lid", "base", "hinge", "mating")
+    ):
+        return True
+    if has_lid and any(
+        token in requirement_lower for token in ("hinge", "mating", "magnet")
+    ):
+        return True
+    if has_base and any(
+        token in requirement_lower
+        for token in ("lid", "hinge", "mating", "magnet", "clamshell", "enclosure")
+    ):
+        return True
+    return False
+
+
+def _requirement_mentions_multi_part_assembled_envelope(
+    requirement_lower: str,
+) -> bool:
+    if not _requirement_mentions_enclosure_host(requirement_lower):
+        return False
+    has_multi_part_signal = any(
+        token in requirement_lower
+        for token in (
+            "two-part",
+            "two part",
+            "separate parts",
+            "lid and base",
+            "top lid",
+            "bottom base",
+            "clamshell",
+            "hinge",
+            "mating",
+        )
+    ) or ("lid" in requirement_lower and "base" in requirement_lower)
+    if not has_multi_part_signal:
+        return False
+    has_envelope_signal = any(
+        token in requirement_lower
+        for token in (
+            "overall dimensions",
+            "overall dimension",
+            "overall bounding box",
+            "outer bounding box",
+            "outer dimensions",
+            "overall size",
+        )
+    )
+    return has_envelope_signal
 
 
 def requirement_prefers_code_first_family(
@@ -238,6 +684,11 @@ def recommended_feature_probe_families(
         requirement_lower
     ):
         families.append("path_sweep")
+    if (
+        _requirement_prefers_named_face_local_feature_sequence(requirement_lower)
+        or _requirement_suggests_local_finish_probe_family(requirement_lower)
+    ):
+        families.append("named_face_local_edit")
     deduped: list[str] = []
     seen: set[str] = set()
     for family in families:
@@ -293,6 +744,16 @@ def build_runtime_skill_pack(
     same_tool_failure_count = int(
         (previous_tool_failure_summary or {}).get("same_tool_failure_count") or 0
     )
+    domain_kernel_active_families = _domain_kernel_active_family_ids(domain_kernel_digest)
+    latest_repair_packet_family_id = str(
+        (domain_kernel_digest or {}).get("latest_repair_packet_family_id") or ""
+    ).strip()
+    latest_repair_packet_recipe_id = str(
+        (domain_kernel_digest or {}).get("latest_repair_packet_recipe_id") or ""
+    ).strip()
+    local_center_preservation_summary = _extract_local_center_preservation_summary(
+        domain_kernel_digest
+    )
     insufficient_evidence_guidance = _validation_has_insufficient_evidence_guidance(
         latest_validation,
         domain_kernel_digest=domain_kernel_digest,
@@ -304,6 +765,15 @@ def build_runtime_skill_pack(
     )
 
     skills: list[dict[str, Any]] = []
+    repair_packet_skill = _repair_packet_runtime_skill(domain_kernel_digest)
+    if repair_packet_skill is not None:
+        skills.append(repair_packet_skill)
+    failure_repair_skill = _failure_repair_recipe_runtime_skill(previous_tool_failure_summary)
+    if failure_repair_skill is not None:
+        skills.append(failure_repair_skill)
+    failure_lint_skill = _failure_lint_runtime_skill(previous_tool_failure_summary)
+    if failure_lint_skill is not None:
+        skills.append(failure_lint_skill)
 
     skills.append(
         {
@@ -311,11 +781,18 @@ def build_runtime_skill_pack(
             "when_relevant": "Use whenever you write or repair execute_build123d code.",
             "guidance": [
                 "Keep execute_build123d scripts minimal and builder-first: use BuildPart for the host solid, BuildSketch for sections, BuildLine for rails, and assign the final geometry explicitly to result.",
-                "Do not add print statements, f-strings, or temporary string-formatting diagnostics unless the runtime explicitly asks for them; they increase syntax-risk without improving the benchmark feedback loop.",
-                "Prefer short named constants plus explicit Plane, Axis, Pos, Rot, and Locations placement over clever inline helpers or implicit origin assumptions.",
+                "Sketch primitives such as `Circle(...)`, `Ellipse(...)`, `Rectangle(...)`, and `RegularPolygon(...)` belong inside `BuildSketch`, not directly inside `BuildPart`.",
+                "Do not write `with Rot(...):` or `with Pos(...):`, and do not invent `Loc(...)`; `Rot(...)` / `Pos(...)` are transforms, not context managers. Use `Location(...)` for location objects, `Locations(...)` for scoped placement, or multiply the transform with a detached solid.",
+                "Do not import `ocp_vscode` or call `show(...)` / `show_object(...)`; sandbox execution must return geometry through `result = ...` only.",
+                "Do not invent `Box(..., radius=...)`; if the body needs rounded plan corners, use `RectangleRounded(...)` + `extrude(...)` or create the box first and add explicit edge fillets.",
+                "If a detached helper or cutter needs anisotropic scaling, use lowercase `scale(shape, by=(sx, sy, sz))`; do not invent `Scale(...)` or `Scale.by(...)`.",
                 "Keep primitive signatures literal: for boxes use `Box(length, width, height)` or the matching keyword names, and do not invent aliases such as `depth=`.",
+                "Prefer short named constants plus explicit Plane, Axis, Pos, Rot, and Locations placement over clever inline helpers or implicit origin assumptions.",
+                "Do not add print statements, f-strings, or temporary string-formatting diagnostics unless the runtime explicitly asks for them; they increase syntax-risk without improving the benchmark feedback loop.",
                 "Remember that `Box(length, width, height)` is centered at the origin by default; on a centered box the top-face plane is at `+height/2`, not `+height`.",
                 "If the requirement explicitly says to sketch on `Plane.XY` and extrude upward, preserve that sketch-plus-positive-extrude contract instead of silently swapping in a centered `Box(...)` whose base no longer sits on the named plane.",
+                "If the requirement asks for separate parts such as a lid and base, keep those solids in a real assembly/closed coordinate frame unless the requirement explicitly asks for an exploded view. Do not move one part aside merely for visibility, because geometry reads and validation use the actual placed coordinates.",
+                "If the requirement also gives an overall bounding box, keep every part, hinge barrel/pin, latch, and mating feature inside that assembled envelope. Do not stack the lid above the base or place a hinge outside the declared outer size unless the prompt explicitly asks for an exploded or out-of-envelope fixture view.",
                 "For shelled bodies, stay on Build123d shell/offset semantics or an explicit inner-solid subtraction; do not invent a bare `shell(...)` helper.",
                 "For boolean cuts, build explicit solid cutters and combine them with supported solid booleans or builder subtractive modes; do not invent bare `subtract(...)` or bare `rotate(...)` helpers.",
                 "When filtering ShapeLists by axis direction, use `filter_by(Axis.X/Y/Z)` or an explicit predicate; there is no `filter_by_direction(...)` helper.",
@@ -323,18 +800,23 @@ def build_runtime_skill_pack(
                 "If you close a `BuildLine` wire and need a face from it, use lowercase `make_face()`; do not invent `MakeFace()`.",
                 "Curve helpers such as `Polyline(...)`, `Line(...)`, `CenterArc(...)`, and `RadiusArc(...)` belong inside `BuildLine`, not directly inside `BuildSketch`.",
                 "If a `BuildSketch` only contains wire geometry from `BuildLine`, call lowercase `make_face()` before `extrude(...)` or `revolve(...)`; otherwise the sketch can stay empty and fail with `sketch is None`.",
+                "Inside `BuildSketch`, do not call the enclosing `BuildPart` alias's `vertices()` / `edges()` / `faces()`; build the 2D profile directly, then wait until solid creation is complete before selecting solid topology.",
                 "For non-XY planar polygons that keep failing inside `BuildSketch`, prefer `Wire.make_polygon(...)` with explicit 3D vertices, then build a real `Face(...)` / `make_face(...)` result and extrude that face with `Solid.extrude(...)` instead of assuming the sketch builder will auto-promote the edges into a face.",
                 "Use capitalized `Hole(...)`, not lowercase `hole(...)`.",
                 "For Build123d revolves, use the supported `revolution_arc=` keyword or the default full revolve; do not invent `angle=` inside `revolve(...)`.",
+                "For fillets, prefer `fillet(edge_list, radius=...)` on a selected ShapeList; if you use member-style `solid.fillet(...)`, do not mix a positional edge argument with `radius=`.",
                 "If you choose `CounterSinkHole(...)`, keep the exact helper/keyword contract `CounterSinkHole(radius=..., counter_sink_radius=..., depth=..., counter_sink_angle=...)`; do not invent `CountersinkHole(...)`, `CounterSink(...)`, or `countersink_radius=` aliases.",
                 "There is no `Workplanes(...)` helper in Build123d; use the target plane directly with `BuildSketch(plane)` or place the feature on that face/workplane with `Locations(...)`.",
                 "`CounterSinkHole(...)` belongs in `BuildPart`, not `BuildSketch`; if the requirement names a top/front/side host face, place the hole tool on that actual face plane instead of leaving it on the default XY mid-plane.",
                 "For explicit countersink arrays on a planar host face, prefer one `CounterSinkHole(...)` pass on the first attempt when the requirement already gives the through-hole diameter, head diameter, and cone angle; keep the exact helper contract and explicit host-face placement.",
                 "`Plane.rotated(rotation, ordering=...)` only changes orientation; it does not relocate the workplane.",
                 "The plane origin stays where it was after `Plane.rotated(...)`; if you need translation, use `Plane.offset(...)` along the plane normal or place the feature/cutter with `Pos(...)`.",
+                "Do not write `Plane.XY * (x, y, z)` or similar tuple multiplication forms. Use `Locations((x, y, z))` for point placement, or `Plane.XY.offset(z)` / `Plane.XZ.offset(y)` / `Plane.YZ.offset(x)` for translated workplanes.",
                 "Do not instantiate a detached `Cylinder(...)` cutter inside an active `BuildPart` and then do `result = part.part - cutter`; that primitive is already added to the builder. Build the host in one `BuildPart`, close it, then create the cutter outside the active builder before the explicit boolean.",
                 "Every primitive constructor inside an active `BuildPart` mutates that host immediately. Do not use temporary solid arithmetic staging values there such as `outer_cyl = Cylinder(...)`, `inner_cyl = Cylinder(...)`, or `half_space_box = Box(...)` and then reuse them in later boolean/intersection expressions; close the host builder before doing explicit solid arithmetic, or encode the shape through one builder-native sketch/profile recipe.",
+                "Inside an active `BuildPart`, do not expect `peg = Pos(...) * peg` or `peg = Rot(...) * peg` to move geometry that was already added to the host. Use `Locations(...)`, explicit local frames, or transform a detached solid only after the host builder closes.",
                 "If you truly need a temporary staging solid inside an active `BuildPart`, create it with `mode=Mode.PRIVATE` so it stays out of the host until the later explicit boolean.",
+                "Do not assign back into `part.part` while that `BuildPart` is still open. Avoid `part.part = ...`, `part.part += ...`, and `part.part -= ...` inside the active builder; keep adds/cuts builder-native, or close the builder first and then do detached booleans.",
                 "Do not assign back into `part.solid`; inside `BuildPart` prefer builder-native subtraction, and if you need an explicit boolean after the builder, subtract from `part.part` instead.",
                 "Do not open a nested `BuildPart()` cutter inside an active `BuildPart` and then mutate `part.part -= cutter.part`; repeated placements can collapse into one origin-centered boolean instead of preserving the intended feature locations.",
             ],
@@ -350,6 +832,248 @@ def build_runtime_skill_pack(
                     "Treat lint hits as authoritative repair targets; do not retry the same execute_build123d pattern unchanged.",
                     "If a repair_recipe is available in previous_tool_failure_summary, follow that recipe before opening new generic read turns.",
                     "Keep the next write materially simpler than the rejected one and stay on supported builder-first Build123d surfaces.",
+                ],
+            }
+        )
+
+    if latest_tool == "execute_build123d" and _previous_failure_hit_detached_subtractive_builder_runtime_error(
+        previous_tool_failure_summary
+    ):
+        skills.append(
+            {
+                "skill_id": "execute_build123d_detached_subtractive_builder_repair",
+                "when_relevant": "Use when the previous execute_build123d write failed with `Nothing to subtract from` or an equivalent subtract-without-host runtime error.",
+                "guidance": [
+                    "Treat `Nothing to subtract from` as a detached subtractive builder error: a subtractive primitive or `extrude(..., mode=Mode.SUBTRACT)` was opened in a builder that had no additive host yet.",
+                    "Do not create a standalone `with BuildPart() as cutter:` block whose first primitive uses `mode=Mode.SUBTRACT`; detached cutter builders should create positive solids, not subtract from an empty host.",
+                    "If the cut belongs to an existing host part, keep that subtractive primitive inside the authoritative host builder with `mode=Mode.SUBTRACT` and explicit `Locations(...)` / target plane placement.",
+                    "If the cut truly needs a detached cutter, build the cutter as a positive solid first, close that builder, and only then subtract it with an explicit boolean such as `result = host.part - cutter.part` outside the active host builder.",
+                    "For notch, pocket, cavity, or magnet-recess families, do not bounce between `part.part -= cutter.part` repairs until the subtractive host/cutter boundary is made explicit.",
+                ],
+            }
+        )
+
+    if _requirement_mentions_multi_part_assembled_envelope(requirement_lower) and (
+        latest_tool == "execute_build123d" or not latest_tool
+    ):
+        skills.append(
+            {
+                "skill_id": "multi_part_assembled_pose_bbox_contract",
+                "when_relevant": "Use when the requirement asks for multiple physical parts but still declares one overall assembled envelope.",
+                "guidance": [
+                    "Separate parts means separate solids in one assembled coordinate frame, not an exploded presentation layout.",
+                    "If the requirement gives overall dimensions or an outer bounding box, treat that envelope as the closed/mating assembly pose and keep every part inside it unless an exploded view is explicitly requested.",
+                    "Do not translate the lid above the base, move one half aside for visibility, or leave the hinge barrel floating outside the shell just to make the parts easier to see.",
+                    "Remember that `Box(length, width, height)` is centered by default; when stacking base/lid shells or hinge bodies in one assembled pose, explicitly align or translate each part by half-height so the bottoms, split planes, and tops land where the requested envelope expects.",
+                    "When a previous write already has the correct part count but one bbox axis is too large, suspect exploded placement first and rebuild the assembly pose before changing nominal dimensions.",
+                    "If you need separate exportable parts, keep them as distinct solids or a Compound in shared assembled coordinates; do not satisfy part separation by physically spreading the solids apart.",
+                ],
+            }
+        )
+
+    if _requirement_mentions_multi_part_assembled_envelope(requirement_lower) and any(
+        token in requirement_lower
+        for token in ("clamshell", "lid", "base", "top lid", "bottom base", "hinge")
+    ):
+        skills.append(
+            {
+                "skill_id": "clamshell_split_axis_and_hinge_contract",
+                "when_relevant": "Use when a lid/base or clamshell enclosure must stay inside one assembled envelope while still exposing separate physical parts and a hinge-style closure.",
+                "guidance": [
+                    "For lid/base or top-lid/bottom-base clamshells, both halves normally share the same outer width/depth footprint; do not halve the plan footprint just because there are two parts unless the prompt explicitly asks for left/right or front/back halves.",
+                    "Use the requested overall envelope as the closed assembly pose and split the parts only along the closure axis or named mating plane, typically the thickness/height direction for lid/base shells.",
+                    "When using centered primitives such as `Box(length, width, height)`, explicitly align or translate the parts so the base occupies the lower interval and the lid occupies the upper interval of the shared envelope instead of both straddling the split plane; keep the lid in the mating pose rather than stacking or exploding it for visibility.",
+                    "For a plain two-part lid/base target, the first geometry milestone is exactly two dominant shell solids in one shared assembled envelope, or one `Compound(...)` that contains exactly those two shell solids. Return the assembled default as `Compound([base.part, lid.part])` when lid/base are the only physical parts; do not keep adding hinge, magnet, notch, or pocket detail while the write is still producing four detached solids, one fused shell, or an obviously exploded pose.",
+                    "Remember that `Cylinder(...)` points along +Z by default. If a hinge barrel or pin must run along the back edge or shell width, rotate the detached cylinder onto that hinge axis before assembling it, and distinguish the hinge seam location from the hinge axis direction instead of assuming the long cylinder runs along the seam coordinate axis.",
+                    "Remember that `Cylinder(...)` is centered along its own axis by default. If the barrel should stay inside the enclosure envelope, do not center a long hinge cylinder on the seam coordinate unless that span direction is actually intended; do not let the hinge barrel or pin protrude outside the declared bounding box unless the prompt explicitly allows an exposed external hinge.",
+                    "If the prompt says separate parts and only names lid/base (or top/bottom shells) as the physical parts, treat that as a two-part target by default; fuse hinge barrels, cable posts, and other host-owned hardware into their real lid/base host unless detachable hinge hardware is explicitly requested.",
+                    "Only keep hinge pins, hinge barrels, or other hinge hardware as detached shapes when the requirement explicitly calls for separate hinge parts, an exposed hinge assembly, or a removable pin; otherwise prefer `Compound([base.part, lid.part])` as the default assembled result shape list.",
+                ],
+            }
+        )
+
+    if latest_tool == "execute_build123d" and previous_failure_lint_ids.intersection(
+        {
+            "invalid_build123d_contract.detached_subtractive_builder_without_host",
+            "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic",
+            "invalid_build123d_contract.active_builder_temporary_primitive_boolean_contract",
+            "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind",
+            "invalid_build123d_contract.active_builder_part_mutation",
+            "invalid_build123d_api.nested_buildpart_part_transform",
+        }
+    ):
+        skills.append(
+            {
+                "skill_id": "execute_build123d_active_builder_authority_repair",
+                "when_relevant": "Use when lint says temporary solids or late part mutation broke the active BuildPart contract.",
+                "guidance": [
+                    "Inside an active BuildPart, do not create named solids like `outer = Box(...)`, `hinge = Cylinder(...)`, or `cutter = Box(...)` and then do later `outer - inner`, `hinge + boss`, `part.part -= cutter`, or other temporary-solid arithmetic.",
+                    "Every primitive constructor inside the active builder mutates the host immediately; keep the host authoritative with builder-native `mode=Mode.ADD/SUBTRACT/INTERSECT`, or close the builder before detached solid arithmetic.",
+                    "Do not open a nested `BuildPart(mode=Mode.SUBTRACT)` inside the host just to carve an inner cavity, notch, slot, or pocket; keep those subtractive primitives in the same authoritative host builder, or close the host builder first and subtract the detached cutter afterward.",
+                    "If a staging solid is unavoidable, create it with `mode=Mode.PRIVATE` and only combine it after the host builder closes.",
+                    "For enclosure/body/lid/base families, stabilize the outer envelope and inner cavity with one builder-native recipe first; do not bounce between detached `Box(...)` / `Cylinder(...)` temporaries while the builder is still open.",
+                    "If the requirement asks for separate physical parts such as lid/base, body/cover, or clamp halves, open one closed `BuildPart` per physical part and only combine those detached results after each builder closes; do not host every physical part inside one shared active `BuildPart` just to get a first solid.",
+                ],
+            }
+        )
+
+    if (
+        (latest_tool == "execute_build123d" or not latest_tool)
+        and (
+            "clamshell" in requirement_lower
+            or ("lid" in requirement_lower and "base" in requirement_lower)
+            or "lid and base" in requirement_lower
+            or "top lid" in requirement_lower
+            or "bottom base" in requirement_lower
+        )
+        and any(
+            token in requirement_lower
+            for token in (
+                "magnet",
+                "notch",
+                "slot",
+                "pocket",
+                "cavity",
+                "recess",
+                "post",
+                "hinge",
+            )
+        )
+    ):
+        skills.append(
+            {
+                "skill_id": "execute_build123d_clamshell_host_local_cut_contract",
+                "when_relevant": "Use on clamshell lid/base first-write or repair turns when shell hosts, late local cuts, and detached hinge solids can easily get mixed together.",
+                "guidance": [
+                    "For clamshell lid/base shells, keep one authoritative `BuildPart` per shell host in the closed assembled pose; do not keep reopening the same lid/base alias later for late cuts.",
+                    "For detached hinge barrels or hinge pins, never write `with Rot(...): Cylinder(...)`; build the cylinder positively first, close that builder, then orient the closed solid with `Rot(...) * hinge_barrel.part` or `Pos(...) * Rot(...) * hinge_barrel.part` in the final assembly lane.",
+                    "Finish host-owned local cuts such as magnet recesses, thumb notches, slots, and pockets inside that same shell host before that shell builder closes.",
+                    "If a local cut depends on sketch primitives such as `SlotOverall(...)`, `Rectangle(...)`, or `Circle(...)`, open `BuildSketch(target_plane)` first on the intended host plane, then extrude/subtract from that same shell host lane.",
+                    "Treat hinge barrels, hinge pins, and other rotated hardware as detached positive solids after the shell hosts close, then assemble them in shared coordinates; do not blur them into the shell-cut lane, and do not write patterns like `hinge_barrel = Rot(...) * hinge_barrel` while the primitive still lives inside an active host builder because that only rebinds the Python variable, not the already-added host geometry.",
+                    "A safe detached hinge pattern is: create the barrel or pin positively in its own builder without `with Rot(...):`, close that builder, then orient the closed solid with `Rot(...) * hinge_barrel.part` or `Pos(...) * Rot(...) * hinge_barrel.part` in the final assembly lane.",
+                    "If a detached boolean is still unavoidable for one local cutter, build that cutter as a positive/private solid only after the shell host closes and subtract it once outside the active builder.",
+                    "Do not reopen `with BuildPart() as lid:` or `with BuildPart() as base:` just to start subtractive mini-builders after the shell already exists.",
+                ],
+            }
+        )
+
+    if latest_tool == "execute_build123d" and previous_failure_lint_ids.intersection(
+        {
+            "invalid_build123d_contract.detached_subtractive_builder_without_host",
+            "invalid_build123d_keyword.cylinder_axis",
+        }
+    ):
+        skills.append(
+            {
+                "skill_id": "execute_build123d_detached_cylindrical_cutter_contract",
+                "when_relevant": "Use when enclosure cuts or hinge/magnet-style cylindrical features failed because a detached cutter builder started subtractive or because Cylinder(...) was given an unsupported axis keyword.",
+                "guidance": [
+                    "When a notch, magnet recess, hinge barrel, drill, or similar cylindrical feature needs detached solid arithmetic, build that cutter or barrel as a normal positive/private solid first; do not start a detached builder with `mode=Mode.SUBTRACT`.",
+                    "Do not write patterns such as `with BuildPart() as notch_cutter: Box(..., mode=Mode.SUBTRACT)` or `with BuildPart() as cutter: Cylinder(..., mode=Mode.SUBTRACT)` when that builder has no additive host yet.",
+                    "For detached cylinders, do not pass `axis=Axis.X`, `axis=Axis.Y`, or `axis=Axis.Z` into `Cylinder(...)`; create the cylinder with `Cylinder(radius=..., height=...)`, then orient it with `Rot(...)` and place it with `Pos(...)` or `Locations(...)`.",
+                    "If the cut belongs to the authoritative host part, keep the subtractive primitive inside that host builder with explicit placement and `mode=Mode.SUBTRACT`; only use detached boolean subtraction after the host builder closes.",
+                ],
+            }
+        )
+
+    if latest_tool == "execute_build123d" and previous_failure_lint_ids.issuperset(
+        {
+            "invalid_build123d_contract.detached_subtractive_builder_without_host",
+            "invalid_build123d_context.transform_context_manager",
+        }
+    ):
+        skills.append(
+            {
+                "skill_id": "execute_build123d_rotated_detached_cutter_contract",
+                "when_relevant": "Use when the previous write mixed detached subtractive mini-builders with `with Rot(...):` placement while trying to realize rotated hinge barrels, pins, magnet recesses, or thumb-notch cutters.",
+                "guidance": [
+                    "Do not combine two invalid lanes in one repair: a detached `BuildPart` whose first real operation is subtractive, and a `with Rot(...):` block used as though Rot were a builder context manager.",
+                    "For host-owned cuts such as magnet recesses, thumb notches, pockets, and shell-local cylindrical cuts, keep the subtractive primitive inside the authoritative host builder with explicit `Locations(...)` placement and `mode=Mode.SUBTRACT`.",
+                    "For rotated detached solids such as hinge barrels or hinge pins, build the solid positively first, close that builder, and then orient it with `Rot(...) * solid` or `Pos(...) * Rot(...) * solid` outside the builder.",
+                    "Do not write `with BuildPart() as cutter: Cylinder(..., mode=Mode.SUBTRACT)` and then try to rescue its orientation with `with Rot(...):`; choose one valid lane instead of mixing two invalid ones.",
+                    "If a rotated cutter truly must be detached before the boolean, make it a positive/private solid first, rotate it outside the builder, and subtract it only after the authoritative host builder closes.",
+                ],
+            }
+        )
+
+    previous_failure_repair_recipe = _failure_repair_recipe_payload(
+        previous_tool_failure_summary
+    )
+    previous_failure_repair_recipe_id = str(
+        previous_failure_repair_recipe.get("recipe_id") or ""
+    ).strip()
+    explicit_cylindrical_slot_recipe_lints = {
+        "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind",
+        "invalid_build123d_keyword.plane_normal_alias",
+        "invalid_build123d_keyword.cylinder_axis",
+    }
+    if latest_tool == "execute_build123d" and (
+        previous_failure_repair_recipe_id == "explicit_cylindrical_slot_boolean_safe_recipe"
+        or previous_failure_lint_ids.issuperset(explicit_cylindrical_slot_recipe_lints)
+    ):
+        skills.append(
+            {
+                "skill_id": "execute_build123d_explicit_cylindrical_slot_recipe_contract",
+                "when_relevant": "Use when the previous write already exposed the explicit cylindrical slot repair recipe: host-builder authority broke, Plane(...) used `normal=`, and Cylinder(...) used `axis=` while trying to realize notch or magnet-style cylindrical cuts.",
+                "guidance": [
+                    "Keep the host builder authoritative for shells, lids, bases, and other enclosure bodies; do not stage a host primitive inside the active builder and then try to relocate it afterward.",
+                    "Do not create `lid_outer = Box(...)` and then relocate it with `Pos(...) * lid_outer` or `Rot(...) * lid_outer` while that primitive already belongs to the open host builder.",
+                    "For local face sketches such as a thumb notch, use `Plane(origin=..., z_dir=...)`; do not pass `normal=` into `Plane(...)`.",
+                    "For hinge barrels, magnet recesses, and other cylindrical cutters, do not pass `axis=` into `Cylinder(...)`; create a plain cylinder first, then orient it with `Rot(...)` and place it with `Pos(...)` or `Locations(...)`.",
+                    "If the cylindrical cut can stay host-native, place it once inside the authoritative host with explicit `Locations(...)` and `mode=Mode.SUBTRACT`; otherwise close the host builder first, then build and subtract one detached cutter.",
+                ],
+            }
+        )
+
+    if latest_tool == "execute_build123d" and (
+        "invalid_build123d_contract.compound_positional_children_contract"
+        in previous_failure_lint_ids
+    ):
+        skills.append(
+            {
+                "skill_id": "execute_build123d_compound_children_contract",
+                "when_relevant": "Use when the previous write tried to assemble detached lid/base/hinge results with `Compound(...)` positional varargs instead of one iterable child payload.",
+                "guidance": [
+                    "`Compound(...)` is not a variadic assembly constructor. After the first positional `obj`, later positional arguments bind to metadata such as `label` or `color`, not extra child parts.",
+                    "Keep each physical part detached first, then return the assembly as `Compound([base_solid, lid_solid, hinge_solid])` or another explicit iterable/children form.",
+                    "Do not write `Compound(base_solid, lid_solid, hinge_solid)` expecting it to collect three shapes.",
+                    "If a single fused body is intended instead of a multi-part assembly, perform explicit booleans deliberately; do not rely on malformed `Compound(...)` positional calls as a union shortcut.",
+                ],
+            }
+        )
+
+    explicit_anchor_helper_lint_ids = {
+        "invalid_build123d_contract.explicit_anchor_manual_cutter_requires_subtract_mode",
+        "invalid_build123d_keyword.countersink_angle_alias",
+        "invalid_build123d_keyword.countersink_diameter_alias",
+        "invalid_build123d_keyword.countersink_depth_alias",
+        "invalid_build123d_api.countersink_hole_helper_name",
+    }
+    explicit_anchor_helper_recipe_ids = {
+        "explicit_anchor_hole_helper_contract_fallback",
+    }
+    explicit_anchor_helper_guidance_requested = (
+        latest_tool == "execute_build123d"
+        and (
+            bool(previous_failure_lint_ids.intersection(explicit_anchor_helper_lint_ids))
+            or (
+                latest_repair_packet_family_id == "explicit_anchor_hole"
+                and latest_repair_packet_recipe_id in explicit_anchor_helper_recipe_ids
+            )
+        )
+    )
+    if explicit_anchor_helper_guidance_requested:
+        skills.append(
+            {
+                "skill_id": "execute_build123d_explicit_anchor_helper_first_repair",
+                "when_relevant": "Use when explicit-anchor holes or countersinks are failing because the code drifted into manual cutters or guessed CounterSinkHole keywords.",
+                "guidance": [
+                    "For explicit planar countersink arrays, prefer one helper-first host-face recipe: use the actual host-face plane, enumerate the full center set once, and keep the exact `CounterSinkHole(radius=..., counter_sink_radius=..., depth=..., counter_sink_angle=...)` contract.",
+                    "CounterSinkHole follows the active workplane normal. When repairing a bottom or side mounting face, bind it to the host-face plane with that face's outward normal; an inward-normal offset plane often leaves plain holes without visible cone faces.",
+                    "Pass one 2D center set in the host-face local frame. Do not mix `Locations(Plane...)` with invented 3D tuples when the target is a planar hole array on one face.",
+                    "If anchor or probe evidence already shows realized hole centers, preserve that count before changing the layout; do not casually add extra holes while the countersink geometry is still missing.",
+                    "Do not keep retrying manual `Cylinder(...)` / `Cone(...)` cutters inside Locations unless helper-first placement is already proven insufficient for this family.",
+                    "If a manual cutter fallback is truly required, every cutter created inside the active BuildPart must be explicitly subtractive with `mode=Mode.SUBTRACT`, or staged privately and subtracted after the host builder closes.",
                 ],
             }
         )
@@ -472,6 +1196,62 @@ def build_runtime_skill_pack(
             }
         )
 
+    if _requirement_mentions_enclosure_host(requirement_lower) and (
+        latest_tool == "execute_build123d" or not latest_tool
+    ):
+        skills.append(
+            {
+                "skill_id": "nested_hollow_section_builder_native_cavity",
+                "when_relevant": "Use when a hollow enclosure/body/lid/base is being written or repaired with execute_build123d, including the very first whole-part write.",
+                "guidance": [
+                    "For hollow enclosure-style hosts, do not write `outer_box = Box(...)`, `inner_box = Box(...)`, then mutate `outer_box -= inner_box` inside the active `BuildPart`.",
+                    "A safer first pass is: build the outer envelope in one active `BuildPart`, then place the inner cavity with `mode=Mode.SUBTRACT` in that same builder using `Locations(...)` or an explicit local frame so the opening direction stays literal.",
+                    "Do not open a nested `BuildPart(mode=Mode.SUBTRACT)` inside that host just to cut the inner cavity or a repeated enclosure cutout; either keep the subtractive primitives in the same authoritative builder, or close the host and subtract the detached cavity afterward.",
+                    "A good shell skeleton is `with BuildPart() as base: Box(...); with Locations((0, 0, wall)): Box(..., mode=Mode.SUBTRACT)` and only after the builder closes, if needed, `result = base.part`.",
+                    "Do not replace that builder-native shell recipe with `base_block = Box(...)`, `inner = Box(...)`, `base_block - inner`, or `base.part = ...` while the host builder is still open.",
+                    "If the cavity needs detached solid arithmetic, close the host builder first and only then compute `result = host.part - inner_cavity` outside the active builder.",
+                    "If the enclosure is explicitly multi-part, model the lid and base in separate closed builders first, then combine them as detached solids or a `Compound(...)`; do not merge both physical parts into one shared host builder.",
+                    "For lid/base/hinge assemblies with declared overall dimensions, keep the lid in its mating/closed pose and keep hinge geometry inside the same assembled outer envelope unless the prompt explicitly requests an exploded layout.",
+                    "When topology evidence is needed, ask `query_topology` for enclosure-oriented candidate sets such as `shell_exterior_faces`, `shell_interior_faces`, `mating_faces`, and `split_plane_faces` instead of falling back to only `top_faces` / `outer_faces`.",
+                    "Do not default to `fillet(host.edges().filter_by(GeomType.LINE), ...)` across the entire hollow enclosure. That broad edge set often pulls in hinge, notch, interior, or seam edges and fails; narrow to the intended exterior/opening edge family first, ideally with topology-guided host selection.",
+                    "Treat `mating_faces` and `split_plane_faces` as the first semantic host candidates for lid/base seam, closure landing, and half-shell split decisions.",
+                    "Stabilize the shell/body/lid/base envelope first; add magnets, thumb notches, hinge barrels, posts, and side pockets only after the hollow host is already valid.",
+                ],
+            }
+        )
+
+    if _requirement_mentions_enclosure_host(requirement_lower) and any(
+        token in requirement_lower
+        for token in (
+            "magnet",
+            "notch",
+            "cavity",
+            "pocket",
+            "slot",
+            "hinge",
+            "post",
+        )
+    ):
+        skills.append(
+            {
+                "skill_id": "enclosure_local_feature_placement_contract",
+                "when_relevant": "Use on enclosure/clamshell first-write or repair turns that also place multiple local features such as magnets, cavities, pockets, notches, slots, hinges, or posts.",
+                "guidance": [
+                    "Stabilize the lid/base shell first, then place each local enclosure feature on its real physical host part with builder-native `Locations(...)` or a detached-solid transform that stays explicit end-to-end.",
+                    "If the first whole-part write for a two-part enclosure produces extra skinny solids or tiny fragments, treat that as host/local-feature organization failure rather than success on part count; do not accept a four-solid or fused one-solid stop state just because some requested details appear visually plausible.",
+                    "Do not immediately fillet every broad top/bottom shell edge set on a fresh shell/body first pass. That includes `edges().filter_by(Axis.Z)` and whole top/bottom `filter_by_position(Axis.Z, ...)` selections, because they often capture interior cavity rims or seam edges along with the intended exterior perimeter.",
+                    "If a fresh-shell fillet fails with `command not done` or `Failed creating a fillet`, treat that as a geometry-stability signal: postpone the fillet until the host is valid, reduce the radius, or probe the largest safe value with `max_fillet(...)` before retrying.",
+                    "Do not open a detached `BuildPart` whose first real operation is subtractive just to realize a magnet recess, thumb notch, plug pocket, slot, or similar enclosure-local cut; if the cut belongs to the shell host, keep it inside that authoritative host builder.",
+                    "For repeated magnet recesses, thumb notches, plug pockets, posts, or similar enclosure-local features, keep the host builder authoritative and realize them with `Locations(...)` plus `mode=Mode.SUBTRACT/ADD` instead of mutating `part.part` or reopening ad-hoc nested builders.",
+                    "Do not use `Loc(...)`, and do not open `with Rot(...):` or `with Pos(...):`; use `Location(...)` for a location object, `Locations(...)` for scoped builder placement, or apply `Pos(...) * Rot(...) * solid` after the host builder closes.",
+                    "If a detached cavity proxy or organic cutter needs anisotropic scaling, use lowercase `scale(shape, by=...)` on the detached shape before the final boolean; do not invent `Scale.by(...)` or other capitalized scaling helpers.",
+                    "`SlotOverall(...)`, `Rectangle(...)`, and `Circle(...)` belong inside `BuildSketch(...)` on the intended host plane; for thumb notches or slot-like cuts, use `with BuildSketch(target_plane): SlotOverall(...)` and then `extrude(..., mode=Mode.SUBTRACT)` from that sketch instead of `SlotOverall(..., mode=Mode.SUBTRACT)` inside `BuildPart`.",
+                    "For lid/base assemblies, keep local features attached to their real physical host part and do not cut the lid, base, hinge barrel, and closure features through one shared active builder when the requirement expects separate parts.",
+                    "If evidence shows one dominant enclosure solid plus a tiny extra solid, treat that as a detached feature fragment rather than a valid second physical part: rebuild so magnets, thumb notches, plug pockets, hinge cuts, and similar local features stay builder-native on the host, or subtract exactly once after the host builder closes.",
+                ],
+            }
+        )
+
     if "feature_named_plane_positive_extrude_span" in blockers:
         skills.append(
             {
@@ -548,6 +1328,76 @@ def build_runtime_skill_pack(
             }
         )
 
+    local_finish_exact_ref_contract_requested = bool(
+        _requirement_prefers_named_face_local_feature_sequence(requirement_lower)
+        or _requirement_suggests_local_finish_probe_family(requirement_lower)
+        or "feature_target_face_subtractive_merge" in blockers
+        or "named_face_local_edit" in taxonomy_families
+        or "named_face_local_edit" in domain_kernel_active_families
+        or latest_repair_packet_family_id == "named_face_local_edit"
+    )
+    if local_finish_exact_ref_contract_requested:
+        skills.append(
+            {
+                "skill_id": "local_finish_exact_face_ref_contract",
+                "when_relevant": "Use when the remaining work is a topology-aware local face edit or a local-finish turn after query_topology.",
+                "guidance": [
+                    "Once query_topology has already returned actionable host-face candidates, the next local write must consume exact refs from that read surface instead of reopening a broad plane-based sketch.",
+                    "For local face edits, use `face_ref='face:...'` from the latest query_topology candidate sets or matched_ref_ids. Do not fall back to `face='top'`, `face='bottom'`, or `plane='XY'` aliases once exact refs exist.",
+                    "If the local step needs a host sketch, use `create_sketch(face_ref=...)` on the chosen host face, then add the circle/rectangle/polygon on that sketch. Do not start with a detached `create_sketch(plane=...)` inside a bounded local-finish turn.",
+                    "Keep bounded local finishing one write at a time: if the sketch edit needs create_sketch, profile creation, and cut/extrude, emit only the next apply_cad_action for the current turn and continue the sequence on later turns.",
+                    "Treat planar-host requirements literally: when query_topology exposes planar host families such as `mating_faces`, `inner_planar_host`, or other planar face candidates, choose a planar `face_ref` first before opening the sketch.",
+                    "If the latest topology evidence does not expose a suitable planar face, refresh query_topology or broaden the repair lane later; do not guess a broad plane alias while the turn is still constrained to local_finish.",
+                    "In a local-finish turn, broad plane sketches and broad face aliases are contract failures, not acceptable first attempts.",
+                ],
+            }
+        )
+    if local_finish_exact_ref_contract_requested and local_center_preservation_summary:
+        preserved_centers = local_center_preservation_summary.get("realized_centers") or []
+        skills.append(
+            {
+                "skill_id": "local_finish_preserve_existing_local_centers",
+                "when_relevant": "Use when a local-finish turn already has a stable host face and prior evidence has locked a valid local center layout.",
+                "guidance": [
+                    (
+                        "Current preserved local centers from semantic evidence: "
+                        f"{json.dumps(preserved_centers[:6], ensure_ascii=False)} "
+                        f"(expected_count={local_center_preservation_summary.get('expected_center_count')})."
+                    ),
+                    "When the remaining work is local feature geometry on that same host face, reuse these exact local centers instead of inventing a new layout.",
+                    "Do not add extra positions or re-spread the array while only repairing countersink, head geometry, or another host-face-local finishing detail.",
+                    "If the current tool contract cannot safely express that reuse, prefer query_kernel_state or a bounded execute_build123d repair over guessed world-space coordinates.",
+                ],
+            }
+        )
+    if _previous_failure_requires_latest_topology_face_ref(previous_tool_failure_summary):
+        skills.append(
+            {
+                "skill_id": "local_finish_retry_bind_latest_face_ref",
+                "when_relevant": "Use when the previous local-finish attempt failed because create_sketch ignored the latest query_topology face_ref.",
+                "guidance": [
+                    "The previous local-finish attempt already failed on the exact-ref contract, so do not spend another retry on `plane='XY'`, `plane='XZ'`, `origin=[0,0,0]`, or other detached sketch aliases.",
+                    "On the very next retry, copy one exact `face_ref='face:...'` from the latest query_topology matched_ref_ids or candidate_sets and keep the local edit bound to that same topology revision.",
+                    "If query_topology already exposed host-role candidates such as `mating_face`, `inner_planar_host`, or `closure_landing`, choose from that planar host set first instead of reopening a broad workplane sketch.",
+                    "The minimal recovery path is `create_sketch(face_ref=...)` on the chosen host face, then add the closed profile needed for the next local cut; do not retry a detached sketch first.",
+                    "Only if no valid exact face_ref remains from the latest read should you spend one more turn on `query_topology`; otherwise the retry must stay on the exact-ref lane.",
+                ],
+            }
+        )
+    if _previous_failure_used_candidate_set_label_as_reference(previous_tool_failure_summary):
+        skills.append(
+            {
+                "skill_id": "topology_candidate_set_label_is_not_exact_ref",
+                "when_relevant": "Use when the previous local edit failed because a candidate-set label such as `mating_faces` or `opening_rim_edges` was passed as face_ref/edge_ref.",
+                "guidance": [
+                    "Candidate-set labels such as `mating_faces`, `outer_faces`, `top_faces`, or `opening_rim_edges` are summaries of multiple refs, not valid `face_ref` / `edge_ref` values by themselves.",
+                    "On the retry, keep the chosen candidate set only as a selection source, then copy one concrete `face:...` or `edge:...` ref from that candidate set's `ref_ids` into `face_ref` / `edge_refs`.",
+                    "Do not pass a host-role label or candidate-set id directly into `face_ref` or `edge_refs`; use the exact topology ref string from the latest query_topology result.",
+                    "If the candidate set contains multiple plausible refs, pick one exact ref that matches the intended host role and stay on that same topology revision instead of falling back to a broad alias.",
+                ],
+            }
+        )
+
     if _requirement_prefers_nested_regular_polygon_frame(
         requirement_lower=requirement_lower,
         blockers=blockers,
@@ -610,6 +1460,7 @@ def build_runtime_skill_pack(
                 "Do not guess `Circle(..., arc_size=180)` for the semicircular section. In Build123d, `Circle(...)` is always full-circle geometry.",
                 "`Semicircle(...)` is not a Build123d helper; if you need a true half-profile, use `CenterArc(...)` or `RadiusArc(...)` inside `BuildLine`, close the split edge, and convert it with `make_face()`.",
                 "Treat the split surface as the flat closing edge of the semicircle profile, and keep the shell, pad, and lugs in the same half-plane as that semicircular material instead of extending them past the split line.",
+                "If a later repair needs topology evidence, prefer `split_plane_faces` and `mating_faces` from `query_topology` over generic top/bottom face guesses.",
                 "For split-shell housings, the pad/lugs should widen the orthogonal axis along the split surface, not increase the split-axis depth beyond the outer radius.",
                 "If the semicircle is drawn in the positive half-plane of the sketch, keep the pad/lugs in that same positive half-plane instead of mirroring them into the opposite half-plane.",
                 "For explicit-radius half-shells with pads/lugs and downstream bore/hole edits, keep the first-pass whole-part order explicit: outer cylinder -> subtract inner cylinder -> intersect/trim to the half-plane -> add pad/lugs -> cut the bore -> drill the lug holes.",
@@ -1030,6 +1881,7 @@ def build_runtime_skill_pack(
                 "guidance": [
                     "When the requirement already defines a cutting cylinder, model the host block and one tool cylinder directly, then perform a single boolean difference.",
                     "In Build123d, prefer a single `Cylinder(radius, length, align=(Align.CENTER, Align.CENTER, Align.CENTER))` positioned with `Pos(...)` and `Rot(...)` so the requested axis and centerline are literal, instead of rebuilding the slot from stacked partial cuts or improvised profile fragments.",
+                    "Do not write `Cylinder(..., axis=...)` in Build123d; create the cylinder first, then orient it with `Rot(...)`.",
                     "Do not build this cutter by sketching a circle on the YZ plane and extruding it both ways when validator is already reporting fragmented cylindrical wall faces; that repair pattern tends to preserve the same broken slot topology.",
                     "For an X-axis slot with centerline `(0, 0, z0)`, the default safe pattern is `cutter = Pos(0, 0, z0) * (Rot(Y=90) * Cylinder(...))`, then `result = host.part - cutter`.",
                     "Avoid repair writes that create extra cylindrical wall fragments on one side of the slot; the target should keep one clean cylindrical wall per side, or one continuous trough face when the topology stays connected.",
@@ -1077,13 +1929,14 @@ def build_runtime_skill_pack(
                 "skill_id": "session_backed_local_edge_finishing",
                 "when_relevant": "Use when a direct code rebuild succeeded but a local fillet/chamfer feature is still missing.",
                 "guidance": [
-                    "A successful execute_build123d write already persisted authoritative session geometry for follow-on tools.",
-                    "Prefer query_topology to get fresh edge refs, then use apply_cad_action with fillet/chamfer and explicit edge_refs for the local finishing step.",
-                    "If query_topology already exposes a requirement-aligned edge candidate set such as bottom_outer_edges or y_parallel_bottom_outer_edges, consume those refs directly on the next write turn instead of spending another read-only round.",
-                    "Do not default to reloading model.step inside another Build123d script for a small local finish unless the runtime explicitly exposes a state-import helper.",
-                ],
-            }
-        )
+                "A successful execute_build123d write already persisted authoritative session geometry for follow-on tools.",
+                "Prefer query_topology to get fresh edge refs, then use apply_cad_action with fillet/chamfer and explicit edge_refs for the local finishing step.",
+                "If query_topology already exposes a requirement-aligned edge candidate set such as bottom_outer_edges or y_parallel_bottom_outer_edges, consume those refs directly on the next write turn instead of spending another read-only round.",
+                "For notch/opening/lip cleanup, prefer `opening_rim_edges` when that candidate set is available instead of guessing one more global rebuild.",
+                "Do not default to reloading model.step inside another Build123d script for a small local finish unless the runtime explicitly exposes a state-import helper.",
+            ],
+        }
+    )
 
     axis_selector = None
     if "parallel to the x axis" in requirement_lower:
@@ -1177,15 +2030,17 @@ def build_runtime_skill_pack(
         if not skill_id or skill_id in seen_ids:
             continue
         seen_ids.add(skill_id)
-        deduped.append(skill)
+        enriched_skill = dict(skill)
+        enriched_skill["context_priority"] = _skill_priority(
+            skill_id,
+            latest_tool=latest_tool,
+            annular_blockers_active=annular_blockers_active,
+        )
+        deduped.append(enriched_skill)
 
     deduped.sort(
         key=lambda skill: (
-            _skill_priority(
-                str(skill.get("skill_id") or "").strip(),
-                latest_tool=latest_tool,
-                annular_blockers_active=annular_blockers_active,
-            ),
+            int(skill.get("context_priority", 100)),
             str(skill.get("skill_id") or "").strip(),
         )
     )
@@ -1198,6 +2053,17 @@ def _skill_priority(
     latest_tool: str,
     annular_blockers_active: bool,
 ) -> int:
+    if latest_tool == "apply_cad_action":
+        priorities = {
+            "local_finish_retry_bind_latest_face_ref": 0,
+            "topology_candidate_set_label_is_not_exact_ref": 1,
+            "local_finish_exact_face_ref_contract": 2,
+            "local_finish_preserve_existing_local_centers": 3,
+            "named_face_local_feature_sequence": 4,
+            "enclosure_local_feature_placement_contract": 5,
+            "kernel_repair_packet_recipe": 6,
+        }
+        return priorities.get(skill_id, 20)
     if latest_tool == "execute_build123d" and annular_blockers_active:
         priorities = {
             "axisymmetric_annular_groove_strategy": 0,
@@ -1208,26 +2074,42 @@ def _skill_priority(
         return priorities.get(skill_id, 10)
     general_priorities = {
         "execute_build123d_minimal_script_hygiene": 0,
-        "spherical_recess_pattern_code_first": 1,
-        "explicit_centered_face_array_centers": 2,
-        "spherical_recess_pattern_code_repair": 3,
-        "recover_from_failed_whole_part_retry": 4,
-        "clean_cylindrical_slot_boolean": 5,
-        "explicit_revolve_profile_recipe": 6,
-        "axisymmetric_segmented_primitives_preferred_over_revolve": 7,
-        "half_shell_profile_envelope_repair": 8,
-        "half_shell_profile_from_semicircle_section": 9,
-        "path_sweep_wire_profile_frame_repair": 10,
-        "named_face_local_feature_sequence": 11,
-        "flange_boss_pattern_hole_host_thickness": 12,
-        "nested_regular_polygon_frame_code_first": 13,
-        "named_axis_axisymmetric_pose_alignment_repair": 14,
-        "regular_polygon_side_length_build123d_semantics": 15,
-        "positive_extrude_from_named_plane_is_not_centered": 16,
-        "positive_extrude_bbox_alignment_repair": 17,
-        "whole_part_additive_features_must_merge_into_single_body": 18,
-        "named_plane_profile_to_global_box_mapping": 19,
-        "whole_part_union_from_global_axis_primitives": 20,
+        "nested_hollow_section_builder_native_cavity": 1,
+        "enclosure_local_feature_placement_contract": 2,
+        "multi_part_assembled_pose_bbox_contract": 3,
+        "clamshell_split_axis_and_hinge_contract": 4,
+        "execute_build123d_failure_lint_contract": 5,
+        "execute_build123d_api_lint_repair_first": 6,
+        "execute_build123d_clamshell_host_local_cut_contract": 7,
+        "execute_build123d_detached_subtractive_builder_repair": 8,
+        "execute_build123d_rotated_detached_cutter_contract": 9,
+        "execute_build123d_compound_children_contract": 10,
+        "execute_build123d_explicit_cylindrical_slot_recipe_contract": 11,
+        "execute_build123d_failure_recipe_focus": 12,
+        "execute_build123d_active_builder_authority_repair": 13,
+        "kernel_repair_packet_recipe": 14,
+        "local_finish_exact_face_ref_contract": 15,
+        "local_finish_preserve_existing_local_centers": 16,
+        "spherical_recess_pattern_code_first": 17,
+        "explicit_centered_face_array_centers": 18,
+        "spherical_recess_pattern_code_repair": 19,
+        "recover_from_failed_whole_part_retry": 20,
+        "clean_cylindrical_slot_boolean": 21,
+        "explicit_revolve_profile_recipe": 22,
+        "axisymmetric_segmented_primitives_preferred_over_revolve": 23,
+        "half_shell_profile_envelope_repair": 23,
+        "half_shell_profile_from_semicircle_section": 24,
+        "path_sweep_wire_profile_frame_repair": 25,
+        "named_face_local_feature_sequence": 26,
+        "flange_boss_pattern_hole_host_thickness": 27,
+        "nested_regular_polygon_frame_code_first": 28,
+        "named_axis_axisymmetric_pose_alignment_repair": 29,
+        "regular_polygon_side_length_build123d_semantics": 30,
+        "positive_extrude_from_named_plane_is_not_centered": 31,
+        "positive_extrude_bbox_alignment_repair": 32,
+        "whole_part_additive_features_must_merge_into_single_body": 33,
+        "named_plane_profile_to_global_box_mapping": 34,
+        "whole_part_union_from_global_axis_primitives": 35,
     }
     if skill_id in general_priorities:
         return general_priorities[skill_id]
@@ -1345,7 +2227,6 @@ def _requirement_prefers_named_face_local_feature_sequence(
             "pocket",
             "blind hole",
             " hole",
-            "recess",
             "slot",
             "notch",
         )
@@ -1361,6 +2242,34 @@ def _requirement_prefers_named_face_local_feature_sequence(
             "cylinder",
             "base",
         )
+    )
+
+
+def _requirement_suggests_local_finish_probe_family(
+    requirement_lower: str,
+) -> bool:
+    local_finish_tokens = (
+        "local finish",
+        "local finishing",
+        "topology-aware",
+        "topology aware",
+        "mounting face",
+        "opening rim",
+        "rim edges",
+        "target face",
+        "target edge",
+    )
+    feature_tokens = (
+        "fillet",
+        "chamfer",
+        "countersink",
+        "counterbore",
+        "notch",
+        "edge fillet",
+        "edge chamfer",
+    )
+    return any(token in requirement_lower for token in local_finish_tokens) and any(
+        token in requirement_lower for token in feature_tokens
     )
 
 

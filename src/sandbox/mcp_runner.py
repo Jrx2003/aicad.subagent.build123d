@@ -3,6 +3,8 @@ import base64
 import binascii
 from contextlib import AsyncExitStack
 import os
+import shutil
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +31,24 @@ logger = get_logger(__name__)
 _CROSS_TASK_CANCEL_SCOPE_ERROR = (
     "Attempted to exit cancel scope in a different task than it was entered in"
 )
+
+
+def _resolve_mcp_stdio_command(
+    command: str,
+    args: list[str],
+) -> tuple[str, list[str]]:
+    normalized_command = str(command or "").strip() or "uv"
+    normalized_args = list(args)
+    if shutil.which(normalized_command) is not None:
+        return normalized_command, normalized_args
+    if normalized_command == "uv":
+        stripped_args = [str(item).strip() for item in normalized_args if str(item).strip()]
+        if stripped_args[:2] == ["run", "python"]:
+            stripped_args = stripped_args[2:]
+        elif stripped_args[:1] == ["run"]:
+            stripped_args = stripped_args[1:]
+        return sys.executable, stripped_args or ["-m", "sandbox_mcp_server"]
+    return normalized_command, normalized_args
 
 
 @dataclass
@@ -162,6 +182,12 @@ class RequirementValidationResult:
     insufficient_evidence: bool
     observation_tags: list[str]
     decision_hints: list[str]
+    grounding_sources: list[str]
+    grounding_strength: str
+    required_evidence_kinds: list[str]
+    overclaim_guard: str | None
+    repair_hints: list[str]
+    family_bindings: list[str]
     blocker_taxonomy: list[dict[str, Any]]
     relation_index: dict[str, Any] | None
     summary: str
@@ -196,12 +222,16 @@ class McpSandboxRunner:
         tool_name: str = DEFAULT_MCP_TOOL_NAME,
         timeout_buffer_seconds: int = 30,
     ) -> None:
-        self._command = command
-        self._args = (
-            list(args)
-            if args is not None
-            else ["run", "python", "-m", "sandbox_mcp_server"]
+        resolved_command, resolved_args = _resolve_mcp_stdio_command(
+            command=command,
+            args=(
+                list(args)
+                if args is not None
+                else ["run", "python", "-m", "sandbox_mcp_server"]
+            ),
         )
+        self._command = resolved_command
+        self._args = resolved_args
         self._cwd = cwd.strip() if cwd and cwd.strip() else None
         self._env = dict(env) if env is not None else os.environ.copy()
         self._tool_name = tool_name
@@ -624,6 +654,7 @@ class McpSandboxRunner:
         entity_ids: list[str] | None = None,
         ref_ids: list[str] | None = None,
         selection_hints: list[str] | None = None,
+        family_ids: list[str] | None = None,
         requirement_text: str | None = None,
         face_offset: int = 0,
         edge_offset: int = 0,
@@ -637,6 +668,7 @@ class McpSandboxRunner:
             "entity_ids": entity_ids or [],
             "ref_ids": ref_ids or [],
             "selection_hints": selection_hints or [],
+            "family_ids": family_ids or [],
             "face_offset": face_offset,
             "edge_offset": edge_offset,
         }
@@ -966,6 +998,12 @@ class McpSandboxRunner:
                 insufficient_evidence=False,
                 observation_tags=[],
                 decision_hints=[],
+                grounding_sources=[],
+                grounding_strength="none",
+                required_evidence_kinds=[],
+                overclaim_guard=None,
+                repair_hints=[],
+                family_bindings=[],
                 blocker_taxonomy=[],
                 relation_index=None,
                 summary="Validation timed out",
@@ -992,6 +1030,12 @@ class McpSandboxRunner:
                 insufficient_evidence=False,
                 observation_tags=[],
                 decision_hints=[],
+                grounding_sources=[],
+                grounding_strength="none",
+                required_evidence_kinds=[],
+                overclaim_guard=None,
+                repair_hints=[],
+                family_bindings=[],
                 blocker_taxonomy=[],
                 relation_index=None,
                 summary="Validation failed",
@@ -1019,6 +1063,12 @@ class McpSandboxRunner:
                 insufficient_evidence=False,
                 observation_tags=[],
                 decision_hints=[],
+                grounding_sources=[],
+                grounding_strength="none",
+                required_evidence_kinds=[],
+                overclaim_guard=None,
+                repair_hints=[],
+                family_bindings=[],
                 blocker_taxonomy=[],
                 relation_index=None,
                 summary="Validation failed",
@@ -1821,6 +1871,12 @@ class McpSandboxRunner:
                 insufficient_evidence=False,
                 observation_tags=[],
                 decision_hints=[],
+                grounding_sources=[],
+                grounding_strength="none",
+                required_evidence_kinds=[],
+                overclaim_guard=None,
+                repair_hints=[],
+                family_bindings=[],
                 blocker_taxonomy=[],
                 relation_index=None,
                 summary="Validation payload is invalid",
@@ -1876,6 +1932,32 @@ class McpSandboxRunner:
             if isinstance(decision_hints_raw, list)
             else []
         )
+        grounding_sources_raw = structured.get("grounding_sources")
+        grounding_sources = (
+            [item for item in grounding_sources_raw if isinstance(item, str)]
+            if isinstance(grounding_sources_raw, list)
+            else []
+        )
+        grounding_strength = self._as_string(structured.get("grounding_strength")) or "none"
+        required_evidence_kinds_raw = structured.get("required_evidence_kinds")
+        required_evidence_kinds = (
+            [item for item in required_evidence_kinds_raw if isinstance(item, str)]
+            if isinstance(required_evidence_kinds_raw, list)
+            else []
+        )
+        overclaim_guard = self._as_optional_string(structured.get("overclaim_guard"))
+        repair_hints_raw = structured.get("repair_hints")
+        repair_hints = (
+            [item for item in repair_hints_raw if isinstance(item, str)]
+            if isinstance(repair_hints_raw, list)
+            else []
+        )
+        family_bindings_raw = structured.get("family_bindings")
+        family_bindings = (
+            [item for item in family_bindings_raw if isinstance(item, str)]
+            if isinstance(family_bindings_raw, list)
+            else []
+        )
         blocker_taxonomy_raw = structured.get("blocker_taxonomy")
         blocker_taxonomy = (
             [item for item in blocker_taxonomy_raw if isinstance(item, dict)]
@@ -1910,6 +1992,12 @@ class McpSandboxRunner:
             insufficient_evidence=insufficient_evidence,
             observation_tags=observation_tags,
             decision_hints=decision_hints,
+            grounding_sources=grounding_sources,
+            grounding_strength=grounding_strength,
+            required_evidence_kinds=required_evidence_kinds,
+            overclaim_guard=overclaim_guard,
+            repair_hints=repair_hints,
+            family_bindings=family_bindings,
             blocker_taxonomy=blocker_taxonomy,
             relation_index=relation_index,
             summary=summary,

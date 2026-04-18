@@ -618,6 +618,34 @@ class TopologyCandidateSet(BaseModel):
         default_factory=list,
         description="Snapshot entity IDs contained in this candidate set.",
     )
+    family_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional dominant feature-family binding inferred from the current "
+            "runtime/kernel context."
+        ),
+    )
+    family_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered feature-family bindings inferred from the current "
+            "runtime/kernel context."
+        ),
+    )
+    preferred_ref_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional preferred step-local ref within this candidate set after "
+            "family-aware ranking."
+        ),
+    )
+    preferred_entity_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional preferred snapshot entity ID within this candidate set "
+            "after family-aware ranking."
+        ),
+    )
     rationale: str = Field(
         default="",
         description="Compact explanation of why these candidates were selected.",
@@ -1378,6 +1406,13 @@ class QueryTopologyInput(BaseModel):
             "primary_outer_faces to rank and summarize candidate subsets."
         ),
     )
+    family_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional feature-family bindings used to annotate and reorder "
+            "topology candidate sets."
+        ),
+    )
     requirement_text: str | None = Field(
         default=None,
         description=(
@@ -1486,6 +1521,30 @@ class RequirementClauseInterpretation(BaseModel):
     decision_hints: list[str] = Field(
         default_factory=list,
         description="Short hints that explain the next validation step.",
+    )
+    grounding_sources: list[str] = Field(
+        default_factory=list,
+        description="Evidence surfaces that grounded this clause, such as geometry/topology/process.",
+    )
+    grounding_strength: str = Field(
+        default="none",
+        description="Compact grounding strength label: none/weak/partial/strong.",
+    )
+    required_evidence_kinds: list[str] = Field(
+        default_factory=list,
+        description="Evidence kinds this clause ideally needs before a strong verification claim.",
+    )
+    overclaim_guard: str | None = Field(
+        default=None,
+        description="Guard reason that blocks premature verification when grounding is weak.",
+    )
+    repair_hints: list[str] = Field(
+        default_factory=list,
+        description="Clause-local repair suggestions derived from evidence gaps or contradictions.",
+    )
+    family_binding: str | None = Field(
+        default=None,
+        description="Best-effort semantic family binding for this clause when available.",
     )
 
 
@@ -1637,6 +1696,30 @@ class ValidateRequirementOutput(BaseModel):
         default_factory=list,
         description="High-level follow-up hints derived from interpretation.",
     )
+    grounding_sources: list[str] = Field(
+        default_factory=list,
+        description="Union of grounding sources across clause interpretations.",
+    )
+    grounding_strength: str = Field(
+        default="none",
+        description="Aggregate grounding strength for the current validation packet.",
+    )
+    required_evidence_kinds: list[str] = Field(
+        default_factory=list,
+        description="Union of evidence kinds still most relevant for trustworthy completion claims.",
+    )
+    overclaim_guard: str | None = Field(
+        default=None,
+        description="Aggregate overclaim guard reason when the validator intentionally stays conservative.",
+    )
+    repair_hints: list[str] = Field(
+        default_factory=list,
+        description="Compact repair suggestions synthesized from clause grounding gaps.",
+    )
+    family_bindings: list[str] = Field(
+        default_factory=list,
+        description="Best-effort semantic family bindings observed across clauses.",
+    )
     blocker_taxonomy: list[BlockerTaxonomyRecord] = Field(
         default_factory=list,
         description="Structured blocker-family mapping shared across runtime, kernel sync, and benchmark diagnostics.",
@@ -1713,6 +1796,22 @@ class FeatureProbeRecord(BaseModel):
     recommended_next_tools: list[str] = Field(
         default_factory=list,
         description="Suggested next tools when the probe remains inconclusive.",
+    )
+    family_binding: str | None = Field(
+        default=None,
+        description="Best-effort family binding used to connect probe evidence to repair/validation surfaces.",
+    )
+    required_evidence_kinds: list[str] = Field(
+        default_factory=list,
+        description="Evidence kinds that should be grounded before treating this probe as closure-quality evidence.",
+    )
+    anchor_summary: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Compact family-specific anchor summary extracted from the current read-model surface.",
+    )
+    grounding_blockers: list[str] = Field(
+        default_factory=list,
+        description="Probe-level grounding gaps that still block trustworthy completion claims.",
     )
 
 

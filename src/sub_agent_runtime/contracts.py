@@ -61,6 +61,7 @@ class IterationRunSummary(BaseModel):
     forced_policy_chain: list[str] = Field(default_factory=list)
     feature_probe_count: int = 0
     probe_code_count: int = 0
+    build123d_hallucination: dict[str, Any] = Field(default_factory=dict)
     baseline_comparison: dict[str, Any] = Field(default_factory=dict)
     failure_cluster: str | None = None
     llm_error: str | None = None

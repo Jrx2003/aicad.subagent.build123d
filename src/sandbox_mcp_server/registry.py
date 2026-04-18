@@ -150,6 +150,29 @@ def _requirement_mentions_half_shell_with_split_surface(text: str) -> bool:
     )
 
 
+def _requirement_mentions_clamshell_half_shell(text: str) -> bool:
+    if not text:
+        return False
+    has_clamshell = "clamshell" in text
+    has_lid_base = (
+        ("lid" in text and "base" in text)
+        or "lid and base" in text
+        or "top lid" in text
+        or "bottom base" in text
+    )
+    has_hinge_or_mating = any(
+        token in text
+        for token in (
+            "hinge",
+            "mating face",
+            "mating faces",
+            "mating surface",
+            "mating surfaces",
+        )
+    )
+    return (has_clamshell or has_lid_base) and has_hinge_or_mating
+
+
 def requirement_suggests_axisymmetric_profile(
     requirements: dict[str, Any] | None = None,
     requirement_text: str | None = None,
@@ -275,6 +298,8 @@ def infer_requirement_probe_families(
         requirement_text or text,
     ) or _requirement_mentions_half_shell_with_split_surface(text):
         families.append("axisymmetric_profile")
+    if _requirement_mentions_half_shell_with_split_surface(text) or _requirement_mentions_clamshell_half_shell(text):
+        families.append("half_shell")
     if requirement_requests_path_sweep(
         requirements,
         requirement_text or text,
@@ -1318,6 +1343,9 @@ def normalize_action_params(
         if position is not None:
             normalized["position"] = position
 
+    if definition.action_type == CADActionType.HOLE:
+        normalized = _normalize_hole_params(normalized)
+
     if definition.action_type == CADActionType.CREATE_SKETCH:
         normalized = _normalize_create_sketch_params(normalized)
 
@@ -1330,6 +1358,28 @@ def normalize_action_params(
     if definition.action_type == CADActionType.ADD_PATH:
         normalized = _normalize_add_path_params(normalized)
 
+    return normalized
+
+
+def _normalize_hole_params(
+    params: dict[str, CADParamValue],
+) -> dict[str, CADParamValue]:
+    normalized = dict(params)
+    countersink_diameter = normalized.get("countersink_diameter")
+    if isinstance(countersink_diameter, (int, float)) and float(countersink_diameter) > 0.0:
+        normalized["countersink_diameter"] = float(countersink_diameter)
+        return normalized
+
+    for alias in (
+        "countersink_radius",
+        "counter_sink_radius",
+        "head_radius",
+        "counter_sink_head_radius",
+    ):
+        alias_value = normalized.get(alias)
+        if isinstance(alias_value, (int, float)) and float(alias_value) > 0.0:
+            normalized["countersink_diameter"] = float(alias_value) * 2.0
+            break
     return normalized
 
 
@@ -2225,6 +2275,21 @@ def collect_requirement_topology_hints(
     has_top = "top" in text or "upper" in text
     has_bottom = "bottom" in text or "lower" in text
     has_outer = "outer" in text or "outside" in text or "external" in text
+    has_enclosure = any(
+        token in text
+        for token in (
+            "enclosure",
+            "housing",
+            "clamshell",
+            "lid",
+            "base",
+            "cover",
+            "shell",
+        )
+    )
+    has_mating = "mating face" in text or "mating faces" in text or "mating surface" in text or "mating surfaces" in text
+    has_notch = "notch" in text or "cutout" in text or "thumb notch" in text
+    has_split = "half-shell" in text or "half shell" in text or "split plane" in text or "split line" in text
     has_inner = (
         "inner" in text
         or "inside" in text
@@ -2268,8 +2333,17 @@ def collect_requirement_topology_hints(
     if has_outer or aligned_with_edge:
         _add_hint("outer_faces")
         _add_hint("outer_edges")
+    if has_enclosure:
+        _add_hint("shell_exterior_faces")
+        _add_hint("shell_interior_faces")
+    if has_mating or has_enclosure:
+        _add_hint("mating_faces")
+    if has_split or has_enclosure:
+        _add_hint("split_plane_faces")
     if has_inner:
         _add_hint("inner_edges")
+    if has_notch:
+        _add_hint("opening_rim_edges")
     if semantics.mentions_nested_profile_cutout:
         _add_hint("top_faces")
         _add_hint("top_edges")
@@ -2785,6 +2859,36 @@ def analyze_requirement_semantics(
             (r"\bright[- ]face\b[^.]{0,48}\bsketch plane\b", "right"),
             (r"\bleft[- ]face\b[^.]{0,48}\bsketch plane\b", "left"),
             (r"\bexisting face\b[^.]{0,48}\bsketch plane\b", "existing"),
+            (
+                r"\btop\b[^.]{0,24}\b(?:pocket|cavity|recess|slot|notch|opening|hole|holes|cutout|fillet|chamfer)\b",
+                "top",
+            ),
+            (
+                r"\bbottom\b[^.]{0,24}\b(?:pocket|cavity|recess|slot|notch|opening|hole|holes|cutout|fillet|chamfer|post)\b",
+                "bottom",
+            ),
+            (
+                r"\bfront\b[^.]{0,24}\b(?:pocket|cavity|recess|slot|notch|thumb notch|opening|hole|holes|cutout|fillet|chamfer|relief)\b",
+                "front",
+            ),
+            (
+                r"\bback\b[^.]{0,24}\b(?:pocket|cavity|recess|slot|notch|opening|hole|holes|cutout|fillet|chamfer|hinge)\b",
+                "back",
+            ),
+            (
+                r"\bleft\b[^.]{0,24}\b(?:pocket|cavity|recess|slot|notch|opening|hole|holes|cutout|fillet|chamfer)\b",
+                "left",
+            ),
+            (
+                r"\bright\b[^.]{0,24}\b(?:pocket|cavity|recess|slot|notch|opening|hole|holes|cutout|fillet|chamfer)\b",
+                "right",
+            ),
+            (r"\bon(?: the)? top(?: face| surface| side)?\b", "top"),
+            (r"\bon(?: the)? bottom(?: face| surface| side)?\b", "bottom"),
+            (r"\bon(?: the)? front(?: face| surface| side)?\b", "front"),
+            (r"\bon(?: the)? back(?: face| surface| side)?\b", "back"),
+            (r"\bon(?: the)? left(?: face| surface| side)?\b", "left"),
+            (r"\bon(?: the)? right(?: face| surface| side)?\b", "right"),
         )
     )
     datum_planes = _ordered_hits(

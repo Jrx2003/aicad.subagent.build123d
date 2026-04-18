@@ -14,6 +14,16 @@ def test_analyze_requirement_semantics_detects_hyphenated_face_targets() -> None
     assert semantics.mentions_face_edit is True
 
 
+def test_analyze_requirement_semantics_detects_directional_feature_targets() -> None:
+    semantics = analyze_requirement_semantics(
+        {},
+        "Create a rounded enclosure with a front thumb notch and two holes on the right side.",
+    )
+
+    assert semantics.face_targets == ("front", "right")
+    assert semantics.mentions_face_edit is True
+
+
 def test_infer_requirement_probe_families_marks_full_span_top_face_channel_as_nested_hollow_section() -> None:
     requirement = (
         "Select the XY plane and create a box-shaped base 80.0 millimeters long, "
@@ -29,3 +39,17 @@ def test_infer_requirement_probe_families_marks_full_span_top_face_channel_as_ne
     )
 
     assert "nested_hollow_section" in families
+
+
+def test_infer_requirement_probe_families_marks_clamshell_hinge_requirements_as_half_shell() -> None:
+    requirement = (
+        "Create a two-part rounded clamshell enclosure with a top lid, bottom base, "
+        "pin hinge at the back, and magnet slots on the mating faces."
+    )
+
+    families = infer_requirement_probe_families(
+        {"description": requirement},
+        requirement,
+    )
+
+    assert "half_shell" in families

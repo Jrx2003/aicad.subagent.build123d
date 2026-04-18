@@ -93,11 +93,51 @@ class KernelStateToolAdapter:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RepairPacketRecipeSpec:
+    recipe_id: str
+    supported_family_ids: tuple[str, ...]
+    required_anchor_keys: tuple[str, ...]
+    required_parameters: tuple[str, ...]
+    compiler_kind: str
+    can_execute_deterministically: bool
+    fallback_lane: str
+
+
+_RUNTIME_REPAIR_PACKET_RECIPES: dict[str, RepairPacketRecipeSpec] = {
+    "half_shell_profile_global_xz_lug_hole_recipe": RepairPacketRecipeSpec(
+        recipe_id="half_shell_profile_global_xz_lug_hole_recipe",
+        supported_family_ids=("half_shell_profile", "directional_hole"),
+        required_anchor_keys=(),
+        required_parameters=(
+            "outer_radius",
+            "inner_radius",
+            "length",
+            "pad_x_min",
+            "pad_x_max",
+            "pad_height",
+            "bore_diameter",
+            "hole_diameter",
+            "hole_centers_xz",
+        ),
+        compiler_kind="half_shell_profile_global_xz_lug_hole",
+        can_execute_deterministically=True,
+        fallback_lane="execute_build123d",
+    ),
+    "spherical_recess_host_face_center_set": RepairPacketRecipeSpec(
+        recipe_id="spherical_recess_host_face_center_set",
+        supported_family_ids=("spherical_recess", "explicit_anchor_hole"),
+        required_anchor_keys=("expected_local_centers",),
+        required_parameters=("geometry_summary",),
+        compiler_kind="spherical_recess_host_face_center_set",
+        can_execute_deterministically=True,
+        fallback_lane="execute_build123d",
+    ),
+}
+
+
 _SUPPORTED_RUNTIME_REPAIR_PACKET_RECIPES = frozenset(
-    {
-        "half_shell_profile_global_xz_lug_hole_recipe",
-        "spherical_recess_host_face_center_set",
-    }
+    _RUNTIME_REPAIR_PACKET_RECIPES
 )
 
 
@@ -131,6 +171,20 @@ def compile_runtime_repair_packet_execution(
 
     packet_payload = packet.to_dict()
     recipe_id = str(packet.recipe_id or "").strip()
+    recipe_spec = _RUNTIME_REPAIR_PACKET_RECIPES.get(recipe_id)
+    recipe_contract = (
+        {
+            "recipe_id": recipe_spec.recipe_id,
+            "supported_family_ids": list(recipe_spec.supported_family_ids),
+            "required_anchor_keys": list(recipe_spec.required_anchor_keys),
+            "required_parameters": list(recipe_spec.required_parameters),
+            "compiler_kind": recipe_spec.compiler_kind,
+            "can_execute_deterministically": recipe_spec.can_execute_deterministically,
+            "fallback_lane": recipe_spec.fallback_lane,
+        }
+        if recipe_spec is not None
+        else None
+    )
     if recipe_id == "spherical_recess_host_face_center_set":
         compiled = _compile_spherical_recess_repair_packet(
             run_state=run_state,
@@ -140,6 +194,7 @@ def compile_runtime_repair_packet_execution(
         compiled["packet"] = packet_payload
         compiled["family_id"] = packet.family_id
         compiled["repair_mode"] = packet.repair_mode
+        compiled["recipe_contract"] = recipe_contract
         return compiled
     if recipe_id == "half_shell_profile_global_xz_lug_hole_recipe":
         compiled = _compile_half_shell_profile_repair_packet(
@@ -150,12 +205,14 @@ def compile_runtime_repair_packet_execution(
         compiled["packet"] = packet_payload
         compiled["family_id"] = packet.family_id
         compiled["repair_mode"] = packet.repair_mode
+        compiled["recipe_contract"] = recipe_contract
         return compiled
 
     return {
         "ok": False,
         "error": f"unsupported_repair_packet_recipe:{recipe_id or 'unknown'}",
         "packet": packet_payload,
+        "recipe_contract": recipe_contract,
         "domain_kernel_digest": build_domain_kernel_digest(graph),
     }
 

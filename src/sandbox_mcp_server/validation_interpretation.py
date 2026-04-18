@@ -355,15 +355,25 @@ def _is_operation_only_clause(text: str) -> bool:
 
 def _classify_clause_tags(text: str) -> list[str]:
     tags: list[str] = []
+    cylindrical_local_cavity = _looks_like_cylindrical_local_cavity_clause(text)
+    local_feature_like = any(
+        token in text for token in ("groove", "recess", "pocket", "slot", "u-slot", "u slot", "notch", "channel")
+    )
     if _is_operation_only_clause(text):
         tags.append("clause:process_setup")
-    if any(token in text for token in _BODY_SHAPE_TOKENS) and not _shape_token_describes_pattern_layout(text):
+    if (
+        any(token in text for token in _BODY_SHAPE_TOKENS)
+        and not _shape_token_describes_pattern_layout(text)
+        and not local_feature_like
+    ):
         tags.append("clause:body_shape")
     if "hole" in text or "bore" in text or "countersink" in text:
         tags.append("clause:hole")
-    if any(token in text for token in ("slot", "u-slot", "u slot", "notch", "channel")):
+    if any(token in text for token in ("slot", "u-slot", "u slot", "notch", "channel")) and not cylindrical_local_cavity:
         tags.append("clause:notch_like")
-    if "groove" in text or "recess" in text or "pocket" in text:
+    if cylindrical_local_cavity:
+        tags.append("clause:cylindrical_local_cavity")
+    if "groove" in text or "recess" in text or "pocket" in text or cylindrical_local_cavity:
         tags.append("clause:local_feature")
     if "pattern" in text or "array" in text or "grid" in text:
         tags.append("clause:pattern")
@@ -382,6 +392,20 @@ def _classify_clause_tags(text: str) -> list[str]:
     if any(token in text for token in ("direction", "top face", "bottom face", "left", "right")):
         tags.append("clause:local_feature")
     return list(dict.fromkeys(tags))
+
+
+def _looks_like_cylindrical_local_cavity_clause(text: str) -> bool:
+    has_local_cavity_noun = any(
+        token in text for token in ("recess", "pocket", "slot", "cavity")
+    )
+    if not has_local_cavity_noun:
+        return False
+    if not any(token in text for token in ("diameter", "radius", "cylindrical", "magnet")):
+        return False
+    return not any(
+        token in text
+        for token in ("u-slot", "u slot", "u-shaped", "u shaped", "v-shaped", "v groove", "channel")
+    )
 
 
 def _extract_measurements(text: str) -> list[float]:
@@ -2889,12 +2913,9 @@ def _interpret_dimension_clause(
         tag in clause_tags
         for tag in ("clause:body_shape", "clause:thickness", "clause:axisymmetric_body")
     )
-    precise_grounding_check_ids = (
-        "feature_local_anchor_alignment",
-        "feature_pattern",
-        "feature_pattern_seed_alignment",
-        "feature_hole_position_alignment",
-        "feature_hole_exact_center_set",
+    precise_grounding_check_ids = _precise_grounding_check_ids_for_clause(
+        clause_tags=clause_tags,
+        lowered_text=lowered,
     )
 
     end_face_height_result = _interpret_end_face_height_clause(
@@ -3239,6 +3260,43 @@ def _interpret_dimension_clause(
         )
 
     if "thickness" in lowered or "thick" in lowered:
+        thickness_pass = _first_passed_check(check_index, "dimension_thickness")
+        if thickness_pass is not None:
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.VERIFIED,
+                evidence=str(thickness_pass.evidence or thickness_pass.check_id),
+                observation_tags=clause_tags + ["validation:dimension_check"],
+                decision_hints=[],
+            )
+        thickness_fail = _first_failed_check(check_index, "dimension_thickness")
+        if thickness_fail is not None:
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.CONTRADICTED,
+                evidence=str(thickness_fail.evidence or thickness_fail.check_id),
+                observation_tags=clause_tags + ["validation:dimension_check"],
+                decision_hints=["repair the target thickness"],
+            )
+        if _thickness_clause_requires_explicit_shell_grounding(
+            clause_text=clause_text,
+            bundle=bundle,
+        ):
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.INSUFFICIENT_EVIDENCE,
+                evidence=(
+                    "Shell/enclosure wall thickness needs direct inner/outer shell evidence; "
+                    "whole-body bbox_min_span is not a reliable wall-thickness proxy here."
+                ),
+                observation_tags=clause_tags + ["insufficient_evidence"],
+                decision_hints=[
+                    "inspect shell wall thickness from geometry/topology evidence before completion"
+                ],
+            )
         target = measurements[-1]
         realized = min(bbox)
         status = (
@@ -3257,7 +3315,7 @@ def _interpret_dimension_clause(
             status=status,
             evidence=evidence,
             observation_tags=clause_tags + ["geometry:bbox"],
-            decision_hints=[] if status == RequirementClauseStatus.VERIFIED else ["repair the target thickness"],
+                decision_hints=[] if status == RequirementClauseStatus.VERIFIED else ["repair the target thickness"],
         )
 
     single_dimension_check_ids: list[str] = []
@@ -3367,6 +3425,36 @@ def _interpret_dimension_clause(
                 decision_hints=[],
             )
     return None
+
+
+def _thickness_clause_requires_explicit_shell_grounding(
+    *,
+    clause_text: str,
+    bundle: RequirementEvidenceBundle,
+) -> bool:
+    normalized_clause = str(clause_text or "").strip().lower()
+    requirement_text = str(bundle.requirement_text or "").strip().lower()
+    combined = f"{requirement_text} {normalized_clause}".strip()
+    if "wall thickness" in combined:
+        return True
+    if int(bundle.geometry_facts.get("solids") or 0) > 1:
+        return True
+    return any(
+        token in combined
+        for token in (
+            "clamshell",
+            "lid",
+            "base",
+            "shell",
+            "enclosure",
+            "housing",
+            "casing",
+            "hollow",
+            "cavity",
+            "mating face",
+            "mating surface",
+        )
+    )
 
 
 def _extract_named_plane_token(text: str) -> str | None:
@@ -3615,11 +3703,26 @@ def _interpret_feature_clause(
     bundle: RequirementEvidenceBundle,
 ) -> RequirementClauseInterpretation | None:
     lowered = clause_text.lower()
+    hinge_clause = _interpret_hinge_feature_clause(
+        clause_id=clause_id,
+        clause_text=clause_text,
+        clause_tags=clause_tags,
+        bundle=bundle,
+    )
+    if hinge_clause is not None:
+        return hinge_clause
     rule_sets: list[tuple[tuple[str, ...], list[str]]] = []
     if "clause:hole" in clause_tags:
         rule_sets.append(
             (
-                ("feature_hole", "feature_countersink", "feature_hole_position_alignment", "feature_hole_exact_center_set", "feature_local_anchor_alignment"),
+                (
+                    "feature_hole",
+                    "feature_countersink",
+                    "feature_hole_position_alignment",
+                    "feature_hole_exact_center_set",
+                    "feature_local_anchor_alignment",
+                    "feature_local_anchor_count_alignment",
+                ),
                 ["hole", "countersink"],
             )
         )
@@ -3665,6 +3768,22 @@ def _interpret_feature_clause(
         failed = [check for check in matched_checks if check.status == RequirementCheckStatus.FAIL]
         passed = [check for check in matched_checks if check.status == RequirementCheckStatus.PASS]
         if failed:
+            if _failed_local_feature_clause_requires_more_grounding(
+                clause_tags=clause_tags,
+                failed_checks=failed,
+                check_index=check_index,
+            ):
+                return RequirementClauseInterpretation(
+                    clause_id=clause_id,
+                    clause_text=clause_text,
+                    status=RequirementClauseStatus.INSUFFICIENT_EVIDENCE,
+                    evidence=(
+                        "Generic local-feature failure exists, but the clause still lacks "
+                        "target-face or topology-grounded evidence."
+                    ),
+                    observation_tags=clause_tags + ["insufficient_evidence"],
+                    decision_hints=["inspect local feature grounding with geometry/topology evidence"],
+                )
             return RequirementClauseInterpretation(
                 clause_id=clause_id,
                 clause_text=clause_text,
@@ -3675,6 +3794,14 @@ def _interpret_feature_clause(
             )
         if passed:
             if _clause_requires_precise_grounding(lowered):
+                precise_feature_clause = _interpret_precise_feature_clause(
+                    clause_id=clause_id,
+                    clause_text=clause_text,
+                    clause_tags=clause_tags,
+                    check_index=check_index,
+                )
+                if precise_feature_clause is not None:
+                    return precise_feature_clause
                 return RequirementClauseInterpretation(
                     clause_id=clause_id,
                     clause_text=clause_text,
@@ -3692,6 +3819,37 @@ def _interpret_feature_clause(
                 decision_hints=[],
             )
 
+    if any(
+        token in lowered
+        for token in (
+            "separate parts",
+            "two-part",
+            "two part",
+            "lid and base",
+            "top lid",
+            "bottom base",
+        )
+    ):
+        solids = int(bundle.geometry_facts.get("solids") or 0)
+        if solids >= 2:
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.VERIFIED,
+                evidence=f"geometry_solids={solids}",
+                observation_tags=clause_tags + ["geometry:multi_part", "validation:feature_alignment"],
+                decision_hints=[],
+            )
+        if solids == 1:
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.CONTRADICTED,
+                evidence="geometry_solids=1; expected separate parts",
+                observation_tags=clause_tags + ["validation:legacy_fail"],
+                decision_hints=["separate the output into at least two solids before finishing"],
+            )
+
     if "rounded" in lowered and int(bundle.geometry_facts.get("solids") or 0) > 0:
         return RequirementClauseInterpretation(
             clause_id=clause_id,
@@ -3701,6 +3859,281 @@ def _interpret_feature_clause(
             observation_tags=clause_tags + ["insufficient_evidence"],
             decision_hints=["allow high-level semantic adjudication after geometry checks settle"],
         )
+    return None
+
+
+def _interpret_hinge_feature_clause(
+    *,
+    clause_id: str,
+    clause_text: str,
+    clause_tags: list[str],
+    bundle: RequirementEvidenceBundle,
+) -> RequirementClauseInterpretation | None:
+    lowered = clause_text.lower()
+    if "hinge" not in lowered:
+        return None
+
+    explicit_pin_hinge = "pin hinge" in lowered or "mechanical hinge" in lowered
+    bbox_min = _extract_bbox_triplet(bundle, "bbox_min")
+    bbox_max = _extract_bbox_triplet(bundle, "bbox_max")
+    if len(bbox_min) < 3 or len(bbox_max) < 3:
+        return None
+
+    candidate_faces: list[dict[str, Any]] = []
+    horizontal_span = max(
+        abs(float(bbox_max[0]) - float(bbox_min[0])),
+        abs(float(bbox_max[1]) - float(bbox_min[1])),
+    )
+    boundary_tolerances = [
+        max(1.0, abs(float(bbox_max[idx]) - float(bbox_min[idx])) * 0.08)
+        for idx in range(3)
+    ]
+    for face in _topology_face_summaries(bundle):
+        if str(face.get("geom_type") or "").strip().upper() != "CYLINDER":
+            continue
+        axis_direction = face.get("axis_direction") or []
+        if not (
+            isinstance(axis_direction, list)
+            and len(axis_direction) >= 3
+            and all(isinstance(item, (int, float)) for item in axis_direction[:3])
+        ):
+            continue
+        axis_index = max(range(3), key=lambda idx: abs(float(axis_direction[idx])))
+        if abs(float(axis_direction[axis_index])) < 0.7 or axis_index == 2:
+            continue
+        face_bbox = face.get("bbox") or {}
+        if not isinstance(face_bbox, dict):
+            continue
+        axis_min = face_bbox.get(("xmin", "ymin", "zmin")[axis_index])
+        axis_max = face_bbox.get(("xmax", "ymax", "zmax")[axis_index])
+        if not isinstance(axis_min, (int, float)) or not isinstance(axis_max, (int, float)):
+            continue
+        realized_span = abs(float(axis_max) - float(axis_min))
+        if realized_span < max(4.0, horizontal_span * 0.18):
+            continue
+        reference_point = _axis_origin_components(face)
+        if reference_point is None:
+            bbox_center = [
+                (float(face_bbox.get("xmin", 0.0)) + float(face_bbox.get("xmax", 0.0))) / 2.0,
+                (float(face_bbox.get("ymin", 0.0)) + float(face_bbox.get("ymax", 0.0))) / 2.0,
+                (float(face_bbox.get("zmin", 0.0)) + float(face_bbox.get("zmax", 0.0))) / 2.0,
+            ]
+            reference_point = bbox_center
+        boundary_axis: int | None = None
+        boundary_side: str | None = None
+        for candidate_axis in range(3):
+            if candidate_axis == axis_index:
+                continue
+            point_value = float(reference_point[candidate_axis])
+            if abs(point_value - float(bbox_min[candidate_axis])) <= boundary_tolerances[candidate_axis]:
+                boundary_axis = candidate_axis
+                boundary_side = "min"
+                break
+            if abs(point_value - float(bbox_max[candidate_axis])) <= boundary_tolerances[candidate_axis]:
+                boundary_axis = candidate_axis
+                boundary_side = "max"
+                break
+        if boundary_axis is None:
+            continue
+        candidate_faces.append(
+            {
+                "face_id": str(face.get("face_id") or "").strip() or "unknown_face",
+                "axis": "XYZ"[axis_index],
+                "boundary_axis": "XYZ"[boundary_axis],
+                "boundary_side": boundary_side,
+                "radius": float(face.get("radius") or 0.0),
+                "span": realized_span,
+            }
+        )
+
+    if candidate_faces:
+        best_face = max(candidate_faces, key=lambda item: float(item.get("span") or 0.0))
+        return RequirementClauseInterpretation(
+            clause_id=clause_id,
+            clause_text=clause_text,
+            status=RequirementClauseStatus.VERIFIED,
+            evidence=(
+                f"matched_hinge_face={best_face['face_id']}, "
+                f"hinge_axis={best_face['axis']}, "
+                f"boundary_axis={best_face['boundary_axis']}_{best_face['boundary_side']}, "
+                f"radius={round(float(best_face['radius']), 3)}, "
+                f"span={round(float(best_face['span']), 3)}"
+            ),
+            observation_tags=clause_tags + ["geometry:face_summary", "topology:hinge_face"],
+            decision_hints=[],
+        )
+
+    if explicit_pin_hinge and _topology_face_summaries(bundle):
+        return RequirementClauseInterpretation(
+            clause_id=clause_id,
+            clause_text=clause_text,
+            status=RequirementClauseStatus.CONTRADICTED,
+            evidence="topology_face_scan_found_no_boundary_cylindrical_hinge_face",
+            observation_tags=clause_tags + ["validation:legacy_fail", "geometry:face_summary"],
+            decision_hints=["repair the hinge geometry before finishing"],
+        )
+    return None
+
+
+def _failed_local_feature_clause_requires_more_grounding(
+    *,
+    clause_tags: list[str],
+    failed_checks: list[RequirementCheck],
+    check_index: dict[str, RequirementCheck],
+) -> bool:
+    if "clause:notch_like" not in clause_tags:
+        return False
+    failed_ids = {
+        str(check.check_id or "").strip()
+        for check in failed_checks
+        if str(check.check_id or "").strip()
+    }
+    if not failed_ids:
+        return False
+    generic_notch_failure_ids = {
+        "feature_notch_or_profile_cut",
+        "feature_notch_profile_alignment",
+        "feature_cylindrical_slot_alignment",
+    }
+    if not failed_ids.issubset(generic_notch_failure_ids):
+        return False
+    grounding_check_ids = (
+        "feature_target_face_edit",
+        "feature_target_face_subtractive_merge",
+        "feature_target_face_additive_merge",
+        "feature_notch_profile_alignment",
+        "feature_cylindrical_slot_alignment",
+    )
+    return all(
+        check_index.get(check_id) is None
+        or check_index[check_id].status != RequirementCheckStatus.PASS
+        for check_id in grounding_check_ids
+    )
+
+
+def _interpret_precise_feature_clause(
+    *,
+    clause_id: str,
+    clause_text: str,
+    clause_tags: list[str],
+    check_index: dict[str, RequirementCheck],
+) -> RequirementClauseInterpretation | None:
+    lowered = clause_text.lower()
+    target_face_check = _first_passed_check(
+        check_index,
+        "feature_target_face_edit",
+        "feature_target_face_subtractive_merge",
+        "feature_target_face_additive_merge",
+    )
+
+    if "clause:notch_like" in clause_tags:
+        notch_feature = _first_passed_check(
+            check_index,
+            "feature_notch_or_profile_cut",
+        )
+        notch_alignment = _first_passed_check(
+            check_index,
+            "feature_notch_profile_alignment",
+            "feature_cylindrical_slot_alignment",
+        )
+        if notch_alignment is not None and notch_feature is not None:
+            evidence = _combine_check_evidence(
+                notch_feature,
+                notch_alignment,
+                target_face_check,
+            )
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.VERIFIED,
+                evidence=evidence or str(notch_alignment.evidence or notch_alignment.check_id),
+                observation_tags=clause_tags + ["validation:feature_alignment"],
+                decision_hints=[],
+            )
+        if (
+            notch_feature is not None
+            and target_face_check is not None
+            and any(
+                token in lowered
+                for token in (
+                    "front",
+                    "back",
+                    "left",
+                    "right",
+                    "top",
+                    "bottom",
+                    "side",
+                )
+            )
+        ):
+            evidence = _combine_check_evidence(notch_feature, target_face_check)
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.VERIFIED,
+                evidence=evidence or str(target_face_check.evidence or target_face_check.check_id),
+                observation_tags=clause_tags + ["validation:feature_alignment"],
+                decision_hints=[],
+            )
+
+    if "clause:hole" in clause_tags:
+        hole_feature = _first_passed_check(
+            check_index,
+            "feature_hole",
+            "feature_countersink",
+        )
+        hole_alignment = _first_passed_check(
+            check_index,
+            "feature_hole_position_alignment",
+            "feature_hole_exact_center_set",
+            "feature_local_anchor_alignment",
+            "feature_local_anchor_count_alignment",
+        )
+        if hole_feature is not None and hole_alignment is not None:
+            evidence = _combine_check_evidence(
+                hole_feature,
+                hole_alignment,
+                target_face_check,
+            )
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.VERIFIED,
+                evidence=evidence or str(hole_alignment.evidence or hole_alignment.check_id),
+                observation_tags=clause_tags + ["validation:feature_alignment"],
+                decision_hints=[],
+            )
+        if (
+            hole_feature is not None
+            and target_face_check is not None
+            and any(
+                token in lowered
+                for token in (
+                    "top face",
+                    "bottom face",
+                    "front face",
+                    "back face",
+                    "left face",
+                    "right face",
+                    "top surface",
+                    "bottom surface",
+                    "front side",
+                    "back side",
+                    "left side",
+                    "right side",
+                )
+            )
+        ):
+            evidence = _combine_check_evidence(hole_feature, target_face_check)
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.VERIFIED,
+                evidence=evidence or str(target_face_check.evidence or target_face_check.check_id),
+                observation_tags=clause_tags + ["validation:feature_alignment"],
+                decision_hints=[],
+            )
+
     return None
 
 
@@ -3715,6 +4148,56 @@ def _clause_requires_precise_grounding(text: str) -> bool:
     if any(token in text for token in _SPECIFICITY_TOKENS):
         return True
     return any(token in text for token in ("through the", "top face", "bottom face"))
+
+
+def _precise_grounding_check_ids_for_clause(
+    *,
+    clause_tags: list[str],
+    lowered_text: str,
+) -> tuple[str, ...]:
+    check_ids: list[str] = []
+    if "clause:hole" in clause_tags:
+        check_ids.extend(
+            (
+                "feature_local_anchor_alignment",
+                "feature_local_anchor_count_alignment",
+                "feature_hole_position_alignment",
+                "feature_hole_exact_center_set",
+            )
+        )
+        if "clause:pattern" in clause_tags:
+            check_ids.extend(("feature_pattern", "feature_pattern_seed_alignment"))
+        return tuple(dict.fromkeys(check_ids))
+    if "clause:notch_like" in clause_tags or (
+        "clause:local_feature" in clause_tags and "clause:hole" not in clause_tags
+    ):
+        check_ids.extend(
+            (
+                "feature_target_face_edit",
+                "feature_target_face_subtractive_merge",
+                "feature_target_face_additive_merge",
+                "feature_notch_profile_alignment",
+                "feature_cylindrical_slot_alignment",
+            )
+        )
+        if "clause:pattern" in clause_tags:
+            check_ids.extend(("feature_pattern", "feature_pattern_seed_alignment"))
+        return tuple(dict.fromkeys(check_ids))
+    if "clause:pattern" in clause_tags:
+        return ("feature_pattern", "feature_pattern_seed_alignment")
+    if any(token in lowered_text for token in ("top face", "bottom face", "front face", "back face")):
+        return (
+            "feature_target_face_edit",
+            "feature_target_face_subtractive_merge",
+            "feature_target_face_additive_merge",
+        )
+    return (
+        "feature_local_anchor_alignment",
+        "feature_pattern",
+        "feature_pattern_seed_alignment",
+        "feature_hole_position_alignment",
+        "feature_hole_exact_center_set",
+    )
 
 
 def _project_clause_checks(

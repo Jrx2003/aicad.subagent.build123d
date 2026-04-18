@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,44 @@ _OUTPUT_ARTIFACT_FILENAMES: tuple[str, ...] = (
 )
 
 
+def _candidate_docker_sockets(docker_socket: str | None = None) -> list[str]:
+    candidates: list[str] = []
+
+    if docker_socket:
+        candidates.append(docker_socket)
+
+    docker_host = os.environ.get("DOCKER_HOST", "").strip()
+    if docker_host.startswith("unix://"):
+        candidates.append(docker_host.removeprefix("unix://"))
+
+    candidates.extend(
+        [
+            "/var/run/docker.sock",
+            str(Path.home() / ".docker" / "run" / "docker.sock"),
+        ]
+    )
+
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _describe_docker_connection_error(
+    error: Exception,
+    docker_socket: str | None = None,
+) -> str:
+    candidates = _candidate_docker_sockets(docker_socket=docker_socket)
+    candidate_text = ", ".join(candidates)
+    base = str(error).strip() or repr(error)
+    return (
+        "Docker daemon appears unavailable. "
+        f"Checked candidate sockets: {candidate_text}. "
+        f"Original error: {base}"
+    )
+
+
 def _build_runtime_code(user_code: str) -> str:
     """Wrap user code with Build123d compatibility helpers."""
     prelude = (
@@ -58,8 +97,17 @@ def _build_runtime_code(user_code: str) -> str:
         "            part = candidate.part\n"
         "            if __aicad_has_exportable_solids(part):\n"
         "                return part\n"
-        "        if __aicad_has_exportable_solids(candidate):\n"
+        "        if hasattr(candidate, 'wrapped') and __aicad_has_exportable_solids(candidate):\n"
         "            return candidate\n"
+        "        if hasattr(candidate, 'solids'):\n"
+        "            solids = [solid for solid in list(candidate.solids()) if hasattr(solid, 'wrapped')]\n"
+        "            if len(solids) == 1:\n"
+        "                return solids[0]\n"
+        "            if len(solids) > 1:\n"
+        "                try:\n"
+        "                    return Compound(children=solids)\n"
+        "                except Exception:\n"
+        "                    return Compound(solids)\n"
         "    except Exception:\n"
         "        return None\n"
         "    return None\n"
@@ -94,9 +142,11 @@ def _build_runtime_code(user_code: str) -> str:
     epilogue = (
         "\n"
         "if 'result' in globals():\n"
+        "    result = __aicad_as_exportable(result) or result\n"
         "    __aicad_last_result = result\n"
         "elif __aicad_last_show_object is not None:\n"
-        "    __aicad_last_result = __aicad_last_show_object\n"
+        "    result = __aicad_as_exportable(__aicad_last_show_object) or __aicad_last_show_object\n"
+        "    __aicad_last_result = result\n"
         "__aicad_export_part = __aicad_resolve_export_part()\n"
         "if __aicad_export_part is not None and __aicad_has_exportable_solids(__aicad_export_part):\n"
         "    Path('/output').mkdir(parents=True, exist_ok=True)\n"
@@ -126,6 +176,7 @@ class DockerSandboxRunner:
         self._image = image
         self._memory_limit = memory_limit
         self._cpu_quota = cpu_quota
+        self._docker_socket = docker_socket
 
         # Initialize Docker client
         if docker_socket:
@@ -171,13 +222,21 @@ class DockerSandboxRunner:
 
         except Exception as e:
             logger.exception("sandbox_execution_error", container_name=container_name)
+            error_message = f"Container execution failed: {e}"
+            stderr = str(e)
+            if isinstance(e, FileNotFoundError) or "No such file or directory" in str(e):
+                stderr = _describe_docker_connection_error(
+                    e,
+                    docker_socket=self._docker_socket,
+                )
+                error_message = stderr
             return SandboxResult(
                 success=False,
                 stdout="",
-                stderr=str(e),
+                stderr=stderr,
                 output_files=[],
                 output_file_contents={},
-                error_message=f"Container execution failed: {e}",
+                error_message=error_message,
             )
 
     def _execute_sync(

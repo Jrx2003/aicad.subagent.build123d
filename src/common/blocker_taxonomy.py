@@ -131,6 +131,12 @@ _FAMILY_SPECS: dict[str, dict[str, object]] = {
         "recommended_tools": ["query_kernel_state", "execute_build123d_probe"],
         "repair_lane": "code_repair",
     },
+    "half_shell": {
+        "feature_ids": ["feature.core_geometry"],
+        "validation_check_ids": set(),
+        "recommended_tools": ["query_topology", "query_feature_probes", "query_kernel_state"],
+        "repair_lane": "probe_first",
+    },
     "named_face_local_edit": {
         "feature_ids": ["feature.named_face_local_edit"],
         "validation_check_ids": {

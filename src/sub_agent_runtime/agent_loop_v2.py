@@ -30,6 +30,7 @@ from sub_agent_runtime.feature_graph import (
     initialize_domain_kernel_state,
     sync_domain_kernel_state_from_tool_result,
 )
+from sub_agent_runtime.hallucination import build_run_hallucination_summary
 from sub_agent_runtime.hooks import RuntimeHookManager
 from sub_agent_runtime.skill_pack import (
     recommended_feature_probe_families,
@@ -76,6 +77,15 @@ _CANONICAL_OUTPUT_ARTIFACT_TOOL_NAMES = {
     "execute_build123d",
     "execute_repair_packet",
     "render_view",
+}
+_SKETCH_WINDOW_CONTINUATION_ACTIONS = {
+    "create_sketch",
+    "add_circle",
+    "add_rectangle",
+    "add_polygon",
+    "add_slot",
+    "add_ellipse",
+    "add_path",
 }
 
 
@@ -896,6 +906,7 @@ class IterativeAgentLoopV2:
             forced_policy_chain=run_state.forced_policy_chain,
             feature_probe_count=run_state.feature_probe_count,
             probe_code_count=run_state.probe_code_count,
+            build123d_hallucination=build_run_hallucination_summary(run_state),
             baseline_comparison={},
             failure_cluster=_infer_runtime_failure_cluster(run_state),
             llm_error=run_state.llm_error,
@@ -1635,40 +1646,254 @@ def _determine_turn_tool_policy(
             preferred_probe_families=preferred_probe_families,
         )
 
+    sketch_window_action_type = _latest_successful_apply_action_type_with_open_sketch_window(
+        run_state
+    )
+    if isinstance(sketch_window_action_type, str) and sketch_window_action_type.strip():
+        allowed_tool_names = [
+            name for name in all_tool_names if name in {"apply_cad_action", "query_sketch"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="continue_open_sketch_window_after_apply_action",
+            mode="local_finish",
+            reason=(
+                "The latest successful apply_cad_action opened or extended a sketch window, "
+                "so continue that bounded sketch lane before validation or broader semantic reads."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=_preferred_sketch_window_tools(
+                sketch_window_action_type,
+                all_tool_names=allowed_tool_names,
+            ),
+            preferred_probe_families=preferred_probe_families,
+        )
+
     post_solid_semantic_admission = build_post_solid_semantic_admission_signal(
         run_state,
         max_rounds=max_rounds,
     )
     if isinstance(post_solid_semantic_admission, dict):
-        allowed_tool_names = [
-            name for name in all_tool_names if name in _CODE_FIRST_ESCAPE_TOOL_SET
-        ]
-        blocked_tool_names = [
-            name for name in all_tool_names if name not in _CODE_FIRST_ESCAPE_TOOL_SET
-        ]
         remaining_rounds = int(post_solid_semantic_admission.get("remaining_rounds", 0) or 0)
         unsatisfied_feature_count = int(
             post_solid_semantic_admission.get("unsatisfied_feature_count", 0) or 0
         )
+        direct_code_escape = bool(post_solid_semantic_admission.get("direct_code_escape"))
+        if direct_code_escape:
+            allowed_tool_names = [
+                name for name in all_tool_names if name in _CODE_FIRST_ESCAPE_TOOL_SET
+            ]
+            blocked_tool_names = [
+                name for name in all_tool_names if name not in _CODE_FIRST_ESCAPE_TOOL_SET
+            ]
+            return TurnToolPolicy(
+                round_no=round_no,
+                policy_id="code_first_after_feature_budget_risk",
+                mode="code_first_escape",
+                reason=(
+                    "A structured chain already produced a stable solid, but only "
+                    f"{remaining_rounds} rounds remain for {unsatisfied_feature_count} unsatisfied "
+                    "features. Prefer execute_build123d over another local-feature continuation."
+                ),
+                allowed_tool_names=allowed_tool_names,
+                blocked_tool_names=blocked_tool_names,
+                preferred_tool_names=[
+                    "execute_build123d",
+                    "query_kernel_state",
+                ],
+                preferred_probe_families=preferred_probe_families,
+            )
+
+        allowed_tool_names = [
+            name for name in all_tool_names if name in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
         return TurnToolPolicy(
             round_no=round_no,
-            policy_id="code_first_after_feature_budget_risk",
-            mode="code_first_escape",
+            policy_id="semantic_admission_after_first_stable_solid",
+            mode="graph_refresh",
             reason=(
-                "A structured chain already produced a stable solid, but only "
-                f"{remaining_rounds} rounds remain for {unsatisfied_feature_count} unsatisfied "
-                "features. Prefer execute_build123d over another local-feature continuation."
+                "A structured chain already produced the first stable solid, and the remaining "
+                f"{unsatisfied_feature_count} unsatisfied features still have {remaining_rounds} "
+                "rounds of budget. Refresh semantic evidence before reopening whole-part code."
             ),
             allowed_tool_names=allowed_tool_names,
             blocked_tool_names=blocked_tool_names,
             preferred_tool_names=[
-                "execute_build123d",
                 "query_kernel_state",
+                "query_feature_probes",
             ],
             preferred_probe_families=preferred_probe_families,
         )
 
+    latest_successful_structured_write_turn = run_state.latest_successful_write_turn
+    if (
+        latest_successful_structured_write_turn is not None
+        and latest_successful_structured_write_turn.write_tool_name == "apply_cad_action"
+        and _successful_local_finish_semantic_refresh_needs_validation(
+            run_state,
+            write_round=latest_successful_structured_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name in {"validate_requirement"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="validate_after_local_finish_semantic_refresh",
+            mode="validation_check",
+            reason=(
+                "A successful topology-aware local finish already happened, and subsequent semantic "
+                "reads refreshed the geometry/topology evidence. Re-run validate_requirement once "
+                "before spending another local write on potentially stale blocker assumptions."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["validate_requirement"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_successful_structured_write_turn is not None
+        and latest_successful_structured_write_turn.write_tool_name == "apply_cad_action"
+        and max(max_rounds - len(run_state.turns), 0) <= 1
+        and any(
+            name in all_tool_names for name in {"validate_requirement", "finish_run"}
+        )
+        and _local_finish_validation_evidence_gap_needs_read_refresh(
+            run_state,
+            write_round=latest_successful_structured_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+    ):
+        allowed_tool_names, preferred_tool_names = (
+            _local_finish_validation_evidence_gap_closure_tools_for_turn(
+                run_state,
+                all_tool_names=all_tool_names,
+            )
+        )
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="closure_refresh_after_local_finish_validation_evidence_gap_under_budget",
+            mode="completion_judge",
+            reason=(
+                "The latest post-local-finish validation cleared blockers but still needs "
+                "targeted geometry/topology evidence, and only one round remains. Keep one "
+                "focused refresh open, but also allow validate_requirement or finish_run in "
+                "the same turn so the final round can consume that evidence instead of ending "
+                "on a read-only stall."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=preferred_tool_names,
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_successful_structured_write_turn is not None
+        and latest_successful_structured_write_turn.write_tool_name == "apply_cad_action"
+        and _local_finish_validation_evidence_gap_needs_read_refresh(
+            run_state,
+            write_round=latest_successful_structured_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+    ):
+        allowed_tool_names = _local_finish_validation_evidence_refresh_tools_for_turn(
+            run_state,
+            all_tool_names=all_tool_names,
+        )
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="read_refresh_after_local_finish_validation_evidence_gap",
+            mode="graph_refresh",
+            reason=(
+                "The latest post-local-finish validation cleared blockers but still requests "
+                "more geometry/topology evidence. Refresh that evidence once before reopening "
+                "another local write or code-first escape."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=allowed_tool_names,
+            preferred_probe_families=preferred_probe_families,
+        )
+
     latest_structured_write_turn = run_state.latest_write_turn
+    if (
+        latest_structured_write_turn is not None
+        and latest_structured_write_turn.write_tool_name == "apply_cad_action"
+        and _local_finish_contract_failure_should_retry_with_existing_topology_refs(
+            run_state,
+            previous_tool_failure_summary=previous_tool_failure_summary,
+            all_tool_names=all_tool_names,
+        )
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name in {"apply_cad_action"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="retry_local_finish_with_existing_topology_refs",
+            mode="local_finish",
+            reason=(
+                "The latest apply_cad_action failed on a local action contract, but the same "
+                "geometry state still has actionable query_topology refs in evidence. Retry one "
+                "bounded apply_cad_action with those exact refs before opening broader reads."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["apply_cad_action"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_structured_write_turn is not None
+        and latest_structured_write_turn.write_tool_name == "apply_cad_action"
+        and _local_finish_contract_failure_should_retry_after_topology_refresh(
+            run_state,
+            previous_tool_failure_summary=previous_tool_failure_summary,
+            all_tool_names=all_tool_names,
+        )
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name in {"apply_cad_action"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="retry_local_finish_after_topology_contract_repair",
+            mode="local_finish",
+            reason=(
+                "The latest apply_cad_action failed on a local action contract, and a subsequent "
+                "query_topology already returned actionable refs. Consume those refs with one "
+                "explicit apply_cad_action retry before abandoning the bounded local-finishing lane."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["apply_cad_action"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
     if (
         latest_structured_write_turn is not None
         and latest_structured_write_turn.write_tool_name == "apply_cad_action"
@@ -1683,6 +1908,55 @@ def _determine_turn_tool_policy(
             for node in run_state.feature_graph.nodes.values()
             if node.kind == "feature" and node.status not in {"satisfied", "resolved"}
         ]
+        if unsatisfied_feature_ids and (
+            _latest_feature_probes_recommend_apply_local_finish(run_state)
+            or _latest_feature_probes_recommend_local_finish(run_state)
+        ):
+            if _latest_topology_evidence_is_actionable(run_state):
+                allowed_tool_names = [
+                    name for name in all_tool_names if name in {"apply_cad_action"}
+                ]
+                blocked_tool_names = [
+                    name for name in all_tool_names if name not in set(allowed_tool_names)
+                ]
+                return TurnToolPolicy(
+                    round_no=round_no,
+                    policy_id="continue_local_finish_after_semantic_refresh",
+                    mode="local_finish",
+                    reason=(
+                        "A successful local-finish write already happened, and the latest semantic "
+                        "refresh still narrows the remaining work to topology-anchored local edits. "
+                        "Consume the freshest local refs before reopening whole-part code."
+                    ),
+                    allowed_tool_names=allowed_tool_names,
+                    blocked_tool_names=blocked_tool_names,
+                    preferred_tool_names=["apply_cad_action"],
+                    preferred_probe_families=preferred_probe_families,
+                )
+            if "query_topology" in all_tool_names:
+                allowed_tool_names = [
+                    name
+                    for name in all_tool_names
+                    if name in {"apply_cad_action", "query_topology", "query_kernel_state"}
+                ]
+                blocked_tool_names = [
+                    name for name in all_tool_names if name not in set(allowed_tool_names)
+                ]
+                return TurnToolPolicy(
+                    round_no=round_no,
+                    policy_id="refresh_topology_for_continued_local_finish_after_semantic_refresh",
+                    mode="local_finish",
+                    reason=(
+                        "A successful local-finish write already happened, but the following semantic "
+                        "refresh still leaves topology-sensitive local work unresolved and the latest "
+                        "topology refs are stale or missing. Refresh query_topology once and stay on "
+                        "the local-finish lane instead of reopening whole-part code."
+                    ),
+                    allowed_tool_names=allowed_tool_names,
+                    blocked_tool_names=blocked_tool_names,
+                    preferred_tool_names=["query_topology", "apply_cad_action"],
+                    preferred_probe_families=preferred_probe_families,
+                )
         if unsatisfied_feature_ids:
             allowed_tool_names = [
                 name for name in all_tool_names if name in _CODE_FIRST_ESCAPE_TOOL_SET
@@ -1762,6 +2036,104 @@ def _determine_turn_tool_policy(
     ):
         latest_code_write_turn = None
 
+    latest_successful_code_write_turn = run_state.latest_successful_write_turn
+    if (
+        latest_successful_code_write_turn is None
+        or latest_successful_code_write_turn.write_tool_name != "execute_build123d"
+    ):
+        latest_successful_code_write_turn = None
+
+    if (
+        latest_successful_code_write_turn is not None
+        and run_state.consecutive_inspection_only_rounds < 2
+        and not _is_successful_validation(latest_validation)
+        and _local_finish_should_force_apply_after_topology_targeting(
+            run_state,
+            write_round=latest_successful_code_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_successful_code_write_turn.round_no,
+            tool_names={"apply_cad_action"},
+        )
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name in {"apply_cad_action"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason=(
+                "The latest semantic refresh already resolved concrete topology refs for the local "
+                "edit target, so the next turn should consume those refs with apply_cad_action "
+                "instead of reopening another topology read."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["apply_cad_action"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_successful_code_write_turn is not None
+        and run_state.consecutive_inspection_only_rounds < 2
+        and not _is_successful_validation(latest_validation)
+        and _local_finish_is_actionable_after_semantic_refresh(
+            run_state,
+            write_round=latest_successful_code_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_successful_code_write_turn.round_no,
+            tool_names={"apply_cad_action"},
+        )
+    ):
+        allowed_tool_names = [
+            name
+            for name in all_tool_names
+            if name
+            in {
+                "apply_cad_action",
+                "query_topology",
+                "query_kernel_state",
+                "validate_requirement",
+                "finish_run",
+            }
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="local_finish_after_semantic_refresh_from_code_write",
+            mode="local_finish",
+            reason=(
+                "The latest semantic refresh already produced fresh topology refs, and the feature "
+                "probes explicitly recommend topology-anchored local finishing. Do the targeted "
+                "apply_cad_action step now instead of burning another validation-only closure turn."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=[
+                name
+                for name in (
+                    "apply_cad_action",
+                    "query_topology",
+                    "validate_requirement",
+                    "query_kernel_state",
+                    "finish_run",
+                )
+                if name in allowed_tool_names
+            ],
+            preferred_probe_families=preferred_probe_families,
+        )
+
     if (
         latest_code_write_turn is not None
         and not latest_validation_blockers
@@ -1777,13 +2149,14 @@ def _determine_turn_tool_policy(
             min_validations=2,
         )
     ):
-        allowed_tool_names = [
-            name for name in all_tool_names if name in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
-        ]
+        allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+            run_state,
+            all_tool_names=all_tool_names,
+        )
         blocked_tool_names = [
             name
             for name in all_tool_names
-            if name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+            if name not in set(allowed_tool_names)
         ]
         preferred_tools = _preferred_validation_assessment_tools_for_turn(
             run_state,
@@ -1820,11 +2193,42 @@ def _determine_turn_tool_policy(
                 "query_kernel_state",
                 "query_feature_probes",
                 "execute_build123d_probe",
+                "query_topology",
             },
         )
     ):
         actionable_kernel_patch = _latest_actionable_kernel_patch(run_state)
         if actionable_kernel_patch is not None:
+            if _kernel_patch_should_yield_semantic_refresh(
+                actionable_kernel_patch,
+                latest_validation,
+            ):
+                allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+                    run_state,
+                    all_tool_names=all_tool_names,
+                )
+                blocked_tool_names = [
+                    name
+                    for name in all_tool_names
+                    if name not in set(allowed_tool_names)
+                ]
+                return TurnToolPolicy(
+                    round_no=round_no,
+                    policy_id="semantic_refresh_before_under_grounded_kernel_patch_for_local_feature_gap",
+                    mode="graph_refresh",
+                    reason=(
+                        "The domain kernel synthesized a repair patch, but the current packet is still "
+                        "under-grounded for a localized feature family. Refresh topology/feature evidence "
+                        "before reopening a whole-part repair lane."
+                    ),
+                    allowed_tool_names=allowed_tool_names,
+                    blocked_tool_names=blocked_tool_names,
+                    preferred_tool_names=_preferred_validation_assessment_tools_for_turn(
+                        run_state,
+                        all_tool_names=allowed_tool_names,
+                    ),
+                    preferred_probe_families=preferred_probe_families,
+                )
             return _turn_policy_from_actionable_kernel_patch(
                 round_no=round_no,
                 all_tool_names=all_tool_names,
@@ -1837,13 +2241,14 @@ def _determine_turn_tool_policy(
                 ),
                 patch=actionable_kernel_patch,
             )
-        allowed_tool_names = [
-            name for name in all_tool_names if name in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
-        ]
+        allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+            run_state,
+            all_tool_names=all_tool_names,
+        )
         blocked_tool_names = [
             name
             for name in all_tool_names
-            if name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+            if name not in set(allowed_tool_names)
         ]
         preferred_tools = _preferred_validation_assessment_tools_for_turn(
             run_state,
@@ -1882,14 +2287,85 @@ def _determine_turn_tool_policy(
             after_round=latest_code_write_turn.round_no,
             tool_names={"validate_requirement", "finish_run"},
         )
+        and _semantic_refresh_followup_should_preempt_closure_validation(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+    ):
+        allowed_tool_names = _post_semantic_refresh_followup_tools_for_turn(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="followup_after_semantic_refresh_before_closure_validation_from_code_write",
+            mode=(
+                "local_finish"
+                if "apply_cad_action" in allowed_tool_names
+                else "graph_refresh"
+            ),
+            reason=(
+                "The latest validation still has an evidence gap, and the fresh semantic refresh "
+                "already recommends concrete follow-up tools. Consume that grounded follow-up lane "
+                "before reopening closure validation."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=allowed_tool_names,
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_code_write_turn is not None
+        and not latest_validation_blockers
+        and not _is_successful_validation(latest_validation)
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and _latest_validation_prefers_semantic_refresh(latest_validation)
+        and _has_successful_semantic_refresh_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"validate_requirement", "finish_run"},
+        )
     ):
         allowed_tool_names = [
             name
             for name in all_tool_names
             if name in {"validate_requirement", "finish_run", "query_kernel_state"}
         ]
+        if (
+            _latest_validation_prefers_topology_refresh(latest_validation)
+            and "query_topology" in all_tool_names
+            and not _has_tool_turn_since_round(
+                run_state,
+                after_round=latest_code_write_turn.round_no,
+                tool_names={"query_topology"},
+            )
+        ):
+            allowed_tool_names.append("query_topology")
         blocked_tool_names = [
             name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        preferred_tool_names = [
+            name
+            for name in (
+                "query_topology",
+                "validate_requirement",
+                "finish_run",
+                "query_kernel_state",
+            )
+            if name in allowed_tool_names
         ]
         return TurnToolPolicy(
             round_no=round_no,
@@ -1902,11 +2378,7 @@ def _determine_turn_tool_policy(
             ),
             allowed_tool_names=allowed_tool_names,
             blocked_tool_names=blocked_tool_names,
-            preferred_tool_names=[
-                name
-                for name in ("validate_requirement", "finish_run", "query_kernel_state")
-                if name in allowed_tool_names
-            ],
+            preferred_tool_names=preferred_tool_names,
             preferred_probe_families=preferred_probe_families,
         )
 
@@ -1928,16 +2400,65 @@ def _determine_turn_tool_policy(
                 "query_kernel_state",
                 "query_feature_probes",
                 "execute_build123d_probe",
+                "query_topology",
+            },
+        )
+        and max(max_rounds - len(run_state.turns), 0) <= 1
+    ):
+        allowed_tool_names = [
+            name
+            for name in all_tool_names
+            if name in {"execute_build123d", "query_kernel_state"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="code_repair_last_round_after_validation_evidence_gap",
+            mode="code_first_repair",
+            reason=(
+                "A fresh execute_build123d write already reduced the blocker set, but only "
+                "one round remains and the latest validation still mixes concrete blockers "
+                "with evidence gaps. Spend the final turn on a bounded code repair instead "
+                "of a read-only semantic refresh."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["execute_build123d", "query_kernel_state"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_code_write_turn is not None
+        and latest_validation_blockers
+        and not _is_successful_validation(latest_validation)
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and not _blockers_are_local_structured_tail(latest_validation_blockers)
+        and _latest_validation_prefers_semantic_refresh(latest_validation)
+        and not _latest_validation_has_actionable_single_blocker(latest_validation)
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={
+                "query_kernel_state",
+                "query_feature_probes",
+                "execute_build123d_probe",
+                "query_topology",
             },
         )
     ):
-        allowed_tool_names = [
-            name for name in all_tool_names if name in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
-        ]
+        allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+            run_state,
+            all_tool_names=all_tool_names,
+        )
         blocked_tool_names = [
             name
             for name in all_tool_names
-            if name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+            if name not in set(allowed_tool_names)
         ]
         return TurnToolPolicy(
             round_no=round_no,
@@ -1950,8 +2471,168 @@ def _determine_turn_tool_policy(
             ),
             allowed_tool_names=allowed_tool_names,
             blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=_preferred_validation_assessment_tools_for_turn(
+                run_state,
+                all_tool_names=allowed_tool_names,
+            ),
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_code_write_turn is not None
+        and latest_validation_blockers
+        and not bool(latest_validation.get("is_complete"))
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and not _blockers_are_local_structured_tail(latest_validation_blockers)
+        and _has_successful_tool_result_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"query_feature_probes"},
+        )
+        and _latest_feature_probes_have_general_geometry_grounding_gap(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+        )
+        and not _latest_feature_probes_allow_topology_refresh_despite_general_geometry_gap(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"query_topology", "apply_cad_action", "execute_build123d"},
+        )
+    ):
+        actionable_kernel_patch = _latest_actionable_kernel_patch(run_state)
+        if actionable_kernel_patch is not None:
+            return _turn_policy_from_actionable_kernel_patch(
+                round_no=round_no,
+                all_tool_names=all_tool_names,
+                policy_id="code_repair_after_feature_probe_detected_whole_part_geometry_gap",
+                reason=(
+                    "The latest feature probe evidence shows that the overall part count or bounding "
+                    "box is still wrong, so stay on the whole-part repair lane instead of escalating "
+                    "to topology targeting."
+                ),
+                patch=actionable_kernel_patch,
+            )
+        allowed_tool_names = [
+            name for name in all_tool_names if name == "execute_build123d"
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="code_repair_after_feature_probe_detected_whole_part_geometry_gap",
+            mode="code_repair",
+            reason=(
+                "The latest feature probe evidence shows that the overall part count or bounding box "
+                "is still wrong, so stay on the whole-part repair lane instead of escalating to "
+                "topology targeting."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["execute_build123d"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_code_write_turn is not None
+        and latest_validation_blockers
+        and not bool(latest_validation.get("is_complete"))
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and not _blockers_are_local_structured_tail(latest_validation_blockers)
+        and _latest_feature_probes_prefer_topology_refresh(run_state)
+        and _has_successful_tool_result_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"query_feature_probes"},
+        )
+        and _has_successful_tool_result_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"query_kernel_state"},
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"query_topology", "apply_cad_action"},
+        )
+        and "query_topology" in all_tool_names
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name == "query_topology"
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="force_query_topology_after_feature_probe_kernel_stall",
+            mode="graph_refresh",
+            reason=(
+                "Feature probes already established that the blocked family needs topology host "
+                "selection, and a post-probe query_kernel_state refresh has already been spent "
+                "without producing topology refs. Exit the semantic stall now and force one "
+                "query_topology turn before reopening more kernel refresh or whole-part repair."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["query_topology"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_code_write_turn is not None
+        and latest_validation_blockers
+        and not bool(latest_validation.get("is_complete"))
+        and _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_code_write_turn.round_no,
+        )
+        and not _blockers_are_local_structured_tail(latest_validation_blockers)
+        and _latest_feature_probes_prefer_topology_refresh(run_state)
+        and _has_successful_tool_result_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"query_feature_probes"},
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_code_write_turn.round_no,
+            tool_names={"query_topology", "apply_cad_action"},
+        )
+    ):
+        allowed_tool_names = [
+            name
+            for name in all_tool_names
+            if name in {"query_kernel_state", "query_topology"}
+        ]
+        blocked_tool_names = [
+            name
+            for name in all_tool_names
+            if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="topology_refresh_after_feature_probe_assessment_from_code_write",
+            mode="graph_refresh",
+            reason=(
+                "A successful feature-probe assessment already narrowed the next step to topology "
+                "host selection. Refresh query_topology now instead of spending another turn "
+                "repeating feature probes."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
             preferred_tool_names=[
-                "query_feature_probes",
+                "query_topology",
                 "query_kernel_state",
             ],
             preferred_probe_families=preferred_probe_families,
@@ -2011,9 +2692,7 @@ def _determine_turn_tool_policy(
         and not _blockers_are_local_structured_tail(latest_validation_blockers)
     ):
         allowed_tool_names = [
-            name
-            for name in all_tool_names
-            if name in {"execute_build123d", "query_kernel_state"}
+            name for name in all_tool_names if name == "execute_build123d"
         ]
         blocked_tool_names = [
             name for name in all_tool_names if name not in set(allowed_tool_names)
@@ -2029,10 +2708,7 @@ def _determine_turn_tool_policy(
             ),
             allowed_tool_names=allowed_tool_names,
             blocked_tool_names=blocked_tool_names,
-            preferred_tool_names=[
-                "execute_build123d",
-                "query_kernel_state",
-            ],
+            preferred_tool_names=["execute_build123d"],
             preferred_probe_families=preferred_probe_families,
         )
 
@@ -2063,6 +2739,76 @@ def _determine_turn_tool_policy(
     ):
         actionable_kernel_patch = _latest_actionable_kernel_patch(run_state)
         if actionable_kernel_patch is not None:
+            if _kernel_patch_should_yield_semantic_refresh(
+                actionable_kernel_patch,
+                latest_validation,
+            ):
+                allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+                    run_state,
+                    all_tool_names=all_tool_names,
+                )
+                blocked_tool_names = [
+                    name
+                    for name in all_tool_names
+                    if name not in set(allowed_tool_names)
+                ]
+                return TurnToolPolicy(
+                    round_no=round_no,
+                    policy_id="semantic_refresh_before_under_grounded_kernel_patch_for_local_feature_gap",
+                    mode="graph_refresh",
+                    reason=(
+                        "The latest kernel patch is still under-grounded for a localized feature family, "
+                        "so repeated validation blockers should trigger a semantic refresh instead of "
+                        "another broad rewrite."
+                    ),
+                    allowed_tool_names=allowed_tool_names,
+                    blocked_tool_names=blocked_tool_names,
+                    preferred_tool_names=_preferred_validation_assessment_tools_for_turn(
+                        run_state,
+                        all_tool_names=allowed_tool_names,
+                    ),
+                    preferred_probe_families=preferred_probe_families,
+                )
+            if _kernel_patch_should_yield_feature_probe_assessment(
+                actionable_kernel_patch,
+                latest_validation,
+                run_state=run_state,
+            ):
+                allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+                    run_state,
+                    all_tool_names=all_tool_names,
+                )
+                blocked_tool_names = [
+                    name
+                    for name in all_tool_names
+                    if name not in set(allowed_tool_names)
+                ]
+                preferred_tool_names = _preferred_validation_assessment_tools_for_turn(
+                    run_state,
+                    all_tool_names=allowed_tool_names,
+                )
+                if (
+                    "query_feature_probes" in allowed_tool_names
+                    and "query_feature_probes" not in preferred_tool_names
+                ):
+                    preferred_tool_names = [
+                        "query_feature_probes",
+                        *preferred_tool_names,
+                    ]
+                return TurnToolPolicy(
+                    round_no=round_no,
+                    policy_id="feature_probe_assessment_after_repeated_validation_blocker_from_code_write",
+                    mode="graph_refresh",
+                    reason=(
+                        "Repeated successful whole-part rebuilds are still blocked on topology-sensitive "
+                        "local families, but the current actionable kernel patch is still broad whole-part "
+                        "repair guidance. Refresh family-specific probe evidence before repeating another rebuild."
+                    ),
+                    allowed_tool_names=allowed_tool_names,
+                    blocked_tool_names=blocked_tool_names,
+                    preferred_tool_names=preferred_tool_names,
+                    preferred_probe_families=preferred_probe_families,
+                )
             return _turn_policy_from_actionable_kernel_patch(
                 round_no=round_no,
                 all_tool_names=all_tool_names,
@@ -2122,6 +2868,76 @@ def _determine_turn_tool_policy(
     ):
         actionable_kernel_patch = _latest_actionable_kernel_patch(run_state)
         if actionable_kernel_patch is not None:
+            if _kernel_patch_should_yield_semantic_refresh(
+                actionable_kernel_patch,
+                latest_validation,
+            ):
+                allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+                    run_state,
+                    all_tool_names=all_tool_names,
+                )
+                blocked_tool_names = [
+                    name
+                    for name in all_tool_names
+                    if name not in set(allowed_tool_names)
+                ]
+                return TurnToolPolicy(
+                    round_no=round_no,
+                    policy_id="semantic_refresh_before_under_grounded_kernel_patch_for_local_feature_gap",
+                    mode="graph_refresh",
+                    reason=(
+                        "Validation still asks for localized geometry/topology evidence, and the latest "
+                        "kernel patch does not yet carry executable anchors. Refresh semantic evidence "
+                        "before applying another whole-part repair."
+                    ),
+                    allowed_tool_names=allowed_tool_names,
+                    blocked_tool_names=blocked_tool_names,
+                    preferred_tool_names=_preferred_validation_assessment_tools_for_turn(
+                        run_state,
+                        all_tool_names=allowed_tool_names,
+                    ),
+                    preferred_probe_families=preferred_probe_families,
+                )
+            if _kernel_patch_should_yield_feature_probe_assessment(
+                actionable_kernel_patch,
+                latest_validation,
+                run_state=run_state,
+            ):
+                allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+                    run_state,
+                    all_tool_names=all_tool_names,
+                )
+                blocked_tool_names = [
+                    name
+                    for name in all_tool_names
+                    if name not in set(allowed_tool_names)
+                ]
+                preferred_tool_names = _preferred_validation_assessment_tools_for_turn(
+                    run_state,
+                    all_tool_names=allowed_tool_names,
+                )
+                if (
+                    "query_feature_probes" in allowed_tool_names
+                    and "query_feature_probes" not in preferred_tool_names
+                ):
+                    preferred_tool_names = [
+                        "query_feature_probes",
+                        *preferred_tool_names,
+                    ]
+                return TurnToolPolicy(
+                    round_no=round_no,
+                    policy_id="feature_probe_assessment_before_actionable_kernel_patch_repair",
+                    mode="graph_refresh",
+                    reason=(
+                        "The latest successful whole-part write is blocked on topology-sensitive local "
+                        "feature families, so refresh family-specific probe evidence before committing "
+                        "to another whole-part repair."
+                    ),
+                    allowed_tool_names=allowed_tool_names,
+                    blocked_tool_names=blocked_tool_names,
+                    preferred_tool_names=preferred_tool_names,
+                    preferred_probe_families=preferred_probe_families,
+                )
             return _turn_policy_from_actionable_kernel_patch(
                 round_no=round_no,
                 all_tool_names=all_tool_names,
@@ -2165,6 +2981,130 @@ def _determine_turn_tool_policy(
                 or previous_tool_failure_summary.get("failure_kind")
                 or ""
             ).strip()
+            concrete_code_failure_kinds = {
+                "execute_build123d_api_lint_failure",
+                "execute_build123d_python_syntax_failure",
+                "execute_build123d_curve_api_failure",
+                "execute_build123d_sweep_profile_recipe_failure",
+                "execute_build123d_boolean_shape_api_failure",
+                "execute_build123d_loft_wire_recipe_failure",
+                "execute_build123d_selector_api_failure",
+                "execute_build123d_selector_failure",
+            }
+            if same_tool_failure_count == 1 and effective_failure_kind in concrete_code_failure_kinds:
+                if (
+                    "query_topology" in all_tool_names
+                    and not _latest_failed_code_sequence_is_artifactless(run_state)
+                    and _latest_feature_probes_prefer_topology_refresh(run_state)
+                ):
+                    allowed_tool_names = [
+                        name
+                        for name in all_tool_names
+                        if name in {"query_topology", "query_kernel_state"}
+                    ]
+                    blocked_tool_names = [
+                        name for name in all_tool_names if name not in set(allowed_tool_names)
+                    ]
+                    return TurnToolPolicy(
+                        round_no=round_no,
+                        policy_id="topology_refresh_after_first_concrete_code_failure",
+                        mode="graph_refresh",
+                        reason=(
+                            "The latest execute_build123d failure is a concrete Build123d contract "
+                            "problem, but the freshest feature-probe evidence also says the blocked "
+                            "family needs topology host selection. Refresh query_topology once before "
+                            "reopening another whole-part rewrite so the next repair lane is narrowed "
+                            "against real host-face or edge evidence first."
+                        ),
+                        allowed_tool_names=allowed_tool_names,
+                        blocked_tool_names=blocked_tool_names,
+                        preferred_tool_names=[
+                            "query_topology",
+                            "query_kernel_state",
+                        ],
+                        preferred_probe_families=preferred_probe_families,
+                    )
+                allowed_tool_names = [
+                    name
+                    for name in all_tool_names
+                    if name in {"execute_build123d", "query_kernel_state"}
+                ]
+                blocked_tool_names = [
+                    name for name in all_tool_names if name not in {"execute_build123d", "query_kernel_state"}
+                ]
+                return TurnToolPolicy(
+                    round_no=round_no,
+                    policy_id="code_repair_after_first_concrete_code_failure",
+                    mode="code_first_repair",
+                    reason=(
+                        "The latest execute_build123d failure already names a concrete Build123d "
+                        "builder/API contract problem. Repair the code path directly, or use "
+                        "query_kernel_state to refresh the repair lane, instead of opening a "
+                        "probe-first detour."
+                    ),
+                    allowed_tool_names=allowed_tool_names,
+                    blocked_tool_names=blocked_tool_names,
+                    preferred_tool_names=[
+                        "execute_build123d",
+                        "query_kernel_state",
+                    ],
+                    preferred_probe_families=preferred_probe_families,
+                )
+            if same_tool_failure_count >= 2:
+                actionable_refresh = _latest_actionable_semantic_refresh_since_failed_write(
+                    run_state,
+                    failed_write_round=latest_code_write_turn.round_no,
+                )
+                if actionable_refresh is not None and actionable_refresh["repair_lane"] == "local_finish":
+                    if _local_finish_should_force_apply_after_topology_targeting(
+                        run_state,
+                        write_round=latest_code_write_turn.round_no,
+                        all_tool_names=all_tool_names,
+                    ):
+                        allowed_tool_names = [
+                            name for name in all_tool_names if name in {"apply_cad_action"}
+                        ]
+                        blocked_tool_names = [
+                            name for name in all_tool_names if name not in set(allowed_tool_names)
+                        ]
+                        return TurnToolPolicy(
+                            round_no=round_no,
+                            policy_id="apply_local_finish_after_actionable_feature_probe_refresh",
+                            mode="local_finish",
+                            reason=(
+                                "Repeated code failures already triggered a successful semantic refresh, "
+                                "and that refresh plus the latest topology read now provide actionable "
+                                "local refs. Consume those refs with apply_cad_action instead of "
+                                "reopening another topology read."
+                            ),
+                            allowed_tool_names=allowed_tool_names,
+                            blocked_tool_names=blocked_tool_names,
+                            preferred_tool_names=["apply_cad_action"],
+                            preferred_probe_families=actionable_refresh["families"],
+                        )
+                    allowed_tool_names = [
+                        name
+                        for name in all_tool_names
+                        if name in {"apply_cad_action", "query_topology", "query_kernel_state"}
+                    ]
+                    blocked_tool_names = [
+                        name for name in all_tool_names if name not in set(allowed_tool_names)
+                    ]
+                    return TurnToolPolicy(
+                        round_no=round_no,
+                        policy_id="local_finish_after_actionable_feature_probe_refresh",
+                        mode="local_finish",
+                        reason=(
+                            "Repeated execute_build123d repairs already triggered a successful semantic "
+                            "refresh, and that refresh explicitly narrowed the next step to topology-"
+                            "anchored local finishing. Promote the local-finish lane directly instead "
+                            "of reopening another whole-part rewrite."
+                        ),
+                        allowed_tool_names=allowed_tool_names,
+                        blocked_tool_names=blocked_tool_names,
+                        preferred_tool_names=["query_topology", "apply_cad_action"],
+                        preferred_probe_families=actionable_refresh["families"],
+                    )
             repeated_code_failure_requires_probe = requirement_prefers_code_first_family(
                 requirements=run_state.requirements,
                 latest_validation=run_state.latest_validation,
@@ -2178,16 +3118,6 @@ def _determine_turn_tool_policy(
                     failed_write_round=latest_code_write_turn.round_no,
                 )
                 artifactless_failure = _latest_failed_code_sequence_is_artifactless(run_state)
-                concrete_code_failure_kinds = {
-                    "execute_build123d_api_lint_failure",
-                    "execute_build123d_python_syntax_failure",
-                    "execute_build123d_curve_api_failure",
-                    "execute_build123d_sweep_profile_recipe_failure",
-                    "execute_build123d_boolean_shape_api_failure",
-                    "execute_build123d_loft_wire_recipe_failure",
-                    "execute_build123d_selector_api_failure",
-                    "execute_build123d_selector_failure",
-                }
                 if artifactless_failure and effective_failure_kind in concrete_code_failure_kinds:
                     allowed_tool_names = [
                         name for name in all_tool_names if name in _CODE_FIRST_ESCAPE_TOOL_SET
@@ -2335,6 +3265,38 @@ def _determine_turn_tool_policy(
                         ],
                         preferred_probe_families=preferred_probe_families,
                     )
+                if (
+                    artifactless_failure
+                    and _has_successful_non_persisted_probe_turn_since_failed_write(
+                        run_state,
+                        failed_write_round=latest_code_write_turn.round_no,
+                    )
+                    and not _has_semantic_refresh_turn_since_failed_write(
+                        run_state,
+                        failed_write_round=latest_code_write_turn.round_no,
+                    )
+                ):
+                    allowed_tool_names = [
+                        name for name in all_tool_names if name == "query_kernel_state"
+                    ]
+                    blocked_tool_names = [
+                        name for name in all_tool_names if name not in {"query_kernel_state"}
+                    ]
+                    return TurnToolPolicy(
+                        round_no=round_no,
+                        policy_id="kernel_refresh_after_successful_artifactless_probe",
+                        mode="semantic_refresh",
+                        reason=(
+                            "A successful execute_build123d_probe already captured the artifactless "
+                            "failure surface. Close the probe chain now with query_kernel_state so "
+                            "the next turn can reopen a targeted repair lane instead of spending "
+                            "another round on probe-only diagnostics."
+                        ),
+                        allowed_tool_names=allowed_tool_names,
+                        blocked_tool_names=blocked_tool_names,
+                        preferred_tool_names=["query_kernel_state"],
+                        preferred_probe_families=preferred_probe_families,
+                    )
                 if not _has_semantic_refresh_turn_since_failed_write(
                     run_state,
                     failed_write_round=latest_code_write_turn.round_no,
@@ -2385,10 +3347,12 @@ def _determine_turn_tool_policy(
                     failed_write_round=latest_code_write_turn.round_no,
                 ):
                     allowed_tool_names = [
-                        name for name in all_tool_names if name in _CODE_FIRST_ESCAPE_TOOL_SET
+                        name
+                        for name in all_tool_names
+                        if name in {"execute_build123d", "query_kernel_state"}
                     ]
                     blocked_tool_names = [
-                        name for name in all_tool_names if name not in _CODE_FIRST_ESCAPE_TOOL_SET
+                        name for name in all_tool_names if name not in set(allowed_tool_names)
                     ]
                     return TurnToolPolicy(
                         round_no=round_no,
@@ -2463,6 +3427,121 @@ def _determine_turn_tool_policy(
     if (
         latest_successful_write_turn is not None
         and run_state.consecutive_inspection_only_rounds >= 2
+        and _local_finish_should_force_apply_after_topology_targeting(
+            run_state,
+            write_round=latest_successful_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_successful_write_turn.round_no,
+            tool_names={"apply_cad_action"},
+        )
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name in {"apply_cad_action"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="apply_local_finish_after_topology_targeting_from_read_stall",
+            mode="local_finish",
+            reason=(
+                "Repeated read-only turns already produced actionable topology refs for the local "
+                "edit target, so exit the read stall by consuming those refs with apply_cad_action "
+                "instead of reopening more semantic reads."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["apply_cad_action"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_successful_write_turn is not None
+        and run_state.consecutive_inspection_only_rounds >= 2
+        and _local_finish_is_actionable_after_semantic_refresh(
+            run_state,
+            write_round=latest_successful_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_successful_write_turn.round_no,
+            tool_names={"apply_cad_action"},
+        )
+    ):
+        allowed_tool_names = [
+            name
+            for name in all_tool_names
+            if name in {"apply_cad_action", "query_topology", "query_kernel_state"}
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="local_finish_after_read_stall_topology_refresh",
+            mode="local_finish",
+            reason=(
+                "Repeated read-only turns already produced fresh topology evidence, and the latest "
+                "feature probe points to a topology-anchored local finishing step. Exit the read stall "
+                "and spend the next turn on apply_cad_action."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["apply_cad_action", "query_topology", "query_kernel_state"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_successful_write_turn is not None
+        and run_state.consecutive_inspection_only_rounds >= 2
+        and not _has_successful_tool_result_since_round(
+            run_state,
+            after_round=latest_successful_write_turn.round_no,
+            tool_names=_SEMANTIC_REFRESH_QUERY_TOOL_SET,
+        )
+        and _local_finish_escape_is_available_after_topology_targeting(
+            run_state,
+            write_round=latest_successful_write_turn.round_no,
+            all_tool_names=all_tool_names,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_successful_write_turn.round_no,
+            tool_names={"apply_cad_action"},
+        )
+    ):
+        allowed_tool_names = [
+            name
+            for name in ["query_kernel_state", "apply_cad_action"]
+            if name in all_tool_names
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="graph_refresh_with_local_finish_escape_after_read_stall",
+            mode="graph_refresh",
+            reason=(
+                "Repeated inspection-only turns still require a semantic refresh, but the latest "
+                "feature probe and topology read already produced actionable local targeting. "
+                "Keep query_kernel_state preferred while preserving apply_cad_action as a bounded "
+                "escape instead of collapsing the lane to rebuild-only reads."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["query_kernel_state", "apply_cad_action"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
+    if (
+        latest_successful_write_turn is not None
+        and run_state.consecutive_inspection_only_rounds >= 2
         and not _has_successful_tool_result_since_round(
             run_state,
             after_round=latest_successful_write_turn.round_no,
@@ -2529,7 +3608,41 @@ def _has_successful_probe_turn_since_failed_write(
         for result in turn.tool_results:
             if result.name == "execute_build123d_probe" and result.success:
                 return True
+    probe_round = run_state.evidence.rounds_by_tool.get("execute_build123d_probe")
+    probe_payload = run_state.evidence.latest_by_tool.get("execute_build123d_probe")
+    if (
+        isinstance(probe_round, int)
+        and probe_round > failed_write_round
+        and isinstance(probe_payload, dict)
+        and bool(probe_payload.get("success"))
+    ):
+        return True
     return False
+
+
+def _has_successful_non_persisted_probe_turn_since_failed_write(
+    run_state: RunState,
+    *,
+    failed_write_round: int,
+) -> bool:
+    for turn in run_state.turns:
+        if turn.round_no <= failed_write_round:
+            continue
+        for result in turn.tool_results:
+            if result.name != "execute_build123d_probe" or not result.success:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            if not bool(payload.get("session_state_persisted", False)):
+                return True
+    probe_round = run_state.evidence.rounds_by_tool.get("execute_build123d_probe")
+    probe_payload = run_state.evidence.latest_by_tool.get("execute_build123d_probe")
+    return (
+        isinstance(probe_round, int)
+        and probe_round > failed_write_round
+        and isinstance(probe_payload, dict)
+        and bool(probe_payload.get("success"))
+        and not bool(probe_payload.get("session_state_persisted", False))
+    )
 
 
 def _has_actionable_probe_turn_since_failed_write(
@@ -2554,6 +3667,480 @@ def _has_actionable_probe_turn_since_failed_write(
     return False
 
 
+def _feature_probe_recommends_local_finish(probe: dict[str, Any]) -> bool:
+    if not isinstance(probe, dict):
+        return False
+    family_id = str(probe.get("family") or "").strip()
+    recommended_next_tools = {
+        str(item or "").strip().lower()
+        for item in (probe.get("recommended_next_tools") or [])
+        if str(item or "").strip()
+    }
+    if {"query_topology", "apply_cad_action"}.issubset(recommended_next_tools):
+        return True
+    return family_id == "named_face_local_edit" and "query_topology" in recommended_next_tools
+
+
+def _latest_feature_probes_recommend_local_finish(run_state: RunState) -> bool:
+    for turn in reversed(run_state.turns):
+        for result in reversed(turn.tool_results):
+            if result.name != "query_feature_probes" or not result.success:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            for probe in payload.get("probes") or []:
+                if _feature_probe_recommends_local_finish(
+                    probe if isinstance(probe, dict) else {}
+                ):
+                    return True
+            return False
+    return False
+
+
+def _local_finish_is_actionable_after_semantic_refresh(
+    run_state: RunState,
+    *,
+    write_round: int,
+    all_tool_names: list[str],
+) -> bool:
+    if "apply_cad_action" not in all_tool_names or "query_topology" not in all_tool_names:
+        return False
+    if _local_finish_should_defer_to_actionable_rebuild_patch(run_state):
+        return False
+    if not _latest_feature_probes_recommend_local_finish(run_state):
+        return False
+    return _has_successful_tool_result_since_round(
+        run_state,
+        after_round=write_round,
+        tool_names={"query_topology"},
+    )
+
+
+def _latest_feature_probes_recommend_apply_local_finish(run_state: RunState) -> bool:
+    return bool(_latest_feature_probe_apply_local_finish_families(run_state))
+
+
+def _latest_feature_probe_apply_local_finish_families(run_state: RunState) -> set[str]:
+    families: set[str] = set()
+    for turn in reversed(run_state.turns):
+        for result in reversed(turn.tool_results):
+            if result.name != "query_feature_probes" or not result.success:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            for probe in payload.get("probes") or []:
+                if not isinstance(probe, dict):
+                    continue
+                family_id = str(
+                    probe.get("family")
+                    or probe.get("family_id")
+                    or ""
+                ).strip()
+                recommended_next_tools = {
+                    str(item or "").strip().lower()
+                    for item in (probe.get("recommended_next_tools") or [])
+                    if str(item or "").strip()
+                }
+                if "apply_cad_action" in recommended_next_tools and family_id:
+                    families.add(family_id)
+            return families
+    return families
+
+
+def _actionable_patch_family_ids(
+    run_state: RunState,
+    patch: dict[str, Any],
+) -> set[str]:
+    families: set[str] = set()
+    feature_graph = run_state.feature_graph
+    feature_instances = (
+        getattr(feature_graph, "feature_instances", {})
+        if feature_graph is not None
+        else {}
+    )
+
+    direct_family_id = str(patch.get("family_id") or "").strip()
+    if direct_family_id:
+        families.add(direct_family_id)
+
+    feature_instance_id = str(patch.get("feature_instance_id") or "").strip()
+    if feature_instance_id:
+        instance = feature_instances.get(feature_instance_id)
+        family_id = str(getattr(instance, "family_id", "") or "").strip()
+        if family_id:
+            families.add(family_id)
+
+    for instance_id in patch.get("feature_instance_ids") or []:
+        normalized_instance_id = str(instance_id or "").strip()
+        if not normalized_instance_id:
+            continue
+        instance = feature_instances.get(normalized_instance_id)
+        family_id = str(getattr(instance, "family_id", "") or "").strip()
+        if family_id:
+            families.add(family_id)
+    return families
+
+
+def _has_actionable_topology_targeting_since_round(
+    run_state: RunState,
+    *,
+    after_round: int,
+) -> bool:
+    for turn in reversed(run_state.turns):
+        if turn.round_no <= after_round:
+            continue
+        for result in reversed(turn.tool_results):
+            if result.name != "query_topology" or not result.success:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            matched_ref_ids = [
+                str(ref_id).strip()
+                for ref_id in (payload.get("matched_ref_ids") or [])
+                if str(ref_id).strip()
+            ]
+            if matched_ref_ids:
+                return True
+            matched_ref_id_count = payload.get("matched_ref_id_count")
+            if isinstance(matched_ref_id_count, int) and matched_ref_id_count > 0:
+                return True
+            for candidate_set in payload.get("candidate_sets") or []:
+                if not isinstance(candidate_set, dict):
+                    continue
+                candidate_ref_ids = [
+                    str(ref_id).strip()
+                    for ref_id in (candidate_set.get("ref_ids") or [])
+                    if str(ref_id).strip()
+                ]
+                if candidate_ref_ids:
+                    return True
+            return False
+    return False
+
+
+def _local_finish_should_force_apply_after_topology_targeting(
+    run_state: RunState,
+    *,
+    write_round: int,
+    all_tool_names: list[str],
+) -> bool:
+    if "apply_cad_action" not in all_tool_names:
+        return False
+    if _local_finish_should_defer_to_actionable_rebuild_patch(run_state):
+        return False
+    if not _latest_feature_probes_recommend_apply_local_finish(run_state):
+        return False
+    return _has_actionable_topology_targeting_since_round(
+        run_state,
+        after_round=write_round,
+    )
+
+
+def _local_finish_escape_is_available_after_topology_targeting(
+    run_state: RunState,
+    *,
+    write_round: int,
+    all_tool_names: list[str],
+) -> bool:
+    if "apply_cad_action" not in all_tool_names:
+        return False
+    if not _latest_feature_probes_recommend_apply_local_finish(run_state):
+        return False
+    return _has_actionable_topology_targeting_since_round(
+        run_state,
+        after_round=write_round,
+    )
+
+
+def _local_finish_should_defer_to_actionable_rebuild_patch(
+    run_state: RunState,
+) -> bool:
+    patch = _latest_actionable_kernel_patch(run_state)
+    if not isinstance(patch, dict):
+        return False
+    repair_mode = str(patch.get("repair_mode") or "").strip()
+    if repair_mode not in {"whole_part_rebuild", "subtree_rebuild"}:
+        return False
+    apply_local_finish_families = _latest_feature_probe_apply_local_finish_families(
+        run_state
+    )
+    if apply_local_finish_families:
+        patch_family_ids = _actionable_patch_family_ids(run_state, patch)
+        if patch_family_ids and apply_local_finish_families.isdisjoint(patch_family_ids):
+            return False
+    return True
+
+
+def _local_finish_contract_failure_should_retry_after_topology_refresh(
+    run_state: RunState,
+    *,
+    previous_tool_failure_summary: dict[str, Any] | None,
+    all_tool_names: list[str],
+) -> bool:
+    if "apply_cad_action" not in all_tool_names:
+        return False
+    if not isinstance(previous_tool_failure_summary, dict):
+        return False
+    latest_write_turn = run_state.latest_write_turn
+    if latest_write_turn is None or latest_write_turn.write_tool_name != "apply_cad_action":
+        return False
+    failure_tool = str(previous_tool_failure_summary.get("tool") or "").strip()
+    failure_kind = str(
+        previous_tool_failure_summary.get("effective_failure_kind")
+        or previous_tool_failure_summary.get("failure_kind")
+        or ""
+    ).strip()
+    if failure_tool != "apply_cad_action" or failure_kind != "apply_cad_action_contract_failure":
+        return False
+    if not (
+        _latest_feature_probes_recommend_apply_local_finish(run_state)
+        or _latest_feature_probes_recommend_local_finish(run_state)
+    ):
+        return False
+    if not _has_successful_tool_result_since_round(
+        run_state,
+        after_round=latest_write_turn.round_no,
+        tool_names={"query_topology"},
+    ):
+        return False
+    if not _has_actionable_topology_targeting_since_round(
+        run_state,
+        after_round=latest_write_turn.round_no,
+    ):
+        return False
+    return not _has_tool_turn_since_round(
+        run_state,
+        after_round=latest_write_turn.round_no,
+        tool_names={"apply_cad_action"},
+    )
+
+
+def _latest_topology_evidence_is_actionable(run_state: RunState) -> bool:
+    topology_payload = run_state.evidence.latest_by_tool.get("query_topology")
+    if not isinstance(topology_payload, dict):
+        return False
+    matched_ref_ids = [
+        str(ref_id).strip()
+        for ref_id in (topology_payload.get("matched_ref_ids") or [])
+        if str(ref_id).strip()
+    ]
+    if matched_ref_ids:
+        return True
+    matched_ref_id_count = topology_payload.get("matched_ref_id_count")
+    if isinstance(matched_ref_id_count, int) and matched_ref_id_count > 0:
+        return True
+    for candidate_set in topology_payload.get("candidate_sets") or []:
+        if not isinstance(candidate_set, dict):
+            continue
+        candidate_ref_ids = [
+            str(ref_id).strip()
+            for ref_id in (candidate_set.get("ref_ids") or [])
+            if str(ref_id).strip()
+        ]
+        if candidate_ref_ids:
+            return True
+    return False
+
+
+def _successful_local_finish_semantic_refresh_needs_validation(
+    run_state: RunState,
+    *,
+    write_round: int,
+    all_tool_names: list[str],
+) -> bool:
+    if "validate_requirement" not in all_tool_names:
+        return False
+    if _latest_validation_is_fresh_for_write(run_state, write_round=write_round):
+        return False
+    if _has_tool_turn_since_round(
+        run_state,
+        after_round=write_round,
+        tool_names={"validate_requirement"},
+    ):
+        return False
+    if not _has_successful_semantic_refresh_since_round(
+        run_state,
+        after_round=write_round,
+    ):
+        return False
+    return _latest_feature_probes_recommend_apply_local_finish(
+        run_state
+    ) or _latest_feature_probes_recommend_local_finish(run_state)
+
+
+def _local_finish_validation_evidence_gap_needs_read_refresh(
+    run_state: RunState,
+    *,
+    write_round: int,
+    all_tool_names: list[str],
+) -> bool:
+    if not any(
+        name in all_tool_names
+        for name in {
+            "query_topology",
+            "query_feature_probes",
+            "query_geometry",
+            "query_kernel_state",
+            "execute_build123d_probe",
+        }
+    ):
+        return False
+    latest_validation = (
+        run_state.latest_validation if isinstance(run_state.latest_validation, dict) else {}
+    )
+    if not _latest_validation_is_fresh_for_write(run_state, write_round=write_round):
+        return False
+    blockers = latest_validation.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        return False
+    if _is_successful_validation(latest_validation):
+        return False
+    if not _validation_has_evidence_gap(latest_validation):
+        return False
+    if not (
+        _validation_requests_localized_evidence_refresh(latest_validation)
+        or _latest_validation_has_budget_skipped_hint(latest_validation)
+    ):
+        return False
+    latest_validation_round = _latest_validation_round(run_state)
+    if latest_validation_round <= write_round:
+        return False
+    return not _has_tool_turn_since_round(
+        run_state,
+        after_round=latest_validation_round,
+        tool_names={
+            "query_topology",
+            "query_feature_probes",
+            "query_geometry",
+            "query_kernel_state",
+            "execute_build123d_probe",
+        },
+    )
+
+
+def _local_finish_validation_evidence_refresh_tools_for_turn(
+    run_state: RunState,
+    *,
+    all_tool_names: list[str],
+) -> list[str]:
+    read_refresh_tool_set = {
+        "query_topology",
+        "query_feature_probes",
+        "query_geometry",
+        "query_kernel_state",
+        "execute_build123d_probe",
+    }
+    allowed_tool_names: list[str] = []
+
+    def _append(raw_tool_name: Any) -> None:
+        tool_name = str(raw_tool_name or "").strip()
+        if (
+            not tool_name
+            or tool_name not in all_tool_names
+            or tool_name not in read_refresh_tool_set
+            or tool_name in allowed_tool_names
+        ):
+            return
+        allowed_tool_names.append(tool_name)
+
+    for tool_name in _preferred_validation_assessment_tools_for_turn(
+        run_state,
+        all_tool_names=all_tool_names,
+    ):
+        _append(tool_name)
+
+    latest_validation = (
+        run_state.latest_validation if isinstance(run_state.latest_validation, dict) else {}
+    )
+    normalized_hints = {
+        str(item or "").strip().lower()
+        for field_name in ("repair_hints", "decision_hints")
+        for item in (latest_validation.get(field_name) or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    if any(
+        token in hint
+        for hint in normalized_hints
+        for token in (
+            "geometry/topology evidence",
+            "inspect count or placement",
+            "inspect_more_evidence",
+        )
+    ):
+        _append("query_geometry")
+        _append("query_topology")
+        _append("query_feature_probes")
+    if not allowed_tool_names and _latest_validation_prefers_topology_refresh(latest_validation):
+        _append("query_topology")
+        _append("query_feature_probes")
+    _append("query_kernel_state")
+    return allowed_tool_names
+
+
+def _local_finish_validation_evidence_gap_closure_tools_for_turn(
+    run_state: RunState,
+    *,
+    all_tool_names: list[str],
+) -> tuple[list[str], list[str]]:
+    refresh_tools = _local_finish_validation_evidence_refresh_tools_for_turn(
+        run_state,
+        all_tool_names=all_tool_names,
+    )
+    allowed_tool_names = list(refresh_tools)
+
+    for tool_name in ("validate_requirement", "finish_run"):
+        if tool_name in all_tool_names and tool_name not in allowed_tool_names:
+            allowed_tool_names.append(tool_name)
+
+    preferred_tool_names: list[str] = []
+    if refresh_tools:
+        preferred_tool_names.append(refresh_tools[0])
+    for tool_name in ("validate_requirement", "finish_run"):
+        if tool_name in allowed_tool_names and tool_name not in preferred_tool_names:
+            preferred_tool_names.append(tool_name)
+    for tool_name in refresh_tools[1:]:
+        if tool_name not in preferred_tool_names:
+            preferred_tool_names.append(tool_name)
+    return allowed_tool_names, preferred_tool_names
+
+
+def _local_finish_contract_failure_should_retry_with_existing_topology_refs(
+    run_state: RunState,
+    *,
+    previous_tool_failure_summary: dict[str, Any] | None,
+    all_tool_names: list[str],
+) -> bool:
+    if "apply_cad_action" not in all_tool_names:
+        return False
+    if not isinstance(previous_tool_failure_summary, dict):
+        return False
+    latest_write_turn = run_state.latest_write_turn
+    if latest_write_turn is None or latest_write_turn.write_tool_name != "apply_cad_action":
+        return False
+    failure_tool = str(previous_tool_failure_summary.get("tool") or "").strip()
+    failure_kind = str(
+        previous_tool_failure_summary.get("effective_failure_kind")
+        or previous_tool_failure_summary.get("failure_kind")
+        or ""
+    ).strip()
+    if failure_tool != "apply_cad_action" or failure_kind != "apply_cad_action_contract_failure":
+        return False
+    if not (
+        _latest_feature_probes_recommend_apply_local_finish(run_state)
+        or _latest_feature_probes_recommend_local_finish(run_state)
+    ):
+        return False
+    topology_round = run_state.evidence.rounds_by_tool.get("query_topology")
+    if not isinstance(topology_round, int) or topology_round <= 0:
+        return False
+    if topology_round >= latest_write_turn.round_no:
+        return False
+    if not _latest_topology_evidence_is_actionable(run_state):
+        return False
+    return not _has_tool_turn_since_round(
+        run_state,
+        after_round=latest_write_turn.round_no,
+        tool_names={"apply_cad_action", "query_topology"},
+    )
+
+
 def _latest_actionable_semantic_refresh_since_failed_write(
     run_state: RunState,
     *,
@@ -2566,6 +4153,26 @@ def _latest_actionable_semantic_refresh_since_failed_write(
             if result.name != "query_feature_probes" or not result.success:
                 continue
             payload = result.payload if isinstance(result.payload, dict) else {}
+            families = [
+                str(family_id).strip()
+                for family_id in (payload.get("detected_families") or [])
+                if isinstance(family_id, str) and str(family_id).strip()
+            ]
+            local_finish_signaled = False
+            for probe in payload.get("probes") or []:
+                if not isinstance(probe, dict):
+                    continue
+                probe_family = str(probe.get("family") or "").strip()
+                if probe_family and probe_family not in families:
+                    families.append(probe_family)
+                if _feature_probe_recommends_local_finish(probe):
+                    local_finish_signaled = True
+            if local_finish_signaled:
+                return {
+                    "repair_lane": "local_finish",
+                    "families": families,
+                    "round_no": turn.round_no,
+                }
             probe_blockers = [
                 str(blocker_id).strip()
                 for probe in (payload.get("probes") or [])
@@ -2585,11 +4192,6 @@ def _latest_actionable_semantic_refresh_since_failed_write(
             }
             if not repair_lanes or repair_lanes == {"probe_first"}:
                 continue
-            families = [
-                str(family_id).strip()
-                for family_id in (payload.get("detected_families") or [])
-                if isinstance(family_id, str) and str(family_id).strip()
-            ]
             for item in taxonomy:
                 for family_id in item.family_ids:
                     if family_id and family_id not in families:
@@ -2727,6 +4329,219 @@ def _latest_actionable_kernel_patch(
     return best_packet
 
 
+_COARSE_KERNEL_PATCH_PARAMETER_KEYS = {
+    "bbox",
+    "bbox_min",
+    "bbox_max",
+    "bbox_min_span",
+    "bbox_max_span",
+    "anchor_summary",
+}
+
+_LOCAL_TOPOLOGY_SENSITIVE_FAMILIES = {
+    "named_face_local_edit",
+    "slots",
+    "explicit_anchor_hole",
+    "half_shell",
+    "nested_hollow_section",
+}
+
+_LOCAL_TOPOLOGY_SENSITIVE_BLOCKER_IDS = {
+    "feature_target_face_edit",
+    "feature_target_face_subtractive_merge",
+    "feature_notch_or_profile_cut",
+    "feature_hole",
+    "feature_counterbore",
+    "feature_countersink",
+}
+
+
+def _validation_has_evidence_gap(latest_validation: dict[str, Any] | None) -> bool:
+    if not isinstance(latest_validation, dict):
+        return False
+    if bool(latest_validation.get("insufficient_evidence")):
+        return True
+    observation_tags = {
+        str(item).strip().lower()
+        for item in (latest_validation.get("observation_tags") or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    return "insufficient_evidence" in observation_tags
+
+
+def _validation_requests_localized_evidence_refresh(
+    latest_validation: dict[str, Any] | None,
+) -> bool:
+    if not _validation_has_evidence_gap(latest_validation):
+        return False
+    if not isinstance(latest_validation, dict):
+        return False
+    normalized_hints = {
+        str(item).strip().lower()
+        for field_name in ("repair_hints", "decision_hints")
+        for item in (latest_validation.get(field_name) or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    if "query_topology" in normalized_hints or "query_feature_probes" in normalized_hints:
+        return True
+    if any(
+        token in hint
+        for hint in normalized_hints
+        for token in (
+            "geometry/topology evidence",
+            "inspect count or placement",
+            "inspect_more_evidence",
+        )
+    ):
+        return True
+    for item in (latest_validation.get("blocker_taxonomy") or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("recommended_repair_lane") or "").strip() == "local_finish":
+            return True
+        decision_hints = {
+            str(hint).strip().lower()
+            for hint in (item.get("decision_hints") or [])
+            if isinstance(hint, str) and str(hint).strip()
+        }
+        if "query_topology" in decision_hints or "query_feature_probes" in decision_hints:
+            return True
+    return False
+
+
+def _kernel_patch_is_under_grounded_for_local_feature_gap(
+    patch: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(patch, dict):
+        return False
+    anchor_keys = {
+        str(item).strip()
+        for item in (patch.get("anchor_keys") or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    parameter_keys = {
+        str(item).strip()
+        for item in (patch.get("parameter_keys") or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    repair_packet = (
+        patch.get("repair_packet")
+        if isinstance(patch.get("repair_packet"), dict)
+        else {}
+    )
+    target_anchor_summary = (
+        repair_packet.get("target_anchor_summary")
+        if isinstance(repair_packet.get("target_anchor_summary"), dict)
+        else {}
+    )
+    realized_anchor_summary = (
+        repair_packet.get("realized_anchor_summary")
+        if isinstance(repair_packet.get("realized_anchor_summary"), dict)
+        else {}
+    )
+    recipe_skeleton = (
+        repair_packet.get("recipe_skeleton")
+        if isinstance(repair_packet.get("recipe_skeleton"), dict)
+        else {}
+    )
+    grounding_blockers = {
+        str(item).strip()
+        for item in (
+            repair_packet.get("grounding_blockers") or []
+            if isinstance(repair_packet, dict)
+            else []
+        )
+        if isinstance(item, str) and str(item).strip()
+    }
+    center_source_key = str(recipe_skeleton.get("center_source_key") or "").strip().lower()
+    needs_external_anchor_grounding = (
+        center_source_key.startswith("derive_from_requirement")
+        or "validation" in center_source_key
+        or bool(target_anchor_summary.get("requires_topology_host_ranking"))
+        or "need_topology_host_selection" in grounding_blockers
+    )
+    coarse_only_parameters = bool(parameter_keys) and parameter_keys.issubset(
+        _COARSE_KERNEL_PATCH_PARAMETER_KEYS
+    )
+    has_anchor_grounding = bool(anchor_keys) or bool(target_anchor_summary) or bool(realized_anchor_summary)
+    return not has_anchor_grounding and (
+        needs_external_anchor_grounding or coarse_only_parameters
+    )
+
+
+def _kernel_patch_should_yield_semantic_refresh(
+    patch: dict[str, Any] | None,
+    latest_validation: dict[str, Any] | None,
+) -> bool:
+    if not _validation_requests_localized_evidence_refresh(latest_validation):
+        return False
+    return _kernel_patch_is_under_grounded_for_local_feature_gap(patch)
+
+
+def _kernel_patch_should_yield_feature_probe_assessment(
+    patch: dict[str, Any] | None,
+    latest_validation: dict[str, Any] | None,
+    *,
+    run_state: RunState | None = None,
+) -> bool:
+    if not isinstance(patch, dict) or not isinstance(latest_validation, dict):
+        return False
+    repair_mode = str(patch.get("repair_mode") or "").strip()
+    if repair_mode not in {"whole_part_rebuild", "subtree_rebuild"}:
+        return False
+    families = {
+        str(item).strip()
+        for item in (patch.get("families") or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    if run_state is not None:
+        families.update(_blocked_feature_instance_family_ids(run_state))
+    if not families.intersection(_LOCAL_TOPOLOGY_SENSITIVE_FAMILIES):
+        return False
+    blocker_ids = {
+        str(item).strip()
+        for item in (latest_validation.get("blockers") or [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    if blocker_ids.intersection(_LOCAL_TOPOLOGY_SENSITIVE_BLOCKER_IDS):
+        return True
+    for item in (latest_validation.get("blocker_taxonomy") or []):
+        if not isinstance(item, dict):
+            continue
+        taxonomy_families = {
+            str(family_id).strip()
+            for family_id in (item.get("family_ids") or [])
+            if isinstance(family_id, str) and str(family_id).strip()
+        }
+        if taxonomy_families.intersection(_LOCAL_TOPOLOGY_SENSITIVE_FAMILIES):
+            return True
+        decision_hints = {
+            str(hint).strip().lower()
+            for hint in (item.get("decision_hints") or [])
+            if isinstance(hint, str) and str(hint).strip()
+        }
+        if decision_hints.intersection({"query_feature_probes", "query_topology"}):
+            return True
+    return False
+
+
+def _blocked_feature_instance_family_ids(run_state: RunState | None) -> set[str]:
+    if run_state is None or run_state.feature_graph is None:
+        return set()
+    feature_instances = getattr(run_state.feature_graph, "feature_instances", None)
+    if not isinstance(feature_instances, dict):
+        return set()
+    families: set[str] = set()
+    for feature_instance in feature_instances.values():
+        status = str(getattr(feature_instance, "status", "") or "").strip()
+        if status != "blocked":
+            continue
+        family_id = str(getattr(feature_instance, "family_id", "") or "").strip()
+        if family_id:
+            families.add(family_id)
+    return families
+
+
 def _preferred_probe_families_for_turn(run_state: RunState) -> list[str]:
     families: list[str] = []
 
@@ -2797,16 +4612,400 @@ def _preferred_probe_families_for_turn(run_state: RunState) -> list[str]:
     for family_id in taxonomy_family_ids_from_validation_payload(latest_validation):
         _append(family_id)
 
-    if not families:
-        families.extend(
-            recommended_feature_probe_families(
-                requirements=run_state.requirements,
-                latest_validation=run_state.latest_validation,
-            )
-        )
+    for family_id in recommended_feature_probe_families(
+        requirements=run_state.requirements,
+        latest_validation=run_state.latest_validation,
+    ):
+        _append(family_id)
     if not families:
         families.append("general_geometry")
     return families
+
+
+def _latest_validation_prefers_topology_refresh(
+    latest_validation: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(latest_validation, dict):
+        return False
+    if "local_finish" in taxonomy_repair_lanes_from_validation_payload(latest_validation):
+        return True
+    for field_name in ("repair_hints", "decision_hints"):
+        hints = latest_validation.get(field_name)
+        if not isinstance(hints, list):
+            continue
+        for hint in hints:
+            if str(hint or "").strip().lower() == "query_topology":
+                return True
+    return False
+
+
+def _latest_feature_probes_prefer_topology_refresh(run_state: RunState) -> bool:
+    for turn in reversed(run_state.turns):
+        for result in reversed(turn.tool_results):
+            if result.name != "query_feature_probes" or not result.success:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            if _feature_probe_payload_has_general_geometry_grounding_gap(
+                payload
+            ) and not _feature_probe_payload_allows_hybrid_topology_refresh(
+                run_state,
+                payload,
+            ):
+                return False
+            for probe in payload.get("probes") or []:
+                if not isinstance(probe, dict):
+                    continue
+                recommended_next_tools = {
+                    str(item or "").strip().lower()
+                    for item in (probe.get("recommended_next_tools") or [])
+                    if str(item or "").strip()
+                }
+                if "query_topology" in recommended_next_tools:
+                    return True
+                anchor_summary = (
+                    probe.get("anchor_summary")
+                    if isinstance(probe.get("anchor_summary"), dict)
+                    else {}
+                )
+                if bool(anchor_summary.get("requires_topology_host_ranking")):
+                    return True
+                grounding_blockers = {
+                    str(item or "").strip()
+                    for item in (probe.get("grounding_blockers") or [])
+                    if str(item or "").strip()
+                }
+                if "need_topology_host_selection" in grounding_blockers:
+                    return True
+            return False
+    return False
+
+
+def _latest_feature_probes_allow_topology_refresh_despite_general_geometry_gap(
+    run_state: RunState,
+    *,
+    after_round: int | None = None,
+) -> bool:
+    for turn in reversed(run_state.turns):
+        if after_round is not None and turn.round_no <= after_round:
+            continue
+        for result in reversed(turn.tool_results):
+            if result.name != "query_feature_probes" or not result.success:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            return _feature_probe_payload_allows_hybrid_topology_refresh(
+                run_state,
+                payload,
+            )
+    return False
+
+
+def _latest_feature_probes_have_general_geometry_grounding_gap(
+    run_state: RunState,
+    *,
+    after_round: int | None = None,
+) -> bool:
+    for turn in reversed(run_state.turns):
+        if after_round is not None and turn.round_no <= after_round:
+            continue
+        for result in reversed(turn.tool_results):
+            if result.name != "query_feature_probes" or not result.success:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            return _feature_probe_payload_has_general_geometry_grounding_gap(payload)
+    return False
+
+
+def _feature_probe_payload_has_general_geometry_grounding_gap(
+    payload: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for probe in payload.get("probes") or []:
+        if not isinstance(probe, dict):
+            continue
+        if str(probe.get("family") or "").strip() != "general_geometry":
+            continue
+        grounding_blockers = {
+            str(item or "").strip()
+            for item in (probe.get("grounding_blockers") or [])
+            if str(item or "").strip()
+        }
+        if grounding_blockers and not bool(probe.get("success")):
+            return True
+        recommended_next_tools = {
+            str(item or "").strip().lower()
+            for item in (probe.get("recommended_next_tools") or [])
+            if str(item or "").strip()
+        }
+        if {"query_geometry", "query_snapshot"}.intersection(recommended_next_tools) and not bool(
+            probe.get("success")
+        ):
+            return True
+    return False
+
+
+def _feature_probe_payload_allows_hybrid_topology_refresh(
+    run_state: RunState,
+    payload: dict[str, Any] | None,
+) -> bool:
+    if not _feature_probe_payload_has_general_geometry_grounding_gap(payload):
+        return False
+    if not _feature_probe_payload_has_topology_refresh_signal(payload):
+        return False
+    return _latest_write_geometry_is_close_enough_for_topology_refresh(
+        run_state,
+        payload,
+    )
+
+
+def _feature_probe_payload_has_topology_refresh_signal(
+    payload: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for probe in payload.get("probes") or []:
+        if not isinstance(probe, dict):
+            continue
+        recommended_next_tools = {
+            str(item or "").strip().lower()
+            for item in (probe.get("recommended_next_tools") or [])
+            if str(item or "").strip()
+        }
+        if "query_topology" in recommended_next_tools:
+            return True
+        anchor_summary = (
+            probe.get("anchor_summary")
+            if isinstance(probe.get("anchor_summary"), dict)
+            else {}
+        )
+        if bool(anchor_summary.get("requires_topology_host_ranking")):
+            return True
+        grounding_blockers = {
+            str(item or "").strip()
+            for item in (probe.get("grounding_blockers") or [])
+            if str(item or "").strip()
+        }
+        if "need_topology_host_selection" in grounding_blockers:
+            return True
+    return False
+
+
+def _feature_probe_payload_has_non_general_topology_refresh_signal(
+    payload: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for probe in payload.get("probes") or []:
+        if not isinstance(probe, dict):
+            continue
+        family_id = str(
+            probe.get("family")
+            or probe.get("family_id")
+            or ""
+        ).strip()
+        if not family_id or family_id == "general_geometry":
+            continue
+        recommended_next_tools = {
+            str(item or "").strip().lower()
+            for item in (probe.get("recommended_next_tools") or [])
+            if str(item or "").strip()
+        }
+        if "query_topology" in recommended_next_tools:
+            return True
+        anchor_summary = (
+            probe.get("anchor_summary")
+            if isinstance(probe.get("anchor_summary"), dict)
+            else {}
+        )
+        if bool(anchor_summary.get("requires_topology_host_ranking")):
+            return True
+        grounding_blockers = {
+            str(item or "").strip()
+            for item in (probe.get("grounding_blockers") or [])
+            if str(item or "").strip()
+        }
+        if "need_topology_host_selection" in grounding_blockers:
+            return True
+    return False
+
+
+def _latest_write_geometry_is_close_enough_for_topology_refresh(
+    run_state: RunState,
+    payload: dict[str, Any] | None,
+) -> bool:
+    latest_write_payload = (
+        run_state.latest_write_payload if isinstance(run_state.latest_write_payload, dict) else {}
+    )
+    if not _payload_has_positive_session_backed_solid(latest_write_payload):
+        return False
+    snapshot = (
+        latest_write_payload.get("snapshot")
+        if isinstance(latest_write_payload.get("snapshot"), dict)
+        else {}
+    )
+    geometry = snapshot.get("geometry") if isinstance(snapshot.get("geometry"), dict) else {}
+    actual_solids = int(geometry.get("solids", 0) or 0)
+    actual_bbox_raw = geometry.get("bbox")
+    actual_bbox = (
+        [float(item or 0.0) for item in actual_bbox_raw[:3]]
+        if isinstance(actual_bbox_raw, list) and len(actual_bbox_raw) >= 3
+        else []
+    )
+    if not actual_bbox or any(value <= 0.0 for value in actual_bbox):
+        return False
+    expected_bbox: list[float] = []
+    expected_part_count: int | None = None
+    if isinstance(payload, dict):
+        for probe in payload.get("probes") or []:
+            if not isinstance(probe, dict):
+                continue
+            anchor_summary = (
+                probe.get("anchor_summary")
+                if isinstance(probe.get("anchor_summary"), dict)
+                else {}
+            )
+            if not expected_bbox:
+                expected_bbox_raw = anchor_summary.get("expected_bbox")
+                if isinstance(expected_bbox_raw, list) and len(expected_bbox_raw) >= 3:
+                    expected_bbox = [float(item or 0.0) for item in expected_bbox_raw[:3]]
+            if expected_part_count is None:
+                raw_expected_part_count = anchor_summary.get("expected_part_count")
+                if isinstance(raw_expected_part_count, int):
+                    expected_part_count = raw_expected_part_count
+    if not expected_bbox and expected_part_count is None:
+        return False
+    max_bbox_rel_diff = 0.0
+    if expected_bbox:
+        max_bbox_rel_diff = max(
+            abs(actual - expected) / max(abs(expected), 1.0)
+            for actual, expected in zip(actual_bbox, expected_bbox, strict=False)
+        )
+        if max_bbox_rel_diff > 0.35:
+            return False
+    if (
+        expected_part_count is not None
+        and expected_part_count > 0
+        and abs(actual_solids - expected_part_count) > 1
+    ):
+        solid_gap = abs(actual_solids - expected_part_count)
+        if solid_gap > 2:
+            return False
+        if not expected_bbox or max_bbox_rel_diff > 0.12:
+            return False
+        if not _feature_probe_payload_has_non_general_topology_refresh_signal(payload):
+            return False
+    return True
+
+
+def _latest_feature_probe_preferred_tools_for_turn(
+    run_state: RunState,
+    *,
+    all_tool_names: list[str],
+    after_round: int | None = None,
+) -> list[str]:
+    preferred_tools: list[str] = []
+
+    def _append(raw_tool_name: Any) -> None:
+        tool_name = str(raw_tool_name or "").strip()
+        if (
+            not tool_name
+            or tool_name in preferred_tools
+            or tool_name not in all_tool_names
+        ):
+            return
+        preferred_tools.append(tool_name)
+
+    for turn in reversed(run_state.turns):
+        if after_round is not None and turn.round_no <= after_round:
+            continue
+        for result in reversed(turn.tool_results):
+            if result.name != "query_feature_probes" or not result.success:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            for probe in payload.get("probes") or []:
+                if not isinstance(probe, dict):
+                    continue
+                anchor_summary = (
+                    probe.get("anchor_summary")
+                    if isinstance(probe.get("anchor_summary"), dict)
+                    else {}
+                )
+                grounding_blockers = {
+                    str(item or "").strip()
+                    for item in (probe.get("grounding_blockers") or [])
+                    if str(item or "").strip()
+                }
+                if bool(anchor_summary.get("requires_topology_host_ranking")) or (
+                    "need_topology_host_selection" in grounding_blockers
+                ):
+                    _append("query_topology")
+                for tool_name in probe.get("recommended_next_tools") or []:
+                    _append(tool_name)
+            return preferred_tools
+    return preferred_tools
+
+
+def _post_semantic_refresh_followup_tools_for_turn(
+    run_state: RunState,
+    *,
+    write_round: int,
+    all_tool_names: list[str],
+) -> list[str]:
+    focused_followup_set = {
+        "apply_cad_action",
+        "query_topology",
+        "query_feature_probes",
+        "query_geometry",
+        "query_kernel_state",
+        "execute_build123d_probe",
+    }
+    preferred_tools = _latest_feature_probe_preferred_tools_for_turn(
+        run_state,
+        all_tool_names=all_tool_names,
+        after_round=write_round,
+    )
+    followup_tools: list[str] = []
+    for tool_name in preferred_tools:
+        if tool_name not in focused_followup_set or tool_name in followup_tools:
+            continue
+        followup_tools.append(tool_name)
+    if (
+        "apply_cad_action" in followup_tools
+        and "query_topology" in followup_tools
+        and not _has_actionable_topology_targeting_since_round(
+            run_state,
+            after_round=write_round,
+        )
+    ):
+        reordered = ["query_topology", "apply_cad_action"]
+        followup_tools = reordered + [
+            tool_name
+            for tool_name in followup_tools
+            if tool_name not in {"query_topology", "apply_cad_action"}
+        ]
+    if "query_kernel_state" in all_tool_names and "query_kernel_state" not in followup_tools:
+        followup_tools.append("query_kernel_state")
+    return followup_tools
+
+
+def _semantic_refresh_allowed_tool_names_for_turn(
+    run_state: RunState,
+    *,
+    all_tool_names: list[str],
+) -> list[str]:
+    allowed = [
+        name for name in all_tool_names if name in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
+    ]
+    if (
+        (
+            _latest_validation_prefers_topology_refresh(run_state.latest_validation)
+            or _latest_feature_probes_prefer_topology_refresh(run_state)
+        )
+        and "query_topology" in all_tool_names
+        and "query_topology" not in allowed
+    ):
+        allowed.append("query_topology")
+    return allowed
 
 
 def _preferred_validation_assessment_tools_for_turn(
@@ -2822,7 +5021,6 @@ def _preferred_validation_assessment_tools_for_turn(
             not tool_name
             or tool_name in preferred_tools
             or tool_name not in all_tool_names
-            or tool_name not in _SEMANTIC_REFRESH_REPAIR_TOOL_SET
         ):
             return
         preferred_tools.append(tool_name)
@@ -2833,21 +5031,38 @@ def _preferred_validation_assessment_tools_for_turn(
         if graph is not None
         else None
     )
+    feature_probe_tools = _latest_feature_probe_preferred_tools_for_turn(
+        run_state,
+        all_tool_names=all_tool_names,
+    )
+    for tool_name in feature_probe_tools:
+        _append(tool_name)
+
     if assessment is not None:
         for tool_name in getattr(assessment, "recommended_next_tools", []) or []:
             _append(tool_name)
 
     if not preferred_tools:
         latest_validation = run_state.latest_validation or {}
-        decision_hints = latest_validation.get("decision_hints")
-        if isinstance(decision_hints, list):
-            for hint in decision_hints:
+        for field_name in ("repair_hints", "decision_hints"):
+            hints = latest_validation.get(field_name)
+            if not isinstance(hints, list):
+                continue
+            for hint in hints:
                 normalized = str(hint or "").strip().lower()
                 if normalized == "inspect_more_evidence":
                     _append("query_feature_probes")
                     _append("query_kernel_state")
+                elif normalized == "inspect count or placement with geometry/topology evidence":
+                    _append("query_topology")
+                    _append("query_feature_probes")
                 else:
                     _append(normalized)
+
+    if not preferred_tools and _latest_validation_prefers_topology_refresh(run_state.latest_validation):
+        _append("query_topology")
+        _append("query_feature_probes")
+        _append("query_kernel_state")
 
     if not preferred_tools:
         _append("query_feature_probes")
@@ -3024,6 +5239,18 @@ def _latest_validation_is_fresh_for_write(
     return bool(latest_validation)
 
 
+def _latest_validation_round(run_state: RunState) -> int:
+    return max(
+        (
+            int(event.round_no)
+            for event in run_state.agent_events
+            if event.kind == "validation_result"
+            and isinstance(event.round_no, int)
+        ),
+        default=-1,
+    )
+
+
 def _blockers_are_local_structured_tail(blockers: list[str]) -> bool:
     blocker_set = {item for item in blockers if isinstance(item, str)}
     if not blocker_set:
@@ -3066,6 +5293,40 @@ def _latest_validation_prefers_semantic_refresh(
         return True
     coverage_confidence = latest_validation.get("coverage_confidence")
     return isinstance(coverage_confidence, (int, float)) and float(coverage_confidence) <= 0.25
+
+
+def _latest_validation_has_budget_skipped_hint(
+    latest_validation: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(latest_validation, dict):
+        return False
+    for item in (latest_validation.get("decision_hints") or []):
+        normalized = str(item or "").strip().lower()
+        if normalized.startswith("validation_llm_skipped:"):
+            return True
+    return False
+
+
+def _semantic_refresh_followup_should_preempt_closure_validation(
+    run_state: RunState,
+    *,
+    write_round: int,
+    all_tool_names: list[str],
+) -> bool:
+    latest_validation = run_state.latest_validation
+    if not _validation_has_evidence_gap(latest_validation):
+        return False
+    if not (
+        _validation_requests_localized_evidence_refresh(latest_validation)
+        or _latest_validation_has_budget_skipped_hint(latest_validation)
+    ):
+        return False
+    followup_tools = _post_semantic_refresh_followup_tools_for_turn(
+        run_state,
+        write_round=write_round,
+        all_tool_names=all_tool_names,
+    )
+    return any(tool_name != "query_kernel_state" for tool_name in followup_tools)
 
 
 def _latest_validation_has_actionable_geometry_contradiction(
@@ -3295,6 +5556,8 @@ def _infer_runtime_failure_cluster(run_state: RunState) -> str | None:
     latest_validation = (
         run_state.latest_validation if isinstance(run_state.latest_validation, dict) else {}
     )
+    if _is_successful_validation(latest_validation):
+        return None
     blockers = latest_validation.get("blockers")
     blocker_list = [item for item in blockers if isinstance(item, str)] if isinstance(blockers, list) else []
     taxonomy_families = taxonomy_family_ids_from_validation_payload(latest_validation)
@@ -3398,6 +5661,11 @@ def _should_auto_validate_after_post_write(
         "apply_cad_action",
     }:
         return False
+    if (
+        write_result.name == "apply_cad_action"
+        and _turn_has_open_sketch_window_after_successful_apply(turn)
+    ):
+        return False
     latest_validation = run_state.latest_validation or {}
     prior_blockers = latest_validation.get("blockers")
     if not isinstance(prior_blockers, list) or not prior_blockers:
@@ -3436,6 +5704,64 @@ def _should_auto_validate_after_post_write(
         or remaining_rounds <= 1
         or should_probe_first_code_write
     )
+
+
+def _tool_call_apply_action_type(tool_call: ToolCallRecord) -> str | None:
+    if tool_call.category != ToolCategory.WRITE or tool_call.name != "apply_cad_action":
+        return None
+    action_type = tool_call.arguments.get("action_type")
+    if isinstance(action_type, str) and action_type.strip():
+        return action_type.strip().lower()
+    return None
+
+
+def _latest_apply_action_type_from_turn(turn: TurnRecord | None) -> str | None:
+    if turn is None:
+        return None
+    for tool_call in reversed(turn.tool_calls):
+        action_type = _tool_call_apply_action_type(tool_call)
+        if action_type:
+            return action_type
+    return None
+
+
+def _turn_has_open_sketch_window_after_successful_apply(turn: TurnRecord | None) -> bool:
+    action_type = _latest_apply_action_type_from_turn(turn)
+    return bool(action_type and action_type in _SKETCH_WINDOW_CONTINUATION_ACTIONS)
+
+
+def _latest_successful_apply_action_type_with_open_sketch_window(
+    run_state: RunState,
+) -> str | None:
+    latest_successful_write_turn = run_state.latest_successful_write_turn
+    if (
+        latest_successful_write_turn is None
+        or latest_successful_write_turn.write_tool_name != "apply_cad_action"
+    ):
+        return None
+    action_type = _latest_apply_action_type_from_turn(latest_successful_write_turn)
+    if action_type not in _SKETCH_WINDOW_CONTINUATION_ACTIONS:
+        return None
+    if _has_tool_turn_since_round(
+        run_state,
+        after_round=latest_successful_write_turn.round_no,
+        tool_names={"validate_requirement"},
+    ):
+        return None
+    return action_type
+
+
+def _preferred_sketch_window_tools(
+    action_type: str,
+    *,
+    all_tool_names: list[str],
+) -> list[str]:
+    preferred_order = (
+        ["apply_cad_action", "query_sketch"]
+        if action_type == "create_sketch"
+        else ["query_sketch", "apply_cad_action"]
+    )
+    return [name for name in preferred_order if name in all_tool_names]
 
 
 def _result_has_positive_session_backed_solid(result: ToolResultRecord) -> bool:

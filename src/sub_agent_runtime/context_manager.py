@@ -132,9 +132,12 @@ class V2ContextManager:
             "You may call multiple read tools in one response. "
             "Do not mix read tools with a write tool in the same response. "
             "At most one write tool is allowed per response. "
+            "If a local sketch edit will require several apply_cad_action steps, emit only the next write for this turn and wait for the updated sketch/session state before sending the next local step. "
             "Default to execute_build123d as the first write. "
             "Only deviate on the initial write when the user explicitly asked for a local edit and a stable topology anchor already exists. "
             "Use apply_cad_action only when the edit is already local, topology-anchored, and obviously cheaper than a rebuild. "
+            "If the requirement asks for separate parts and also declares overall dimensions or an assembled envelope, keep those parts in one shared assembled coordinate frame rather than translating them apart for visibility unless an exploded view is explicitly requested. "
+            "When query_topology has already returned exact face_ref or edge_refs for a local finish, pass those exact refs into apply_cad_action instead of downgrading them to broad aliases such as face='top' or face='bottom'. "
             "Use validate_requirement only when completion judgment is actually needed. "
             "Use query_feature_probes when the remaining uncertainty is family-specific geometry rather than raw entity targeting. "
             "Use execute_build123d_probe when you need a one-off diagnostic Build123d/OCP script and the standard read tools are not enough. "
@@ -147,6 +150,13 @@ class V2ContextManager:
             "If previous_tool_failure_summary exposes a normalized failure kind or recovery bias, avoid repeating the same failing write pattern. "
             "If turn_tool_policy is present, obey it strictly for this turn and only call tools that remain exposed. "
             "If runtime skill notes are present, treat them as concise operational guidance for the current failure mode. "
+            "Sketch primitives such as `Circle(...)`, `Ellipse(...)`, and `Rectangle(...)` belong inside `BuildSketch`, not directly inside an active `BuildPart`. "
+            "Do not write `with Rot(...):` or `with Pos(...):`; they are transforms, not builder context managers. "
+            "Do not import `ocp_vscode` or call `show(...)` / `show_object(...)`; sandbox execution must return geometry through `result = ...` only. "
+            "Inside an active BuildPart, do not create a primitive and then relocate it with `Pos(...) * solid` or `Rot(...) * solid`; use `Locations(...)` at creation time, or close the builder first and transform the detached solid afterward. "
+            "For rounded rectangular shells or bodies, do not invent `Box(..., radius=...)`; use `RectangleRounded(...)` plus BuildSketch/extrude or add explicit fillets after a plain box. "
+            "If a detached helper, cavity proxy, or cutter needs anisotropic scaling, use lowercase `scale(shape, by=(sx, sy, sz))`; do not invent `Scale(...)` or `Scale.by(...)`. "
+            "For detached hinge barrels, hinge pins, or other rotated helper solids, build them positively first, close that builder, then orient the closed solid with `Rot(...) * part` or `Pos(...) * Rot(...) * part`. "
             "Treat stale read evidence from before the latest successful write as expired, especially old probe or validation results. "
             "Trust freshest_evidence, latest_write_health, and evidence_status.stale_evidence_invalidated over older contradictory diagnostics. "
             "If stall_summary says the last turns were repeated read-only checks without state change, prefer a concrete repair write or an explicit finish decision over more of the same read tools. "
@@ -256,6 +266,11 @@ class V2ContextManager:
             ):
                 if key in raw_kernel_digest:
                     kernel_digest[key] = raw_kernel_digest.get(key)
+        topology_targeting_summary = self._summarize_topology_targeting(
+            fresh_evidence.get("query_topology")
+            if isinstance(fresh_evidence.get("query_topology"), dict)
+            else None
+        )
         payload: dict[str, Any] = {
             "requirements": run_state.requirements,
             "domain_kernel_digest": kernel_digest,
@@ -278,6 +293,12 @@ class V2ContextManager:
                 evidence_conflict_detected=evidence_conflict_detected,
             ),
             "freshest_evidence": self._summarize_evidence(fresh_evidence),
+            "topology_targeting_summary": topology_targeting_summary,
+            "local_finish_contract": self._build_local_finish_contract(
+                turn_tool_policy=turn_tool_policy,
+                topology_targeting_summary=topology_targeting_summary,
+                domain_kernel_digest=raw_kernel_digest,
+            ),
             "stale_evidence_invalidated": stale_evidence_invalidated,
             "evidence_conflict_detected": evidence_conflict_detected,
             "fresh_write_pending_judgment": fresh_write_pending_judgment,
@@ -356,6 +377,64 @@ class V2ContextManager:
             if key in previous_tool_failure_summary:
                 compacted[key] = previous_tool_failure_summary.get(key)
         return compacted
+
+    def _summarize_failure_lint_hits(
+        self,
+        lint_hits: Any,
+    ) -> list[dict[str, Any]] | None:
+        if not isinstance(lint_hits, list) or not lint_hits:
+            return None
+        summarized: list[dict[str, Any]] = []
+        for item in lint_hits[:4]:
+            if not isinstance(item, dict):
+                continue
+            payload: dict[str, Any] = {}
+            for key in (
+                "rule_id",
+                "message",
+                "repair_hint",
+                "layer",
+                "category",
+                "severity",
+                "recommended_recipe_id",
+            ):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    text = value.strip()
+                    payload[key] = text if len(text) <= 240 else text[:240] + "..."
+            if payload:
+                summarized.append(payload)
+        return summarized or None
+
+    def _summarize_failure_repair_recipe(
+        self,
+        repair_recipe: Any,
+    ) -> dict[str, Any] | None:
+        if not isinstance(repair_recipe, dict) or not repair_recipe:
+            return None
+        summary: dict[str, Any] = {}
+        for key in ("recipe_id", "repair_family", "recipe_summary"):
+            value = repair_recipe.get(key)
+            if isinstance(value, str) and value.strip():
+                text = value.strip()
+                summary[key] = text if len(text) <= 480 else text[:480] + "..."
+        recipe_skeleton = repair_recipe.get("recipe_skeleton")
+        if isinstance(recipe_skeleton, dict) and recipe_skeleton:
+            skeleton_summary = compact_jsonish(
+                recipe_skeleton,
+                max_depth=4,
+                max_items=12,
+                max_string_chars=320,
+            )
+            if isinstance(skeleton_summary, dict):
+                steps = recipe_skeleton.get("steps")
+                if isinstance(steps, list) and steps:
+                    skeleton_summary["steps"] = [
+                        item if not isinstance(item, str) or len(item) <= 320 else item[:320] + "..."
+                        for item in steps[:8]
+                    ]
+                summary["recipe_skeleton"] = skeleton_summary
+        return summary or None
 
     def _build_message_stack(
         self,
@@ -482,6 +561,7 @@ class V2ContextManager:
         evidence_payload = {
             "evidence_status": payload.get("evidence_status"),
             "freshest_evidence": payload.get("freshest_evidence"),
+            "topology_targeting_summary": payload.get("topology_targeting_summary"),
             "stale_evidence_invalidated": payload.get("stale_evidence_invalidated"),
             "latest_write_summary": payload.get("latest_write_summary"),
         }
@@ -504,10 +584,18 @@ class V2ContextManager:
     ) -> list[dict[str, Any]]:
         if not isinstance(runtime_skills, list) or not runtime_skills:
             return []
+        max_visible_skills = 8
         prepared: list[dict[str, Any]] = []
-        for item in runtime_skills[:6]:
+        sortable_skills: list[tuple[int, int, dict[str, Any]]] = []
+        for index, item in enumerate(runtime_skills):
             if not isinstance(item, dict):
                 continue
+            priority_raw = item.get("context_priority")
+            priority = 100
+            if isinstance(priority_raw, (int, float)):
+                priority = int(priority_raw)
+            sortable_skills.append((priority, index, item))
+        for _, _, item in sorted(sortable_skills, key=lambda entry: (entry[0], entry[1]))[:max_visible_skills]:
             skill_id = str(item.get("skill_id") or "").strip()
             when_relevant = str(item.get("when_relevant") or "").strip()
             guidance_raw = item.get("guidance")
@@ -743,7 +831,15 @@ class V2ContextManager:
         ):
             if status in {"stable_or_unknown", "no_write_yet"}:
                 status = "budget_constrained"
-            recommended_bias = "prefer_whole_part_write_over_partial_sketch_step"
+            if (
+                current_sketch_completion_risk.get("recommended_fallback")
+                == "prefer_apply_cad_action_material_write"
+            ):
+                recommended_bias = "prefer_materializing_active_local_sketch_over_rebuild"
+                recommended_next_tools = ["apply_cad_action", "query_sketch"]
+                reasons.append("active_sketch_profile_ready_for_material_write")
+            else:
+                recommended_bias = "prefer_whole_part_write_over_partial_sketch_step"
             reasons.append("unfinished_sketch_window_under_round_budget")
 
         if (
@@ -769,10 +865,13 @@ class V2ContextManager:
                 reasons.append("first_stable_solid_semantic_admission_would_exceed_budget")
             else:
                 if status in {"stable_or_unknown", "no_write_yet", "semantic_gap"}:
-                    status = "feature_budget_constrained"
-                recommended_bias = "prefer_execute_build123d_over_local_feature_continuation"
-                recommended_next_tools = ["execute_build123d", "query_kernel_state"]
-                reasons.append("first_stable_solid_requires_code_first_repair")
+                    status = "semantic_admission_required"
+                recommended_bias = "refresh_semantic_state_before_reopening_whole_part_write"
+                recommended_next_tools = [
+                    "query_kernel_state",
+                    "query_feature_probes",
+                ]
+                reasons.append("first_stable_solid_requires_semantic_admission")
 
         if stall_summary is not None and bool(stall_summary.get("active")):
             if status == "stable_or_unknown":
@@ -916,6 +1015,9 @@ class V2ContextManager:
             if tool_name == "validate_requirement":
                 summary[tool_name] = self._summarize_validation_evidence(payload)
                 continue
+            if tool_name == "query_topology":
+                summary[tool_name] = self._summarize_query_topology_evidence(payload)
+                continue
             summary[tool_name] = compact_jsonish(
                 payload,
                 max_depth=3,
@@ -923,6 +1025,203 @@ class V2ContextManager:
                 max_string_chars=160,
             )
         return summary
+
+    def _summarize_query_topology_evidence(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary = compact_jsonish(
+            payload,
+            max_depth=3,
+            max_items=6,
+            max_string_chars=160,
+        )
+        if not isinstance(summary, dict):
+            return {}
+        topology_summary = self._summarize_topology_targeting(payload)
+        if topology_summary:
+            summary["targeting_summary"] = topology_summary
+        return summary
+
+    def _summarize_topology_targeting(
+        self,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(payload, dict) or not payload:
+            return None
+        matched_ref_ids = [
+            str(item).strip()
+            for item in (payload.get("matched_ref_ids") or [])
+            if str(item).strip()
+        ]
+        candidate_sets_raw = (
+            payload.get("candidate_sets")
+            if isinstance(payload.get("candidate_sets"), list)
+            else []
+        )
+        summarized_candidate_sets: list[dict[str, Any]] = []
+        for item in candidate_sets_raw[:4]:
+            if not isinstance(item, dict):
+                continue
+            candidate_ref_ids = [
+                str(ref_id).strip()
+                for ref_id in (item.get("ref_ids") or [])
+                if str(ref_id).strip()
+            ]
+            semantic_host_roles = [
+                str(role).strip()
+                for role in (item.get("semantic_host_roles") or [])
+                if str(role).strip()
+            ]
+            candidate_summary: dict[str, Any] = {}
+            for key in ("candidate_id", "label", "entity_type", "host_role"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidate_summary[key] = value.strip()
+            if semantic_host_roles:
+                candidate_summary["semantic_host_roles"] = semantic_host_roles[:4]
+            if candidate_ref_ids:
+                candidate_summary["ref_ids"] = candidate_ref_ids[:8]
+                candidate_summary["ref_count"] = len(candidate_ref_ids)
+            if candidate_summary:
+                summarized_candidate_sets.append(candidate_summary)
+        matched_ref_id_count = payload.get("matched_ref_id_count")
+        topology_index = payload.get("topology_index")
+        summary: dict[str, Any] = {}
+        if matched_ref_ids:
+            summary["matched_ref_ids"] = matched_ref_ids[:8]
+        if isinstance(matched_ref_id_count, int) and matched_ref_id_count > 0:
+            summary["matched_ref_id_count"] = matched_ref_id_count
+        elif matched_ref_ids:
+            summary["matched_ref_id_count"] = len(matched_ref_ids)
+        if summarized_candidate_sets:
+            summary["candidate_sets"] = summarized_candidate_sets
+        if isinstance(topology_index, dict):
+            overview: dict[str, Any] = {}
+            for key in ("faces_total", "edges_total", "faces_truncated", "edges_truncated"):
+                value = topology_index.get(key)
+                if value not in (None, {}, []):
+                    overview[key] = value
+            if overview:
+                summary["topology_index_overview"] = overview
+        return summary or None
+
+    def _build_local_finish_contract(
+        self,
+        *,
+        turn_tool_policy: TurnToolPolicy | None,
+        topology_targeting_summary: dict[str, Any] | None,
+        domain_kernel_digest: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if turn_tool_policy is None or str(turn_tool_policy.mode or "").strip() != "local_finish":
+            return None
+        if not isinstance(topology_targeting_summary, dict) or not topology_targeting_summary:
+            return None
+        matched_ref_ids = [
+            str(item).strip()
+            for item in (topology_targeting_summary.get("matched_ref_ids") or [])
+            if str(item).strip()
+        ]
+        face_refs = [ref_id for ref_id in matched_ref_ids if ref_id.startswith("face:")]
+        edge_refs = [ref_id for ref_id in matched_ref_ids if ref_id.startswith("edge:")]
+        candidate_sets = (
+            topology_targeting_summary.get("candidate_sets")
+            if isinstance(topology_targeting_summary.get("candidate_sets"), list)
+            else []
+        )
+        preserved_layout = self._build_local_finish_preserved_layout(domain_kernel_digest)
+        instructions = [
+            "Consume the freshest query_topology refs directly in apply_cad_action; do not replace them with broad aliases like face='top' or face='bottom'.",
+            "For hole, countersink, or sketch-on-face edits on an existing solid, pass face_ref from query_topology or open create_sketch(face_ref=...) first.",
+            "Keep centers in the local face frame after attaching to the host face instead of mixing them with guessed world-space coordinates.",
+        ]
+        if preserved_layout is not None:
+            instructions.append(
+                "When semantic evidence already exposes a valid local center layout, reuse that exact center set for the remaining host-face-local detail instead of inventing new positions."
+            )
+        if edge_refs:
+            instructions.append(
+                "For fillet or chamfer local finishes, pass explicit edge_refs from query_topology instead of retrying selector guesses."
+            )
+        contract = {
+            "must_consume_exact_topology_refs": True,
+            "preferred_face_refs": face_refs[:4],
+            "preferred_edge_refs": edge_refs[:8],
+            "candidate_sets": compact_jsonish(
+                candidate_sets[:4],
+                max_depth=3,
+                max_items=6,
+                max_string_chars=160,
+            ),
+            "instructions": instructions,
+        }
+        if preserved_layout is not None:
+            contract["preserve_existing_local_layout"] = preserved_layout
+        return contract
+
+    def _build_local_finish_preserved_layout(
+        self,
+        domain_kernel_digest: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(domain_kernel_digest, dict):
+            return None
+        active_feature_instances = domain_kernel_digest.get("active_feature_instances")
+        if not isinstance(active_feature_instances, list):
+            return None
+        for item in active_feature_instances:
+            if not isinstance(item, dict):
+                continue
+            parameter_bindings = (
+                item.get("parameter_bindings")
+                if isinstance(item.get("parameter_bindings"), dict)
+                else {}
+            )
+            realized_centers = self._coerce_xy_point_list(
+                parameter_bindings.get("realized_centers")
+            )
+            expected_centers = self._coerce_xy_point_list(
+                parameter_bindings.get("expected_local_centers")
+            )
+            expected_count_raw = parameter_bindings.get("expected_local_center_count")
+            expected_count = (
+                int(expected_count_raw)
+                if isinstance(expected_count_raw, (int, float))
+                else (len(expected_centers) if expected_centers else None)
+            )
+            if not realized_centers or expected_count is None:
+                continue
+            if len(realized_centers) != expected_count:
+                continue
+            family_id = str(item.get("family_id") or "").strip()
+            if not family_id:
+                continue
+            host_face = str(
+                parameter_bindings.get("host_face")
+                or item.get("host_ids", [""])[0]
+                or ""
+            ).strip()
+            return {
+                "family_id": family_id,
+                "host_face": host_face,
+                "expected_center_count": expected_count,
+                "realized_centers": realized_centers[:6],
+                "source": "domain_kernel_active_feature_instances",
+            }
+        return None
+
+    def _coerce_xy_point_list(self, value: Any) -> list[list[float]]:
+        if not isinstance(value, list):
+            return []
+        normalized: list[list[float]] = []
+        for item in value:
+            if (
+                isinstance(item, (list, tuple))
+                and len(item) >= 2
+                and isinstance(item[0], (int, float))
+                and isinstance(item[1], (int, float))
+            ):
+                normalized.append([float(item[0]), float(item[1])])
+        return normalized
 
     def _summarize_validation_evidence(self, payload: dict[str, Any]) -> dict[str, Any]:
         summary: dict[str, Any] = {}
@@ -1253,7 +1552,11 @@ class V2ContextManager:
             "min_write_steps_remaining": min_write_steps_remaining,
             "open_window_reason": open_window_reason,
             "recommended_fallback": (
-                "prefer_execute_build123d"
+                (
+                    "prefer_apply_cad_action_material_write"
+                    if profile_refs and risk in {"high", "critical"}
+                    else "prefer_execute_build123d"
+                )
                 if risk in {"high", "critical"}
                 else "incremental_write_is_still_viable"
             ),
@@ -1411,22 +1714,12 @@ class V2ContextManager:
             summary["recommended_next_tools"] = _failure_recommended_next_tools(
                 effective_failure_kind
             )
-        lint_hits = payload.get("lint_hits")
-        if isinstance(lint_hits, list) and lint_hits:
-            summary["lint_hits"] = compact_jsonish(
-                lint_hits,
-                max_depth=3,
-                max_items=4,
-                max_string_chars=160,
-            )
-        repair_recipe = payload.get("repair_recipe")
-        if isinstance(repair_recipe, dict) and repair_recipe:
-            summary["repair_recipe"] = compact_jsonish(
-                repair_recipe,
-                max_depth=3,
-                max_items=6,
-                max_string_chars=180,
-            )
+        lint_hits = self._summarize_failure_lint_hits(payload.get("lint_hits"))
+        if lint_hits:
+            summary["lint_hits"] = lint_hits
+        repair_recipe = self._summarize_failure_repair_recipe(payload.get("repair_recipe"))
+        if repair_recipe:
+            summary["repair_recipe"] = repair_recipe
         if stderr_text:
             summary["stderr_excerpt"] = stderr_text[:400]
         artifact_files = payload.get("output_files")
@@ -1680,10 +1973,21 @@ def _classify_write_failure(
             return "execute_build123d_selector_failure"
         if "chamfer" in lowered and "edges be selected" in lowered:
             return "execute_build123d_selector_failure"
+        if "no suitable edges for chamfer or fillet" in lowered:
+            return "execute_build123d_selector_failure"
+        if (
+            ("fillet" in lowered or "chamfer" in lowered)
+            and "stdfail_notdone" in lowered
+            and "command not done" in lowered
+        ):
+            return "execute_build123d_selector_failure"
+        if "nothing to subtract from" in lowered:
+            return "execute_build123d_detached_subtractive_builder_failure"
     return None
 
 
 _RETAINABLE_EXECUTE_CADQUERY_FAILURE_KINDS = {
+    "execute_build123d_detached_subtractive_builder_failure",
     "execute_build123d_python_syntax_failure",
     "execute_build123d_chain_context_failure",
     "execute_build123d_curve_api_failure",
@@ -1703,6 +2007,7 @@ def _failure_recovery_bias(failure_kind: str) -> str:
         "execute_build123d_loft_wire_recipe_failure": "repair_loft_wire_recipe_before_retry",
         "execute_build123d_selector_api_failure": "repair_selector_api_usage_before_retry",
         "execute_build123d_selector_failure": "separate_local_edge_finish_from_whole_part_code_retry",
+        "execute_build123d_detached_subtractive_builder_failure": "repair_detached_subtractive_builder_before_retry",
     }
     return recovery_bias_map.get(failure_kind, "repair_before_retry")
 
@@ -1761,6 +2066,12 @@ def _failure_recommended_next_steps(failure_kind: str) -> list[str]:
             "Do not keep retrying selector-based whole-part fillet/chamfer code blindly.",
             "Either rebuild only up to the pre-fillet solid and finish locally with query_topology plus apply_cad_action, or use a more reliable explicit edge-targeting strategy once authoritative refs exist.",
         ]
+    if failure_kind == "execute_build123d_detached_subtractive_builder_failure":
+        return [
+            "Treat `Nothing to subtract from` as a detached subtractive builder error: a subtractive primitive or subtractive extrude was opened before an additive host existed in that builder.",
+            "If the cut belongs to the current host, keep the subtraction inside the authoritative host builder after the host solid already exists.",
+            "If the cut needs a detached cutter, build the cutter as a positive solid first, close that builder, and only then subtract it explicitly from the host solid.",
+        ]
     return ["Repair the concrete failure before another broad retry."]
 
 
@@ -1785,6 +2096,8 @@ def _failure_recommended_next_tools(failure_kind: str) -> list[str]:
         return ["execute_build123d", "execute_build123d_probe"]
     if failure_kind == "execute_build123d_selector_failure":
         return ["execute_build123d", "query_feature_probes"]
+    if failure_kind == "execute_build123d_detached_subtractive_builder_failure":
+        return ["execute_build123d", "query_kernel_state"]
     return []
 
 

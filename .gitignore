@@ -12,6 +12,7 @@ historical_snapshots/
 *.pyc
 .DS_Store
 test_runs/
+practice_runs/
 benchmark/runs/
 benchmark/sampled_10_per_L/
 benchmark/.DS_Store

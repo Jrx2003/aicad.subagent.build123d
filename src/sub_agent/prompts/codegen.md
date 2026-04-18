@@ -36,7 +36,9 @@ result = part.part
 - `Cylinder(radius, height)` - Create a cylinder
 - `Sphere(radius)` - Create a sphere
 - Do not invent `Box(..., depth=...)`; Build123d boxes use `length`, `width`, and `height`
+- Do not invent `Box(..., radius=...)`; for rounded-corner box bodies, use `RectangleRounded(...)` + `extrude(...)` or add explicit edge fillets after creating the box
 - `Box(length, width, height)` is centered at the origin by default. For a centered box, `top_face_z = height / 2` and `bottom_face_z = -height / 2` unless you explicitly reposition the body.
+- If the requirement asks for separate physical parts such as lid/base or body/cover, model each physical part in its own closed `BuildPart` and only combine them as detached solids or a `Compound(...)` after those builders close. Do not keep all physical parts inside one shared active `BuildPart`.
 
 ### 2D to 3D
 - `with BuildSketch(Plane.XY): Rectangle(width, height)` - Sketch a rectangle
@@ -46,6 +48,7 @@ result = part.part
 - For Build123d angle parameters, pass plain degree numbers such as `start_angle=-90` and `arc_size=90` directly; do not multiply them by `DEGREE` or `DEGREES`.
 - For explicit circular elbows with a named radius or quarter-turn, prefer `CenterArc(...)` with `start_angle=` and `arc_size=`; only reach for `TangentArc(...)` or `JernArc(...)` when the requirement truly gives a tangent-construction recipe and you are not guessing the elbow endpoint or turn center.
 - `extrude(amount=depth)` - Extrude the active sketch/profile inside `BuildPart`
+- For slot/notch style subtractive cuts, sketch the profile first with `with BuildSketch(target_plane): SlotOverall(...)` or the equivalent 2D profile, then call `extrude(..., mode=Mode.SUBTRACT)` from that sketch. Do not write `SlotOverall(..., mode=Mode.SUBTRACT)` directly, and do not wrap the slot profile in `with Rot(...):` / `with Pos(...):`.
 - When turning a closed `BuildLine` wire into a face, use lowercase `make_face()`. Do not invent `MakeFace()`
 - Curve helpers such as `Polyline(...)`, `Line(...)`, `CenterArc(...)`, and `RadiusArc(...)` belong inside `BuildLine`, not directly inside `BuildSketch`
 - `revolve(...)` uses `revolution_arc=` for an explicit sweep amount; do not invent `angle=...`. A safe builder-first pattern is `with BuildLine(): ...`, then `make_face()`, then `revolve(axis=Axis.Z)` or `revolve(axis=Axis.Z, revolution_arc=360)`
@@ -67,8 +70,10 @@ result = part.part
 - `mode=Mode.ADD` - Boolean union inside builders
 - `mode=Mode.INTERSECT` - Boolean intersection inside builders
 - For repeated subtractive features inside `BuildPart`, prefer explicit builder-native patterns such as `with Locations((x, y, top_z)): Sphere(radius=..., mode=Mode.SUBTRACT)`
+- Do not open a nested `BuildPart(mode=Mode.SUBTRACT)` inside an active host builder just to cut an inner cavity, slot, notch, or repeated pocket. Keep those subtractive primitives in the same authoritative `BuildPart`, or close the host builder first and subtract the detached cutter afterward.
 - Do not invent a top-level `subtract(...)` helper; use `mode=Mode.SUBTRACT` inside builders or an explicit solid boolean such as `result = host.part - cutter`
 - Do not instantiate a detached `Cylinder(...)` cutter inside an active `BuildPart` and then subtract it with `result = part.part - cutter`; primitive constructors add to the active builder immediately. Instead, build the host in one `BuildPart`, close it, then create the cutter outside that builder before the explicit boolean.
+- Inside an active `BuildPart`, do not create `solid = Box(...)`, `solid = Cylinder(...)`, or similar primitives and then try to relocate them with `solid = Pos(...) * solid` or `solid = Rot(...) * solid`; those primitives already mutated the host when they were created. If placement matters, use `Locations(...)` at creation time, or close the builder first and transform the detached solid afterward.
 - Every primitive constructor inside an active `BuildPart` mutates that host immediately. Do not create temporary `outer_cyl = Cylinder(...)`, `inner_cyl = Cylinder(...)`, or `half_space_box = Box(...)` values there just for later boolean/intersection arithmetic; if they are only staging solids, close the host builder before doing explicit solid arithmetic, or encode the shape through one builder-native sketch/profile recipe.
 - If you truly need a temporary staging solid inside an active `BuildPart`, create it with `mode=Mode.PRIVATE` so it does not mutate the host before the later boolean.
 - Do not open a nested `BuildPart()` cutter inside an active `BuildPart` and then mutate `part.part -= cutter.part`; repeated placements can collapse into one origin-centered boolean instead of preserving the intended feature locations
@@ -92,6 +97,7 @@ result = part.part
 - `Rot(x, y, z) * shape` - Rotate a shape
 - `mirror(about=Plane.XY)` - Mirror across a plane
 - Use positional `Pos(x, y, z)` placement. Do not guess lowercase keyword forms such as `Pos(z=30)`.
+- For detached hinge barrels, pins, or other rotated helper solids, do not write `with Rot(...): Cylinder(...)` inside `BuildPart`. Build the detached solid positively first, close that builder, then orient the closed solid with `Rot(...) * hinge_barrel.part` or `Pos(...) * Rot(...) * hinge_barrel.part`.
 
 ### Holes and Features
 - `Hole(radius=..., depth=...)` inside a face-local sketch/build context

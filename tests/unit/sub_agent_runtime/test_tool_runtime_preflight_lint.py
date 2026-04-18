@@ -1,4 +1,10 @@
-from sub_agent_runtime.tool_runtime import _preflight_lint_execute_build123d
+from sub_agent_runtime.tool_runtime import (
+    _preflight_gate_apply_cad_action,
+    _preflight_lint_execute_build123d,
+)
+from types import SimpleNamespace
+
+from sub_agent_runtime.turn_state import RunState, TurnToolPolicy
 
 
 _CYLINDRICAL_SLOT_REQUIREMENT = (
@@ -92,6 +98,792 @@ def test_preflight_lint_rejects_bare_rotate_helper() -> None:
     assert "invalid_build123d_api.bare_rotate_helper" in rule_ids
 
 
+def test_preflight_lint_rejects_display_only_debug_helpers() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "from ocp_vscode import show\n"
+            "with BuildPart() as part:\n"
+            "    Box(10, 10, 10)\n"
+            "result = part.part\n"
+            "show(result)\n"
+        ),
+        session_id="test-session",
+        requirement_text="create a simple block",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_runtime.display_only_helper_import" in rule_ids
+
+
+def test_apply_cad_action_preflight_rejects_rollback_escape_under_local_finish_policy() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-rollback-escape",
+        requirements={"description": "Create a bracket with topology-aware local finishing."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="rollback",
+        action_params={"to_step": 0},
+        run_state=run_state,
+    )
+
+    assert payload is not None
+    assert payload["failure_kind"] == "apply_cad_action_contract_failure"
+    assert "rollback" in payload["error_message"]
+
+
+def test_apply_cad_action_preflight_allows_topology_anchored_create_sketch_under_local_finish_policy() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-create-sketch",
+        requirements={"description": "Create a bracket with topology-aware local finishing."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="create_sketch",
+        action_params={"face_ref": "face:front:mating"},
+        run_state=run_state,
+    )
+
+    assert payload is None
+
+
+def test_apply_cad_action_preflight_rejects_broad_face_alias_for_hole_under_local_finish_policy() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-hole-face-alias",
+        requirements={"description": "Create a bracket with topology-aware local finishing."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "matched_ref_ids": [
+                "face:1:F_front_mounting",
+                "face:1:F_front_mounting_2",
+                "edge:1:E_front_top_0",
+            ],
+            "candidate_sets": [
+                {
+                    "candidate_id": "front_faces",
+                    "label": "Front Faces",
+                    "entity_type": "face",
+                    "ref_ids": [
+                        "face:1:F_front_mounting",
+                        "face:1:F_front_mounting_2",
+                    ],
+                },
+                {
+                    "candidate_id": "front_top_edges",
+                    "label": "Front Top Edges",
+                    "entity_type": "edge",
+                    "ref_ids": ["edge:1:E_front_top_0", "edge:1:E_front_top_1"],
+                },
+            ],
+        },
+        round_no=6,
+    )
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="hole",
+        action_params={
+            "face": "front",
+            "centers": [[-23.0, 0.0], [23.0, 0.0]],
+            "diameter": 5.0,
+            "depth": 15.0,
+            "countersink_diameter": 9.0,
+            "countersink_angle": 90.0,
+        },
+        run_state=run_state,
+    )
+
+    assert payload is not None
+    assert payload["failure_kind"] == "apply_cad_action_contract_failure"
+    assert "face_ref" in payload["error_message"]
+    assert payload["preferred_face_refs"] == [
+        "face:1:F_front_mounting",
+        "face:1:F_front_mounting_2",
+    ]
+    assert payload["candidate_face_set_labels"] == ["Front Faces"]
+
+
+def test_apply_cad_action_preflight_normalizes_exact_face_ref_passed_via_face_field() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-hole-face-ref-alias",
+        requirements={"description": "Create a bracket with topology-aware local finishing."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "matched_ref_ids": [
+                "face:1:F_front_mounting",
+                "edge:1:E_front_top_0",
+            ],
+            "candidate_sets": [
+                {
+                    "candidate_id": "front_faces",
+                    "label": "Front Faces",
+                    "entity_type": "face",
+                    "ref_ids": ["face:1:F_front_mounting"],
+                }
+            ],
+        },
+        round_no=6,
+    )
+    action_params = {
+        "face": "face:1:F_front_mounting",
+        "centers": [[-23.0, 0.0], [23.0, 0.0]],
+        "diameter": 5.0,
+        "depth": 15.0,
+        "countersink_diameter": 9.0,
+        "countersink_angle": 90.0,
+    }
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="hole",
+        action_params=action_params,
+        run_state=run_state,
+    )
+
+    assert payload is None
+    assert action_params["face_ref"] == "face:1:F_front_mounting"
+    assert "face" not in action_params
+
+
+def test_apply_cad_action_preflight_normalizes_exact_edge_refs_passed_via_edges_field() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-edge-refs-alias",
+        requirements={"description": "Create a bracket with topology-aware local finishing."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="continue_local_finish_after_semantic_refresh",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "candidate_sets": [
+                {
+                    "candidate_id": "top_outer_edges",
+                    "label": "Top Outer Edges",
+                    "entity_type": "edge",
+                    "ref_ids": [
+                        "edge:2:E_a",
+                        "edge:2:E_b",
+                        "edge:2:E_c",
+                    ],
+                }
+            ],
+        },
+        round_no=6,
+    )
+    action_params = {
+        "edges": ["edge:2:E_a", "edge:2:E_b"],
+        "radius": 1.5,
+    }
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="fillet",
+        action_params=action_params,
+        run_state=run_state,
+    )
+
+    assert payload is None
+    assert action_params["edge_refs"] == ["edge:2:E_a", "edge:2:E_b"]
+    assert "edges" not in action_params
+
+
+def test_apply_cad_action_preflight_resolves_unambiguous_broad_face_alias_to_single_candidate_ref() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-hole-bottom-alias",
+        requirements={"description": "Create a bracket with topology-aware local finishing."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "matched_ref_ids": [
+                "face:1:F_bottom_mounting",
+                "face:1:F_top_outer",
+                "face:1:F_top_inner",
+            ],
+            "candidate_sets": [
+                {
+                    "candidate_id": "bottom_faces",
+                    "label": "Bottom Faces",
+                    "entity_type": "face",
+                    "ref_ids": ["face:1:F_bottom_mounting"],
+                },
+                {
+                    "candidate_id": "top_faces",
+                    "label": "Top Faces",
+                    "entity_type": "face",
+                    "ref_ids": ["face:1:F_top_outer", "face:1:F_top_inner"],
+                },
+            ],
+        },
+        round_no=6,
+    )
+    action_params = {
+        "face": "bottom",
+        "hole_type": "countersink",
+        "diameter": 3.5,
+        "depth": 10.0,
+        "countersink_diameter": 6.5,
+        "countersink_angle": 90.0,
+    }
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="hole",
+        action_params=action_params,
+        run_state=run_state,
+    )
+
+    assert payload is None
+    assert action_params["face_ref"] == "face:1:F_bottom_mounting"
+    assert "face" not in action_params
+
+
+def test_apply_cad_action_preflight_normalizes_exact_face_reference_alias() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-face-reference-alias",
+        requirements={"description": "Create a bracket with topology-aware local finishing."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="continue_local_finish_after_semantic_refresh",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "candidate_sets": [
+                {
+                    "candidate_id": "bottom_faces",
+                    "label": "Bottom Faces",
+                    "entity_type": "face",
+                    "ref_ids": ["face:3:F_bottom_mounting"],
+                }
+            ],
+        },
+        round_no=6,
+    )
+    action_params = {
+        "face_reference": "face:3:F_bottom_mounting",
+        "hole_type": "countersink",
+        "diameter": 3.5,
+        "depth": 10.0,
+    }
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="hole",
+        action_params=action_params,
+        run_state=run_state,
+    )
+
+    assert payload is None
+    assert action_params["face_ref"] == "face:3:F_bottom_mounting"
+    assert "face_reference" not in action_params
+
+
+def test_apply_cad_action_preflight_normalizes_unique_candidate_face_ref_under_local_finish() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-candidate-face-ref",
+        requirements={"description": "Apply a topology-aware local hole on the mating face."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "matched_ref_ids": ["face:1:F_mating"],
+            "candidate_sets": [
+                {
+                    "candidate_id": "mating_faces",
+                    "label": "Mating Faces",
+                    "entity_type": "face",
+                    "ref_ids": ["face:1:F_mating"],
+                }
+            ],
+        },
+        round_no=6,
+    )
+    action_params = {
+        "face_ref": "candidate:mating_faces",
+        "diameter": 3.5,
+        "depth": 10.0,
+        "position": [0.0, 0.0],
+    }
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="hole",
+        action_params=action_params,
+        run_state=run_state,
+    )
+
+    assert payload is None
+    assert action_params["face_ref"] == "face:1:F_mating"
+
+
+def test_apply_cad_action_preflight_rejects_ambiguous_candidate_face_ref_under_local_finish() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-ambiguous-candidate-face-ref",
+        requirements={"description": "Apply a topology-aware local hole on one top face."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "matched_ref_ids": [
+                "face:1:F_top_a",
+                "face:1:F_top_b",
+            ],
+            "candidate_sets": [
+                {
+                    "candidate_id": "top_faces",
+                    "label": "Top Faces",
+                    "entity_type": "face",
+                    "ref_ids": ["face:1:F_top_a", "face:1:F_top_b"],
+                }
+            ],
+        },
+        round_no=6,
+    )
+    action_params = {
+        "face_ref": "candidate:top_faces",
+        "diameter": 3.5,
+        "depth": 10.0,
+        "position": [0.0, 0.0],
+    }
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="hole",
+        action_params=action_params,
+        run_state=run_state,
+    )
+
+    assert payload is not None
+    assert payload["failure_kind"] == "apply_cad_action_contract_failure"
+    assert "candidate face set" in payload["error_message"]
+    assert payload["preferred_face_refs"] == ["face:1:F_top_a", "face:1:F_top_b"]
+
+
+def test_apply_cad_action_preflight_normalizes_exact_target_edges_alias() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-target-edges-alias",
+        requirements={"description": "Create a bracket with topology-aware local finishing."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="continue_local_finish_after_semantic_refresh",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "candidate_sets": [
+                {
+                    "candidate_id": "top_outer_edges",
+                    "label": "Top Outer Edges",
+                    "entity_type": "edge",
+                    "ref_ids": ["edge:3:E_a", "edge:3:E_b"],
+                }
+            ],
+        },
+        round_no=6,
+    )
+    action_params = {
+        "target_edges": ["edge:3:E_a", "edge:3:E_b"],
+        "radius": 1.5,
+    }
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="fillet",
+        action_params=action_params,
+        run_state=run_state,
+    )
+
+    assert payload is None
+    assert action_params["edge_refs"] == ["edge:3:E_a", "edge:3:E_b"]
+    assert "target_edges" not in action_params
+
+
+def test_apply_cad_action_preflight_rejects_cut_extrude_without_active_profile_sketch() -> None:
+    run_state = RunState(
+        session_id="session-cut-extrude-without-profile",
+        requirements={"description": "Cut a face-local rectangular pocket after opening a sketch."},
+    )
+    run_state.action_history = [
+        {
+            "step": 1,
+            "action_type": "create_sketch",
+            "action_params": {"face_ref": "face:1:F_top"},
+        }
+    ]
+    run_state.evidence.update(
+        tool_name="query_sketch",
+        payload={
+            "sketch_state": {
+                "plane": "face:1:F_top",
+                "profile_refs": [],
+                "path_refs": [],
+            }
+        },
+        round_no=2,
+    )
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="cut_extrude",
+        action_params={"distance": 6.0, "through_all": False},
+        run_state=run_state,
+    )
+
+    assert payload is not None
+    assert payload["failure_kind"] == "apply_cad_action_contract_failure"
+    assert "cut_extrude" in payload["error_message"]
+    assert "active profile sketch" in payload["error_message"]
+
+
+def test_apply_cad_action_preflight_allows_cut_extrude_with_active_profile_sketch() -> None:
+    run_state = RunState(
+        session_id="session-cut-extrude-with-profile",
+        requirements={"description": "Cut a face-local rectangular pocket after completing a sketch."},
+    )
+    run_state.action_history = [
+        {
+            "step": 1,
+            "action_type": "add_rectangle",
+            "action_params": {"width": 18.0, "height": 10.0},
+        }
+    ]
+    run_state.evidence.update(
+        tool_name="query_sketch",
+        payload={
+            "sketch_state": {
+                "plane": "face:1:F_top",
+                "profile_refs": ["profile:1:P_rect"],
+                "path_refs": [],
+            }
+        },
+        round_no=2,
+    )
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="cut_extrude",
+        action_params={"distance": 6.0, "through_all": False},
+        run_state=run_state,
+    )
+
+    assert payload is None
+
+
+def test_preflight_lint_rejects_buildpart_topology_access_inside_buildsketch() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        Rectangle(40, 20)\n"
+            "        fillet(*part.vertices(), radius=4)\n"
+            "    extrude(amount=10)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded rectangular enclosure body.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_context.buildpart_topology_access_inside_buildsketch" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "build123d_buildsketch_builder_boundary_contract"
+    )
+
+
+def test_preflight_lint_rejects_sketch_primitive_inside_buildpart_without_buildsketch() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(78, 56, 12)\n"
+            "    with Locations((0, 0, 6)):\n"
+            "        Ellipse(12, 18)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded enclosure with an organic top cavity.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_context.sketch_primitive_requires_buildsketch" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_sketch_primitive_builder_contract"
+
+
+def test_preflight_lint_rejects_transform_helper_as_context_manager() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(40, 20, 8)\n"
+            "    with Rot(90, 0, 0):\n"
+            "        Cylinder(2, 50, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a bracket and add a rotated cylindrical cut.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_context.transform_context_manager" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_transform_placement_contract"
+
+
+def test_preflight_lint_rejects_detached_subtractive_builder_without_host() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as magnet_slots:\n"
+            "    with Locations((20, 12, 4), (-20, 12, 4)):\n"
+            "        Cylinder(radius=3.0, height=2.5, mode=Mode.SUBTRACT)\n"
+            "result = magnet_slots.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part clamshell enclosure with four corner magnet recesses and a "
+            "front thumb notch."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.detached_subtractive_builder_without_host" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "detached_subtractive_builder_without_host_contract"
+    )
+
+
+def test_preflight_lint_marks_clamshell_hinge_requirements_as_half_shell_family() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as magnet_slots:\n"
+            "    with Locations((20, 12, 4), (-20, 12, 4)):\n"
+            "        Cylinder(radius=3.0, height=2.5, mode=Mode.SUBTRACT)\n"
+            "result = magnet_slots.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part clamshell enclosure with a top lid, bottom base, pin hinge, "
+            "corner magnet recesses, and a thumb notch."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    assert "half_shell" in payload["candidate_family_ids"]
+
+
+def test_preflight_lint_allows_same_builder_subtract_when_host_exists_first() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    Box(40, 30, 12)\n"
+            "    with Locations((12, 8, 6), (-12, 8, 6)):\n"
+            "        Cylinder(radius=3.0, height=2.5, mode=Mode.SUBTRACT)\n"
+            "result = base.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a base block with two magnet recesses near the top face.",
+        run_state=None,
+    )
+
+    assert payload is None or (
+        "invalid_build123d_contract.detached_subtractive_builder_without_host"
+        not in {item["rule_id"] for item in payload["lint_hits"]}
+    )
+
+
+def test_preflight_lint_rejects_compound_positional_children_contract() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    Box(40, 30, 10)\n"
+            "with BuildPart() as lid:\n"
+            "    Box(40, 30, 10)\n"
+            "result = Compound(base.part, lid.part)\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part clamshell enclosure with separate lid and base parts in one assembled pose."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.compound_positional_children_contract" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_compound_children_contract"
+
+
+def test_preflight_lint_rejects_case_drift_local_symbol_before_container_runtime() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "mag_z = 4.0\n"
+            "with BuildPart() as part:\n"
+            "    Box(40, 20, 8)\n"
+            "    with Locations((0, 0, mag_Z)):\n"
+            "        Cylinder(2, 10, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a box with one cylindrical recess.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    hits = payload["lint_hits"]
+    rule_ids = {item["rule_id"] for item in hits}
+    assert "invalid_build123d_identifier.case_drift_local_symbol" in rule_ids
+    repair_hints = "\n".join(str(item.get("repair_hint") or "") for item in hits)
+    assert "`mag_Z`" in repair_hints
+    assert "`mag_z`" in repair_hints
+
+
+def test_preflight_lint_does_not_mistake_build123d_pos_for_local_case_drift() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "pos = (0, 0, 0)\n"
+            "with BuildPart() as part:\n"
+            "    Box(20, 20, 8)\n"
+            "result = part.part.moved(Pos(0, 0, 4))\n"
+        ),
+        session_id="test-session",
+        requirement_text="Move the box upward after it is built.",
+        run_state=None,
+    )
+
+    if payload is None:
+        return
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_identifier.case_drift_local_symbol" not in rule_ids
+
+
+def test_preflight_lint_rejects_ellipse_major_minor_radius_aliases() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(78, 56, 12)\n"
+            "    with BuildSketch(Plane.XY.offset(9)):\n"
+            "        Ellipse(major_radius=14, minor_radius=10)\n"
+            "    extrude(amount=2, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded enclosure and cut one shallow organic top cavity.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.ellipse_major_radius_alias" in rule_ids
+    assert "invalid_build123d_keyword.ellipse_minor_radius_alias" in rule_ids
+
+
 def test_preflight_lint_rejects_filter_by_direction_and_surfaces_axis_filter_contract() -> None:
     payload = _preflight_lint_execute_build123d(
         code=(
@@ -133,6 +925,90 @@ def test_preflight_lint_rejects_edge_is_parallel_axis_and_reuses_axis_filter_con
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_api.edge_is_parallel_axis" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "build123d_shapelist_axis_filter_contract"
+
+
+def test_preflight_lint_rejects_filter_by_position_keyword_band_aliases() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(60, 40, 30)\n"
+            "    top_edges = part.edges().filter_by(Axis.Z).filter_by_position(Axis.Z, ZMin=10, ZMax=15)\n"
+            "    fillet(top_edges, radius=1)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="fillet the top edges parallel to the Z direction band",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.filter_by_position_keyword_band" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_shapelist_axis_filter_contract"
+
+
+def test_preflight_lint_rejects_filter_by_position_plane_axis_argument() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(60, 40, 30)\n"
+            "    top_edges = part.edges().filter_by_position(Plane.XY, 14.9, 15.1)\n"
+            "    fillet(top_edges, radius=1)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="fillet the top opening edges after selecting the top Z band",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.filter_by_position_plane_axis" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_shapelist_axis_filter_contract"
+
+
+def test_preflight_lint_rejects_member_fillet_radius_keyword_conflict() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(60, 40, 30)\n"
+            "solid = part.part\n"
+            "first_edge = solid.edges()[0]\n"
+            "solid = solid.fillet(first_edge, radius=2.4)\n"
+            "result = solid\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded block with softened outer edges.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.member_fillet_radius_keyword_conflict" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_fillet_member_contract"
+
+
+def test_preflight_lint_rejects_global_fillet_helper_with_host_shape_argument() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "base = Box(60, 40, 30)\n"
+            "top_edges = base.edges()\n"
+            "rounded = fillet(base, top_edges, 1.5)\n"
+            "result = rounded\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded block with softened top edges.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.global_fillet_helper_argument_contract" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_fillet_member_contract"
 
 
 def test_preflight_lint_rejects_active_builder_cutter_primitive_for_explicit_slot_boolean() -> None:
@@ -659,6 +1535,117 @@ def test_preflight_lint_rejects_vector_component_indexing_in_path_sweep_and_surf
     assert payload["repair_recipe"]["recipe_id"] == "build123d_path_sweep_contract"
 
 
+def test_preflight_lint_rejects_lowercase_vector_component_attribute_access() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base_part:\n"
+            "    Box(78, 56, 16)\n"
+            "base_outer_edges = [e for e in base_part.edges() if abs(e.center().z - 8) < 0.1]\n"
+            "fillet(base_outer_edges, radius=2)\n"
+            "result = base_part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded enclosure body and fillet the top outer edges.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.vector_lowercase_component_attribute" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "build123d_vector_component_attribute_contract"
+    )
+
+
+def test_preflight_lint_rejects_topology_geometry_attribute_access() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as lid:\n"
+            "    Box(78, 56, 14)\n"
+            "edges_to_fillet = [e for e in lid.part.edges() if e.geometry is not None]\n"
+            "fillet(edges_to_fillet, radius=3.0)\n"
+            "result = lid.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded enclosure lid and fillet the top outer edges.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.topology_geometry_attribute" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "build123d_topology_geometry_attribute_contract"
+    )
+
+
+def test_preflight_lint_rejects_broad_shell_axis_fillet_on_fresh_enclosure_host() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base_part:\n"
+            "    with BuildSketch():\n"
+            "        RectangleRounded(78, 56, 8)\n"
+            "    extrude(amount=20)\n"
+            "    with BuildSketch(Plane.XY.offset(2.4)):\n"
+            "        RectangleRounded(73.2, 51.2, 5.6)\n"
+            "    extrude(amount=17.6, mode=Mode.SUBTRACT)\n"
+            "    fillet(base_part.edges().filter_by(Axis.Z), 2.0)\n"
+            "result = base_part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded clamshell storage enclosure with lid and base, "
+            "corner magnet recesses, and a front thumb notch."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert (
+        "invalid_build123d_contract.broad_shell_axis_fillet_on_fresh_host"
+        in rule_ids
+    )
+    assert payload["repair_recipe"]["recipe_id"] == "shell_edge_fillet_postpone_contract"
+
+
+def test_preflight_lint_rejects_broad_shell_axis_fillet_when_selector_is_stored_first() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as shell:\n"
+            "    with BuildSketch():\n"
+            "        RectangleRounded(78, 56, 8)\n"
+            "    extrude(amount=14)\n"
+            "    with BuildSketch(Plane.XY.offset(2.4)):\n"
+            "        RectangleRounded(73.2, 51.2, 5.6)\n"
+            "    extrude(amount=11.6, mode=Mode.SUBTRACT)\n"
+            "    edges_to_fillet = shell.edges().filter_by(Axis.Z)\n"
+            "    fillet(edges_to_fillet, 3.0)\n"
+            "result = shell.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a rounded enclosure shell for a clamshell lid with a thumb notch and "
+            "magnet recesses."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert (
+        "invalid_build123d_contract.broad_shell_axis_fillet_on_fresh_host"
+        in rule_ids
+    )
+    assert payload["repair_recipe"]["recipe_id"] == "shell_edge_fillet_postpone_contract"
+
+
 def test_preflight_lint_rejects_plane_normal_keyword_alias_and_surfaces_path_sweep_contract() -> None:
     payload = _preflight_lint_execute_build123d(
         code=(
@@ -778,6 +1765,26 @@ def test_preflight_lint_rejects_bare_shell_helper_and_surfaces_shell_contract() 
     assert payload["repair_recipe"]["recipe_id"] == "build123d_shell_offset_contract"
 
 
+def test_preflight_lint_rejects_offset_opening_keyword_and_surfaces_shell_contract() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(80, 60, 40)\n"
+            "    offset(amount=-2.4, opening=part.faces().sort_by(Axis.Z)[-1])\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="model a shelled enclosure body",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.offset_opening_singular" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_shell_offset_contract"
+
+
 def test_preflight_lint_ignores_shell_like_comment_text() -> None:
     payload = _preflight_lint_execute_build123d(
         code=(
@@ -854,6 +1861,78 @@ def test_preflight_lint_rejects_plane_rotated_origin_guess() -> None:
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_api.plane_rotated_origin_guess" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "build123d_plane_rotation_contract"
+
+
+def test_preflight_lint_rejects_plane_rotated_origin_guess_with_coordinate_expressions() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 40\n"
+            "with BuildPart() as part:\n"
+            "    Box(40, width, 20)\n"
+            "    with Locations(Plane.XY.offset(0).rotated((90, 0, 0), (0, width/2, 0))):\n"
+            "        Cylinder(radius=3, height=6, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Cut a front thumb notch using a translated placement, not a guessed plane-rotation origin."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.plane_rotated_origin_guess" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_plane_rotation_contract"
+
+
+def test_preflight_lint_rejects_plane_located_shape_method_guess() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "wall = 2.4\n"
+            "with BuildPart() as part:\n"
+            "    Box(40, 30, 20)\n"
+            "    with BuildSketch(Plane.XY.located((0, 0, wall))):\n"
+            "        Rectangle(20, 10)\n"
+            "    extrude(amount=5, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a hollowed host with an inner sketch on an offset XY workplane.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.plane_located_shape_method_guess" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_plane_translation_contract"
+
+
+def test_preflight_lint_rejects_face_plane_shift_origin_global_coordinate_guess() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(40, 30, 20)\n"
+            "    front_face = part.faces().sort_by(Axis.Y)[-1]\n"
+            "    with BuildSketch(Plane(front_face).shift_origin((0, 0, 7))):\n"
+            "        Rectangle(12, 4)\n"
+            "    extrude(amount=4, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a front thumb notch on the host face with a local sketch anchored to the face."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.face_plane_shift_origin_global_coordinate_guess" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_face_plane_shift_origin_contract"
 
 
 def test_preflight_lint_rejects_directional_drill_plane_offset_coordinate_mixup() -> None:
@@ -994,6 +2073,34 @@ def test_preflight_lint_rejects_lowercase_countersink_hole_helper_guess() -> Non
     assert payload["repair_recipe"]["recipe_id"] == "explicit_anchor_hole_countersink_array_safe_recipe"
 
 
+def test_preflight_lint_rejects_bare_countersink_helper_guess() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(20, 20, 8)\n"
+            "    with Locations((0, 0, 4)):\n"
+            "        Hole(radius=3, depth=8)\n"
+            "        Countersink(radius=6, angle=90, depth=3)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=_COUNTERSUNK_HOLE_ARRAY_REQUIREMENT,
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.countersink_helper_name" in rule_ids
+    helper_hint = next(
+        item["repair_hint"]
+        for item in payload["lint_hits"]
+        if item["rule_id"] == "invalid_build123d_api.countersink_helper_name"
+    )
+    assert "CounterSinkHole(...)" in helper_hint
+    assert "Countersink(...)" in helper_hint
+
+
 def test_preflight_lint_does_not_flag_plain_countersink_angle_variable_assignment() -> None:
     payload = _preflight_lint_execute_build123d(
         code=(
@@ -1029,6 +2136,27 @@ def test_preflight_lint_rejects_angle_keyword_alias_inside_countersink_helper() 
     assert payload is not None
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_keyword.countersink_angle_alias" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "explicit_anchor_hole_countersink_array_safe_recipe"
+
+
+def test_preflight_lint_rejects_depth_keyword_alias_inside_countersink_helper() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(20, 20, 8)\n"
+            "    with Locations((0, 0, 4)):\n"
+            "        CounterSinkHole(radius=3, counter_sink_radius=5, counter_sink_angle=90, counter_sink_depth=2, depth=8)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=_COUNTERSUNK_HOLE_ARRAY_REQUIREMENT,
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.countersink_depth_alias" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "explicit_anchor_hole_countersink_array_safe_recipe"
 
 
@@ -1186,9 +2314,47 @@ def test_preflight_lint_rejects_lowercase_hole_helper_guess() -> None:
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_api.lowercase_hole_helper_name" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "explicit_anchor_hole_countersink_array_safe_recipe"
-    recipe_steps = "\n".join(payload["repair_recipe"]["recipe_skeleton"]["steps"])
-    assert "prefer one `CounterSinkHole(...)` pass first" in recipe_steps
-    assert "Only fall back to an explicit same-builder cylinder+cone or revolved countersink recipe" in recipe_steps
+
+
+def test_preflight_lint_rejects_execute_build123d_cut_extrude_helper_guess() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(40, 30, 10)\n"
+            "cut_extrude(amount=6)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=_CYLINDRICAL_SLOT_REQUIREMENT,
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "legacy_api.cut_extrude_helper" in rule_ids
+
+
+def test_preflight_lint_routes_cut_extrude_helper_guess_for_explicit_anchor_holes_to_hole_recipe() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(100, 60, 8)\n"
+            "    with BuildSketch(Plane.XY.offset(4)):\n"
+            "        Circle(3)\n"
+            "cut_extrude(amount=8)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=_COUNTERSUNK_HOLE_ARRAY_REQUIREMENT,
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "legacy_api.cut_extrude_helper" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "explicit_anchor_hole_countersink_array_safe_recipe"
 
 
 def test_preflight_lint_rejects_unsupported_cylinder_axis_keyword() -> None:
@@ -1205,6 +2371,41 @@ def test_preflight_lint_rejects_unsupported_cylinder_axis_keyword() -> None:
     assert payload is not None
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_keyword.cylinder_axis" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_cylinder_axis_transform_contract"
+    repair_steps = "\n".join(payload["repair_recipe"]["recipe_skeleton"]["steps"])
+    assert "do not create a cylinder inside an active `BuildPart`" in repair_steps
+
+
+def test_preflight_lint_rejects_unsupported_cylinder_taper_keyword() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "result = Cylinder(radius=3, height=6, taper=45)\n"
+        ),
+        session_id="test-session",
+        requirement_text="make a countersunk cutter",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.cylinder_taper" in rule_ids
+
+
+def test_preflight_lint_rejects_unsupported_cylinder_length_keyword() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "result = Cylinder(radius=3, length=25)\n"
+        ),
+        session_id="test-session",
+        requirement_text="make a long cylindrical cutter",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.cylinder_length_alias" in rule_ids
 
 
 def test_preflight_lint_rejects_unsupported_box_depth_keyword_and_surfaces_contract() -> None:
@@ -1223,6 +2424,25 @@ def test_preflight_lint_rejects_unsupported_box_depth_keyword_and_surfaces_contr
     assert payload is not None
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_keyword.box_depth_alias" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_box_keyword_contract"
+
+
+def test_preflight_lint_rejects_unsupported_box_radius_keyword_and_surfaces_contract() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(80, 60, 20, radius=6)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="model a rounded enclosure shell",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.box_radius_alias" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "build123d_box_keyword_contract"
 
 
@@ -1292,6 +2512,127 @@ def test_preflight_lint_rejects_extrude_direction_keyword_alias() -> None:
     assert payload is not None
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_keyword.extrude_direction_alias" in rule_ids
+
+
+def test_preflight_lint_rejects_rectangle_length_keyword_alias() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        Rectangle(width=80, length=40)\n"
+            "    extrude(amount=12)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="extrude a rectangular plate from a centered sketch",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.rectangle_length_alias" in rule_ids
+
+
+def test_preflight_lint_rejects_slot_center_point_radius_alias() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        SlotCenterPoint(center=(0, 0), point=(12, 0), height=6, radius=3)\n"
+            "    extrude(amount=4)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="extrude a slot-shaped profile",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.slot_center_point_radius_alias" in rule_ids
+
+
+def test_preflight_lint_does_not_misclassify_unrelated_radius_names_as_slot_center_point_radius_alias() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "hole_radius = 2.0\n"
+            "with BuildPart() as part:\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        SlotCenterPoint((0, 0), (12, 0), 6)\n"
+            "    extrude(amount=4)\n"
+            "    with Locations((0, 0, 2)):\n"
+            "        Hole(radius=hole_radius, depth=4)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="extrude a slot-shaped profile with a separate hole radius variable",
+        run_state=None,
+    )
+
+    if payload is None:
+        return
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.slot_center_point_radius_alias" not in rule_ids
+
+
+def test_preflight_lint_rejects_slot_center_point_center_point_alias() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    Box(54, 34, 12)\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        SlotCenterPoint(center_point=(0, 0), point=(12, 0), height=6)\n"
+            "    extrude(amount=2)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a bracket with a rounded slot profile centered on the top face."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.slot_center_point_center_alias" in rule_ids
+
+
+def test_preflight_lint_rejects_slot_center_to_center_center_to_center_alias() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildSketch():\n"
+            "    SlotCenterToCenter(center_to_center=18, height=6)\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded slot cutout with a center-to-center span.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.slot_center_to_center_alias" in rule_ids
+
+
+def test_preflight_lint_rejects_slot_center_to_center_width_alias() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildSketch():\n"
+            "    SlotCenterToCenter(center_separation=18, width=6)\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded slot cutout with a 6mm slot width.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.slot_center_to_center_alias" in rule_ids
 
 
 def test_preflight_lint_rejects_python_indentation_error() -> None:
@@ -1402,6 +2743,35 @@ def test_preflight_lint_surfaces_annular_groove_same_builder_recipe_for_nested_g
     )
 
 
+def test_preflight_lint_rejects_nested_buildpart_part_transform_inside_active_builder() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as lid:\n"
+            "    Box(78, 56, 16)\n"
+            "    with BuildPart() as notch_cut:\n"
+            "        Box(10, 4, 4)\n"
+            "    moved_notch = notch_cut.part.move(Location((0, 24, 6)))\n"
+            "    lid.part = lid.part - moved_notch\n"
+            "result = lid.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded clamshell enclosure with a hollow lid, a front "
+            "thumb notch, and smooth printable outer walls."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.nested_buildpart_part_transform" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "nested_hollow_section_same_builder_subtract_contract"
+    )
+
+
 def test_preflight_lint_rejects_temporary_primitive_arithmetic_inside_active_buildpart() -> None:
     payload = _preflight_lint_execute_build123d(
         code=(
@@ -1429,6 +2799,210 @@ def test_preflight_lint_rejects_temporary_primitive_arithmetic_inside_active_bui
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "half_shell_semi_profile_extrude_contract"
+
+
+def test_preflight_lint_prefers_nested_hollow_section_same_builder_subtract_recipe() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as body:\n"
+            "    outer_box = Box(78, 56, 18)\n"
+            "    inner_box = Box(73.2, 51.2, 15.8)\n"
+            "    inner_box = Pos(0, 0, 1.2) * inner_box\n"
+            "    outer_box -= inner_box\n"
+            "result = body.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a hollow enclosure base body with a front notch and hinge features.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "nested_hollow_section_same_builder_subtract_contract"
+    )
+
+
+def test_preflight_lint_surfaces_active_builder_transform_rebind_for_temporary_primitives() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as hinge:\n"
+            "    hinge_cyl = Cylinder(radius=4, height=20)\n"
+            "    hinge_cyl = Rot(0, 90, 0) * hinge_cyl\n"
+            "result = hinge.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a hinge barrel rotated onto the X axis.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert (
+        "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind"
+        in rule_ids
+    )
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "active_builder_temporary_primitive_transform_contract"
+    )
+
+
+def test_preflight_lint_rejects_active_builder_part_mutation_inside_buildpart() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    outer_base = Box(78, 56, 18)\n"
+            "    with Locations((0, 0, 2.4)):\n"
+            "        inner_base = Box(73.2, 51.2, 15.61)\n"
+            "    base.part = outer_base.part - inner_base.part\n"
+            "result = base.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a hollow enclosure shell with wall thickness 2.4 mm.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.active_builder_part_mutation" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "active_builder_part_mutation_contract"
+
+
+def test_preflight_lint_rejects_plane_tuple_multiplication_for_locations() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    Box(78, 56, 18)\n"
+            "    with Locations(Plane.XY * (0, 0, 18)):\n"
+            "        with BuildSketch():\n"
+            "            Circle(3)\n"
+            "        extrude(amount=-2, mode=Mode.SUBTRACT)\n"
+            "result = base.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a hollow enclosure shell with one top-face magnet recess.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.plane_tuple_multiplication" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "build123d_plane_tuple_multiplication_contract"
+    )
+
+
+def test_preflight_lint_rejects_loc_helper_alias() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    Box(20, 20, 8)\n"
+            "moved = base.part.move(Loc((0, 0, 4)))\n"
+            "result = moved\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a box and move it upward.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.loc_helper_name" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_location_helper_contract"
+
+
+def test_preflight_lint_rejects_capitalized_scale_helper_guess() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "earphone = Sphere(10)\n"
+            "earphone = Scale.by((1.2, 0.8, 0.4)) * earphone\n"
+            "result = earphone\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a softly flattened organic earphone cavity proxy by scaling a detached solid.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.scale_helper_case" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_scale_helper_contract"
+
+
+def test_preflight_lint_rejects_bare_move_helper_guess() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as lid:\n"
+            "    Box(20, 20, 4)\n"
+            "move(lid.part, (0, 0, 6))\n"
+            "result = lid.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a lid and move it upward.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.bare_move_helper" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_location_helper_contract"
+
+
+def test_preflight_lint_prefers_shell_recipe_over_loc_helper_when_builder_arithmetic_is_also_present() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as body:\n"
+            "    outer_box = Box(78, 56, 18)\n"
+            "    inner_box = Box(73.2, 51.2, 15.6)\n"
+            "    inner_box = Pos(0, 0, 1.2) * inner_box\n"
+            "    outer_box -= inner_box\n"
+            "moved = body.part.move(Loc((0, 0, 2)))\n"
+            "result = moved\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a hollow enclosure base body with a front notch and hinge features.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic" in rule_ids
+    assert "invalid_build123d_api.loc_helper_name" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "nested_hollow_section_same_builder_subtract_contract"
+    )
+
+
+def test_preflight_lint_rejects_capitalized_split_helper_guess_for_clamshell_split() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as shell:\n"
+            "    Box(40, 30, 20)\n"
+            "result = Split(shell.part, Plane.XY)\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a two-part clamshell enclosure with a lid and base.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.split_helper_case" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_split_function_contract"
 
 
 def test_preflight_lint_surfaces_explicit_anchor_hole_recipe_for_temporary_countersink_primitive_arithmetic() -> None:
@@ -1595,6 +3169,169 @@ def test_preflight_lint_prefers_directional_hole_recipe_for_explicit_anchor_cyli
     assert (
         payload["repair_recipe"]["recipe_id"]
         == "explicit_anchor_directional_hole_cylinder_contract"
+    )
+
+
+def test_preflight_lint_prefers_structural_builder_contract_over_cylinder_axis_fix_when_lints_are_mixed() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    Box(78, 56, 18)\n"
+            "    slot_cutter = Cylinder(radius=3.0, height=20.0, axis=Axis.X)\n"
+            "    base.part = base.part - slot_cutter\n"
+            "result = base.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded clamshell enclosure with a hollow base and lid, "
+            "a front thumb notch, one cylindrical side slot, and a side plug pocket."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.cylinder_axis" in rule_ids
+    assert "invalid_build123d_contract.active_builder_part_mutation" in rule_ids
+    assert (
+        "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic"
+        in rule_ids
+    )
+    assert payload["repair_recipe"]["recipe_id"] == "active_builder_part_mutation_contract"
+    repair_steps = "\n".join(payload["repair_recipe"]["recipe_skeleton"]["steps"])
+    assert "close the host builder first" in repair_steps
+
+
+def test_preflight_lint_prefers_clamshell_host_local_cut_recipe_for_half_shell_shells() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as lid:\n"
+            "    lid_outer = Box(72, 64, 13)\n"
+            "    lid_outer = Pos(0, 0, 6.5) * lid_outer\n"
+            "    with Locations((0, 28, 0)):\n"
+            "        SlotOverall(10, 4, mode=Mode.SUBTRACT)\n"
+            "result = lid.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded clamshell enclosure with a hollow lid and base, "
+            "a pin hinge, corner magnet slots, and a front thumb notch."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind" in rule_ids
+    assert "invalid_build123d_context.sketch_primitive_requires_buildsketch" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "clamshell_host_local_cut_contract"
+    repair_steps = "\n".join(payload["repair_recipe"]["recipe_skeleton"]["steps"])
+    assert "separate positive solids after the shell hosts close" in repair_steps
+
+
+def test_preflight_lint_keeps_clamshell_contract_priority_over_nested_hollow_slot_recipe() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    base_outer = Box(72, 64, 13)\n"
+            "    base_outer = Pos(0, 0, 6.5) * base_outer\n"
+            "    base.part = base_outer\n"
+            "    mag_cyl = Cylinder(radius=2.0, height=2.0)\n"
+            "    mag_cyl = Pos(24, 24, 1.0) * mag_cyl\n"
+            "    base.part = base.part - mag_cyl\n"
+            "result = base.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded clamshell enclosure with a hollow lid and base, "
+            "a pin hinge, corner magnet slots, and a front thumb notch."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.active_builder_part_mutation" in rule_ids
+    assert "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic" in rule_ids
+    assert "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "clamshell_host_local_cut_contract"
+
+
+def test_preflight_lint_keeps_clamshell_contract_priority_when_slots_family_comes_from_kernel() -> None:
+    run_state = RunState(
+        session_id="test-session",
+        requirements={},
+        feature_graph=SimpleNamespace(
+            feature_instances={
+                "instance.slots.feature_notch_or_profile_cut": SimpleNamespace(
+                    family_id="slots"
+                )
+            }
+        ),
+    )
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as enclosure:\n"
+            "    with BuildPart() as base:\n"
+            "        base_outer = Box(72, 64, 13)\n"
+            "        base_outer = Pos(0, 0, 6.5) * base_outer\n"
+            "        base.part = base_outer\n"
+            "        mag_cyl = Cylinder(radius=2.0, height=2.0)\n"
+            "        mag_cyl = Pos(24, 24, 1.0) * mag_cyl\n"
+            "        base.part = base.part - mag_cyl\n"
+            "result = enclosure.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a snap clamshell enclosure with overall dimensions 72mm x 64mm x 26mm. "
+            "Use a pin hinge, keep wall thickness near 2.0mm, include two-part lid/base "
+            "separation, corner magnet slots, and a thumb notch. The outer form should remain "
+            "smooth and printable."
+        ),
+        run_state=run_state,
+    )
+
+    assert payload is not None
+    assert "slots" in payload["candidate_family_ids"]
+    assert "half_shell" in payload["candidate_family_ids"]
+    assert payload["repair_recipe"]["recipe_id"] == "clamshell_host_local_cut_contract"
+
+
+def test_preflight_lint_prefers_clamshell_host_local_cut_recipe_when_nested_subtractive_builder_is_present() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    Box(78, 56, 18)\n"
+            "    with Locations((30, 0, 9)):\n"
+            "        with BuildPart(mode=Mode.SUBTRACT) as pocket:\n"
+            "            Box(12, 8, 4)\n"
+            "moved = base.part.move(Loc((0, 0, 0)))\n"
+            "result = moved\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded clamshell enclosure with a hollow base and lid, "
+            "one side plug pocket, a front thumb notch, and a pin hinge."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    assert "half_shell" in payload["candidate_family_ids"]
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert (
+        "invalid_build123d_context.nested_subtractive_buildpart_inside_active_builder"
+        in rule_ids
+    )
+    assert "invalid_build123d_api.loc_helper_name" in rule_ids
+    assert (
+        payload["repair_recipe"]["recipe_id"]
+        == "clamshell_host_local_cut_contract"
     )
 
 

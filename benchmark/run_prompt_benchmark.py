@@ -24,6 +24,7 @@ for _path in (_SRC_ROOT, _REPO_ROOT):
 
 from common.config import settings
 from sub_agent_runtime.diagnostics import build_runtime_validation_payload
+from sub_agent_runtime.hallucination import normalize_hallucination_summary
 from step_similarity_eval import evaluate_step_pair_sync
 
 
@@ -1618,6 +1619,9 @@ def _build_case_baseline_metrics(case_payload: dict[str, Any]) -> dict[str, Any]
         if isinstance(case_payload.get("token_usage"), dict)
         else {}
     )
+    hallucination = normalize_hallucination_summary(
+        runtime_summary.get("build123d_hallucination")
+    )
     planner_rounds = int(runtime_summary.get("planner_rounds", 0) or 0)
     executed_action_count = int(runtime_summary.get("executed_action_count", 0) or 0)
     validation_complete = bool(runtime_summary.get("validation_complete"))
@@ -1664,6 +1668,11 @@ def _build_case_baseline_metrics(case_payload: dict[str, Any]) -> dict[str, Any]
         "family_repair_packet_hit": repair_packet_available and status == "PASS",
         "repair_packet_count": repair_packet_count,
         "latest_repair_packet_family_id": latest_repair_packet_family_id or None,
+        "hallucination_event_count": int(hallucination.get("event_count", 0) or 0),
+        "hallucination_weighted_score": float(
+            hallucination.get("weighted_score", 0.0) or 0.0
+        ),
+        "hallucination_primary_layer": hallucination.get("primary_layer"),
     }
 
 
@@ -1703,6 +1712,17 @@ def _summarize_baseline_metrics(case_payloads: list[dict[str, Any]]) -> dict[str
     family_repair_packet_hit_case_count = sum(
         1 for item in family_repair_packet_cases if item.get("family_repair_packet_hit") is True
     )
+    hallucination_event_count = sum(
+        int(item.get("hallucination_event_count", 0) or 0) for item in case_metrics
+    )
+    hallucination_weighted_scores = [
+        float(item.get("hallucination_weighted_score", 0.0) or 0.0) for item in case_metrics
+    ]
+    hallucination_primary_layer_counts = Counter(
+        str(item.get("hallucination_primary_layer") or "").strip()
+        for item in case_metrics
+        if str(item.get("hallucination_primary_layer") or "").strip()
+    )
     return {
         "total_cases": total_cases,
         "case_metrics": case_metrics,
@@ -1731,6 +1751,14 @@ def _summarize_baseline_metrics(case_payloads: list[dict[str, Any]]) -> dict[str
             family_repair_packet_hit_case_count,
             len(family_repair_packet_cases),
         ),
+        "hallucination_event_count": hallucination_event_count,
+        "hallucination_weighted_score_mean": round(
+            (sum(hallucination_weighted_scores) / len(hallucination_weighted_scores))
+            if hallucination_weighted_scores
+            else 0.0,
+            4,
+        ),
+        "hallucination_primary_layer_counts": dict(hallucination_primary_layer_counts),
     }
 
 
@@ -1748,6 +1776,9 @@ def _build_brief_case_row(case_payload: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     token_usage = case_payload.get("token_usage") if isinstance(case_payload.get("token_usage"), dict) else {}
+    hallucination = normalize_hallucination_summary(
+        runtime_summary.get("build123d_hallucination")
+    )
     feature_graph_summary = {}
     round_digest = case_payload.get("round_digest")
     if isinstance(round_digest, dict) and isinstance(round_digest.get("domain_kernel_summary"), dict):
@@ -1822,6 +1853,11 @@ def _build_brief_case_row(case_payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "feature_probe_count": int(runtime_summary.get("feature_probe_count", 0) or 0),
         "probe_code_count": int(runtime_summary.get("probe_code_count", 0) or 0),
+        "hallucination_events": int(hallucination.get("event_count", 0) or 0),
+        "hallucination_weighted_score": float(
+            hallucination.get("weighted_score", 0.0) or 0.0
+        ),
+        "hallucination_primary_layer": str(hallucination.get("primary_layer") or ""),
         "failure_cluster": str(
             runtime_summary.get("failure_cluster") or analysis.get("failure_cluster") or ""
         ),
@@ -1967,6 +2003,8 @@ def _write_run_diagnostics(
     blocker_taxonomy_counts = Counter()
     repair_mode_counts = Counter()
     kernel_patch_kind_counts = Counter()
+    hallucination_primary_layer_counts = Counter()
+    hallucination_category_counts = Counter()
 
     for row in rows:
         status = row["status"]
@@ -2017,6 +2055,20 @@ def _write_run_diagnostics(
         for patch_kind in feature_graph_summary.get("kernel_patch_kinds") or []:
             if isinstance(patch_kind, str) and patch_kind.strip():
                 kernel_patch_kind_counts[patch_kind.strip()] += 1
+        runtime_summary = (
+            item.get("runtime_summary")
+            if isinstance(item.get("runtime_summary"), dict)
+            else {}
+        )
+        hallucination = normalize_hallucination_summary(
+            runtime_summary.get("build123d_hallucination")
+        )
+        primary_layer = str(hallucination.get("primary_layer") or "").strip()
+        if primary_layer:
+            hallucination_primary_layer_counts[primary_layer] += 1
+        for category, count in (hallucination.get("categories") or {}).items():
+            if isinstance(category, str) and category.strip():
+                hallucination_category_counts[category.strip()] += int(count or 0)
 
     top_token_cases = sorted(
         (row for row in rows if isinstance(row.get("tokens"), int)),
@@ -2024,6 +2076,14 @@ def _write_run_diagnostics(
         reverse=True,
     )[:5]
     top_prompt_cases = sorted(rows, key=lambda item: int(item["prompt_chars"]), reverse=True)[:5]
+    top_hallucination_cases = sorted(
+        rows,
+        key=lambda item: (
+            float(item.get("hallucination_weighted_score", 0.0) or 0.0),
+            int(item.get("hallucination_events", 0) or 0),
+        ),
+        reverse=True,
+    )[:5]
 
     diagnostics_payload = {
         "practice_identity": practice_identity,
@@ -2058,6 +2118,9 @@ def _write_run_diagnostics(
         "blocker_taxonomy_counts": dict(blocker_taxonomy_counts),
         "repair_mode_counts": dict(repair_mode_counts),
         "kernel_patch_kind_counts": dict(kernel_patch_kind_counts),
+        "hallucination_primary_layer_counts": dict(hallucination_primary_layer_counts),
+        "hallucination_category_counts": dict(hallucination_category_counts),
+        "top_hallucination_cases": top_hallucination_cases,
     }
     _write_json(run_root / "run_diagnostics.json", diagnostics_payload)
 
@@ -2100,6 +2163,8 @@ def _write_run_diagnostics(
         f"- blocker_taxonomy_counts: {dict(blocker_taxonomy_counts)}",
         f"- repair_mode_counts: {dict(repair_mode_counts)}",
         f"- kernel_patch_kind_counts: {dict(kernel_patch_kind_counts)}",
+        f"- hallucination_primary_layer_counts: {dict(hallucination_primary_layer_counts)}",
+        f"- hallucination_category_counts: {dict(hallucination_category_counts)}",
         "",
         "## Token Outliers",
         "",
@@ -2122,6 +2187,11 @@ def _write_run_diagnostics(
         lines.append(
             f"- {row['case_id']}: primary_write_mode={row.get('primary_write_mode') or '-'}, feature_probe_count={row.get('feature_probe_count')}, probe_code_count={row.get('probe_code_count')}, failure_cluster={row.get('failure_cluster') or '-'}"
         )
+    lines.extend(["", "## Hallucination Outliers", ""])
+    for row in top_hallucination_cases:
+        lines.append(
+            f"- {row['case_id']}: hallucination_events={row.get('hallucination_events') or 0}, hallucination_weighted_score={row.get('hallucination_weighted_score') or 0.0}, hallucination_primary_layer={row.get('hallucination_primary_layer') or '-'}, issue={row['issue']}"
+        )
     (run_root / "run_diagnostics.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -2135,7 +2205,7 @@ def _write_brief_report(
     baseline_metrics = _summarize_baseline_metrics(case_payloads)
     failure_rows = [row for row in rows if row["status"] != "PASS"]
     tsv_lines = [
-        "case_id\tstatus\teval_passed\tvalidation_complete\tscore\ttokens\trounds\twrites\tinspections\tvalidation_calls\trepeated_validation\tread_only_turns\tprompt_chars\truntime_mode_effective\tprimary_write_mode\tfirst_write_tool\tfirst_solid_success\tfirst_solid_round\trepair_turns_after_first_write\truntime_rewrite_turn_count\tstructured_bootstrap_rounds\tstale_probe_carry_count\tstale_evidence_incidents\tfreshness_conflict_count\tevidence_conflict_count\tforced_policy_chain\tfeature_probe_count\tprobe_code_count\tfailure_cluster\trecommended_fix_layer\tfirst_bad_turn_round\tfirst_bad_feature_instance\tlast_good_write_round\tlast_good_write_tool\tkernel_binding_count\tkernel_binding_kinds\tfeature_instance_count\tkernel_patch_count\tkernel_patch_kinds\trepair_packet_count\tlatest_repair_packet_family_id\tfamily_repair_packet_hit\tlatest_patch_repair_mode\tissue"
+        "case_id\tstatus\teval_passed\tvalidation_complete\tscore\ttokens\trounds\twrites\tinspections\tvalidation_calls\trepeated_validation\tread_only_turns\tprompt_chars\truntime_mode_effective\tprimary_write_mode\tfirst_write_tool\tfirst_solid_success\tfirst_solid_round\trepair_turns_after_first_write\truntime_rewrite_turn_count\tstructured_bootstrap_rounds\tstale_probe_carry_count\tstale_evidence_incidents\tfreshness_conflict_count\tevidence_conflict_count\tforced_policy_chain\tfeature_probe_count\tprobe_code_count\thallucination_events\thallucination_weighted_score\thallucination_primary_layer\tfailure_cluster\trecommended_fix_layer\tfirst_bad_turn_round\tfirst_bad_feature_instance\tlast_good_write_round\tlast_good_write_tool\tkernel_binding_count\tkernel_binding_kinds\tfeature_instance_count\tkernel_patch_count\tkernel_patch_kinds\trepair_packet_count\tlatest_repair_packet_family_id\tfamily_repair_packet_hit\tlatest_patch_repair_mode\tissue"
     ]
     for row in rows:
         score_text = "" if row["score"] is None else f"{row['score']:.4f}"
@@ -2148,7 +2218,7 @@ def _write_brief_report(
         validation_text = "done" if row["validation_complete"] else "open"
         forced_policy_chain_text = ",".join(row.get("forced_policy_chain") or [])
         tsv_lines.append(
-            f"{row['case_id']}\t{row['status']}\t{eval_text}\t{validation_text}\t{score_text}\t{token_text}\t{row['rounds']}\t{row['writes']}\t{row['inspections']}\t{row.get('validation_call_count') or 0}\t{row.get('repeated_validation_count') or 0}\t{row.get('read_only_turn_count') or 0}\t{row['prompt_chars']}\t{row.get('runtime_mode_effective') or ''}\t{row.get('primary_write_mode') or ''}\t{row.get('first_write_tool') or ''}\t{int(row.get('first_solid_success') is True)}\t{row.get('first_solid_round') or ''}\t{row.get('repair_turns_after_first_write') if row.get('repair_turns_after_first_write') is not None else ''}\t{row.get('runtime_rewrite_turn_count') or 0}\t{row.get('structured_bootstrap_rounds') or 0}\t{row.get('stale_probe_carry_count') or 0}\t{row.get('stale_evidence_incidents') or 0}\t{row.get('freshness_conflict_count') or 0}\t{row.get('evidence_conflict_count') or 0}\t{forced_policy_chain_text}\t{row.get('feature_probe_count') or 0}\t{row.get('probe_code_count') or 0}\t{row.get('failure_cluster') or ''}\t{row.get('recommended_fix_layer') or ''}\t{row.get('first_bad_turn_round') or ''}\t{row.get('first_bad_feature_instance') or ''}\t{row.get('last_good_write_round') or ''}\t{row.get('last_good_write_tool') or ''}\t{row.get('kernel_binding_count') or 0}\t{','.join(row.get('kernel_binding_kinds') or [])}\t{row.get('feature_instance_count') or 0}\t{row.get('kernel_patch_count') or 0}\t{','.join(row.get('kernel_patch_kinds') or [])}\t{row.get('repair_packet_count') or 0}\t{row.get('latest_repair_packet_family_id') or ''}\t{int(row.get('family_repair_packet_hit') is True)}\t{row.get('latest_patch_repair_mode') or ''}\t{row['issue']}"
+            f"{row['case_id']}\t{row['status']}\t{eval_text}\t{validation_text}\t{score_text}\t{token_text}\t{row['rounds']}\t{row['writes']}\t{row['inspections']}\t{row.get('validation_call_count') or 0}\t{row.get('repeated_validation_count') or 0}\t{row.get('read_only_turn_count') or 0}\t{row['prompt_chars']}\t{row.get('runtime_mode_effective') or ''}\t{row.get('primary_write_mode') or ''}\t{row.get('first_write_tool') or ''}\t{int(row.get('first_solid_success') is True)}\t{row.get('first_solid_round') or ''}\t{row.get('repair_turns_after_first_write') if row.get('repair_turns_after_first_write') is not None else ''}\t{row.get('runtime_rewrite_turn_count') or 0}\t{row.get('structured_bootstrap_rounds') or 0}\t{row.get('stale_probe_carry_count') or 0}\t{row.get('stale_evidence_incidents') or 0}\t{row.get('freshness_conflict_count') or 0}\t{row.get('evidence_conflict_count') or 0}\t{forced_policy_chain_text}\t{row.get('feature_probe_count') or 0}\t{row.get('probe_code_count') or 0}\t{row.get('hallucination_events') or 0}\t{row.get('hallucination_weighted_score') or 0.0}\t{row.get('hallucination_primary_layer') or ''}\t{row.get('failure_cluster') or ''}\t{row.get('recommended_fix_layer') or ''}\t{row.get('first_bad_turn_round') or ''}\t{row.get('first_bad_feature_instance') or ''}\t{row.get('last_good_write_round') or ''}\t{row.get('last_good_write_tool') or ''}\t{row.get('kernel_binding_count') or 0}\t{','.join(row.get('kernel_binding_kinds') or [])}\t{row.get('feature_instance_count') or 0}\t{row.get('kernel_patch_count') or 0}\t{','.join(row.get('kernel_patch_kinds') or [])}\t{row.get('repair_packet_count') or 0}\t{row.get('latest_repair_packet_family_id') or ''}\t{int(row.get('family_repair_packet_hit') is True)}\t{row.get('latest_patch_repair_mode') or ''}\t{row['issue']}"
         )
     (run_root / "brief_report.tsv").write_text(
         "\n".join(tsv_lines) + "\n",
@@ -2181,6 +2251,8 @@ def _write_brief_report(
         f"- stale_probe_carry_cases: {sum(1 for row in rows if int(row.get('stale_probe_carry_count', 0) or 0) > 0)}",
         f"- freshness_conflict_cases: {sum(1 for row in rows if int(row.get('freshness_conflict_count', 0) or 0) > 0)}",
         f"- evidence_conflict_cases: {sum(1 for row in rows if int(row.get('evidence_conflict_count', 0) or 0) > 0)}",
+        f"- hallucination_event_count: {sum(int(row.get('hallucination_events', 0) or 0) for row in rows)}",
+        f"- hallucination_primary_layers: {dict(Counter(row.get('hallucination_primary_layer') or 'none' for row in rows if row.get('hallucination_primary_layer')))}",
         f"- kernel_trace_available_cases: {sum(1 for row in rows if row.get('domain_kernel_available') is True)}",
         f"- kernel_query_cases: {sum(1 for row in rows if int(row.get('kernel_query_count', 0) or 0) > 0)}",
         f"- kernel_blocked_cases: {sum(1 for row in rows if int(row.get('kernel_blocked_count', 0) or 0) > 0)}",

@@ -3,16 +3,46 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
-from sandbox.mcp_runner import McpSandboxRunner
+from sandbox.mcp_runner import McpSandboxRunner, _resolve_mcp_stdio_command
 from sub_agent_runtime.contracts import (
     IterationRequest,
     IterationRunResult,
     IterationRunSummary,
 )
 from sub_agent_runtime.runner import IterativeSubAgentRunner
+
+
+def test_resolve_mcp_stdio_command_falls_back_to_python_when_uv_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sandbox.mcp_runner.shutil.which", lambda _name: None)
+
+    command, args = _resolve_mcp_stdio_command(
+        "uv",
+        ["run", "python", "-m", "sandbox_mcp_server"],
+    )
+
+    assert command == sys.executable
+    assert args == ["-m", "sandbox_mcp_server"]
+
+
+def test_resolve_mcp_stdio_command_preserves_available_non_uv_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sandbox.mcp_runner.shutil.which", lambda _name: "/usr/bin/fake-mcp")
+
+    command, args = _resolve_mcp_stdio_command(
+        "fake-mcp",
+        ["--stdio"],
+    )
+
+    assert command == "fake-mcp"
+    assert args == ["--stdio"]
 
 
 @pytest.mark.asyncio
@@ -145,6 +175,48 @@ async def test_validate_requirement_returns_structured_failure_on_cancelled_tran
     assert result.blockers == ["execution_error"]
     assert result.summary == "Validation failed"
     assert "cancelled" in (result.error_message or "").lower()
+
+
+def test_map_requirement_validation_result_preserves_grounding_surface_fields() -> None:
+    runner = McpSandboxRunner(command="fake-mcp")
+    call_result = SimpleNamespace(
+        structuredContent={
+            "success": True,
+            "error_code": "none",
+            "error_message": None,
+            "session_id": "session-1",
+            "step": 2,
+            "is_complete": False,
+            "blockers": ["missing_anchor"],
+            "checks": [],
+            "core_checks": [],
+            "diagnostic_checks": [],
+            "clause_interpretations": [],
+            "coverage_confidence": 0.4,
+            "insufficient_evidence": True,
+            "observation_tags": ["geometry"],
+            "decision_hints": ["query_feature_probes"],
+            "grounding_sources": ["geometry", "topology"],
+            "grounding_strength": "partial",
+            "required_evidence_kinds": ["geometry", "topology"],
+            "overclaim_guard": "geometry_grounding_required",
+            "repair_hints": ["query_topology", "query_feature_probes"],
+            "family_bindings": ["explicit_anchor_hole"],
+            "blocker_taxonomy": [],
+            "relation_index": None,
+            "summary": "Validation incomplete",
+        },
+        isError=False,
+    )
+
+    result = runner._map_requirement_validation_result(call_result, session_id="session-1")
+
+    assert result.grounding_sources == ["geometry", "topology"]
+    assert result.grounding_strength == "partial"
+    assert result.required_evidence_kinds == ["geometry", "topology"]
+    assert result.overclaim_guard == "geometry_grounding_required"
+    assert result.repair_hints == ["query_topology", "query_feature_probes"]
+    assert result.family_bindings == ["explicit_anchor_hole"]
 
 
 @pytest.mark.asyncio

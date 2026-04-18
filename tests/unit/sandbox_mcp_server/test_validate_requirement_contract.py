@@ -2,20 +2,27 @@ import pytest
 
 from sandbox_mcp_server.contracts import (
     ActionHistoryEntry,
+    BoundingBox3D,
     CADActionType,
     CADStateSnapshot,
     GeometryInfo,
+    QueryTopologyInput,
     RequirementClauseInterpretation,
     RequirementClauseStatus,
     RequirementCheck,
     RequirementCheckStatus,
+    TopologyFaceEntity,
+    TopologyObjectIndex,
     ValidateRequirementInput,
     ValidateRequirementOutput,
 )
 from sandbox_mcp_server.service import SandboxMCPService
+from sandbox_mcp_server.service import build_validation_blocker_taxonomy
 from sandbox_mcp_server.validation_evidence import RequirementEvidenceBuilder
 from sandbox_mcp_server.validation_evidence import RequirementEvidenceBundle
+from sandbox_mcp_server.validation_grounding import attach_clause_grounding_surface
 from sandbox_mcp_server.validation_interpretation import interpret_requirement_clauses
+from sandbox_mcp_server.validation_interpretation import RequirementInterpretationSummary
 from sandbox_mcp_server.validation_llm import (
     ValidationLLMClauseDecision,
     ValidationLLMOutput,
@@ -46,6 +53,23 @@ class _ValidationAdjudicatorStub:
                 )
             ],
         )
+
+
+class _ValidationAdjudicatorProviderErrorStub:
+    async def adjudicate(self, **kwargs):  # type: ignore[no-untyped-def]
+        return ValidationLLMOutput(
+            summary="__validation_llm_provider_error__:TimeoutError:validation timed out",
+            clauses=[],
+        )
+
+
+class _RecordingValidationAdjudicatorStub:
+    def __init__(self) -> None:
+        self.called = False
+
+    async def adjudicate(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.called = True
+        return ValidationLLMOutput(summary="", clauses=[])
 
 
 class _NoopLLMClient:
@@ -83,6 +107,89 @@ def _snapshot(
         sketch_state=None,
         geometry_objects=None,
         topology_index=None,
+        success=True,
+        error=None,
+    )
+
+
+def _bbox(
+    *,
+    xlen: float,
+    ylen: float,
+    zlen: float,
+    xmin: float,
+    xmax: float,
+    ymin: float,
+    ymax: float,
+    zmin: float,
+    zmax: float,
+) -> BoundingBox3D:
+    return BoundingBox3D(
+        xlen=xlen,
+        ylen=ylen,
+        zlen=zlen,
+        xmin=xmin,
+        xmax=xmax,
+        ymin=ymin,
+        ymax=ymax,
+        zmin=zmin,
+        zmax=zmax,
+    )
+
+
+def _snapshot_with_topology(*, step: int) -> CADStateSnapshot:
+    topology_index = TopologyObjectIndex(
+        faces=[
+            TopologyFaceEntity(
+                face_ref=f"face:{step}:F_top",
+                face_id="F_top",
+                step=step,
+                area=100.0,
+                center=[0.0, 0.0, 10.0],
+                normal=[0.0, 0.0, 1.0],
+                geom_type="PLANE",
+                bbox=_bbox(
+                    xlen=10.0,
+                    ylen=10.0,
+                    zlen=0.0,
+                    xmin=-5.0,
+                    xmax=5.0,
+                    ymin=-5.0,
+                    ymax=5.0,
+                    zmin=10.0,
+                    zmax=10.0,
+                ),
+                parent_solid_id="S_top",
+                edge_refs=[],
+                adjacent_face_refs=[],
+            )
+        ],
+        edges=[],
+        faces_total=1,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    return CADStateSnapshot(
+        step=step,
+        features=[],
+        geometry=GeometryInfo(
+            solids=1,
+            faces=1,
+            edges=0,
+            volume=100.0,
+            bbox=[10.0, 10.0, 10.0],
+            center_of_mass=[0.0, 0.0, 5.0],
+            surface_area=100.0,
+            bbox_min=[-5.0, -5.0, 0.0],
+            bbox_max=[5.0, 5.0, 10.0],
+        ),
+        issues=[],
+        warnings=[],
+        blockers=[],
+        images=[],
+        sketch_state=None,
+        geometry_objects=None,
+        topology_index=topology_index,
         success=True,
         error=None,
     )
@@ -183,6 +290,255 @@ def test_path_sweep_profile_outer_diameter_clause_prefers_profile_diameter_over_
     assert "matched_outer_diameter=20.0" in outer_clause.evidence
 
 
+def test_multi_part_clause_verifies_from_solid_count() -> None:
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=2, bbox=[78.0, 56.0, 32.0]),
+        history=[],
+        requirements={"description": "Output separate parts: lid and base."},
+        requirement_text="Output separate parts: lid and base.",
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": "Output separate parts: lid and base."},
+        requirement_text="Output separate parts: lid and base.",
+    )
+
+    clause = summary.clause_interpretations[0]
+    assert clause.status == RequirementClauseStatus.VERIFIED
+    assert "geometry_solids=2" in clause.evidence
+
+
+def test_attach_clause_grounding_surface_marks_explicit_anchor_clause_as_geometry_topology_bound() -> None:
+    interpretation = RequirementInterpretationSummary(
+        clause_interpretations=[
+            RequirementClauseInterpretation(
+                clause_id="hole_center_clause",
+                clause_text="Add a countersink hole centered at x = 10.0 mm.",
+                status=RequirementClauseStatus.INSUFFICIENT_EVIDENCE,
+                evidence="bbox width observed from geometry snapshot",
+                observation_tags=["geometry"],
+                decision_hints=["query_topology"],
+            )
+        ],
+        coverage_confidence=0.0,
+        insufficient_evidence=["hole_center_clause"],
+        observation_tags=["geometry"],
+        decision_hints=["query_topology"],
+    )
+
+    updated, grounding_surface = attach_clause_grounding_surface(interpretation)
+
+    clause = updated.clause_interpretations[0]
+    assert clause.grounding_sources == ["geometry"]
+    assert clause.required_evidence_kinds == ["geometry", "topology"]
+    assert clause.overclaim_guard == "geometry_grounding_required"
+    assert clause.family_binding == "explicit_anchor_hole"
+    assert "query_topology" in clause.repair_hints
+    assert "query_feature_probes" in clause.repair_hints
+    assert grounding_surface["family_bindings"] == ["explicit_anchor_hole"]
+    assert grounding_surface["required_evidence_kinds"] == ["geometry", "topology"]
+    assert grounding_surface["overclaim_guard"] == "geometry_grounding_required"
+
+
+def test_attach_clause_grounding_surface_keeps_centered_front_recess_on_named_face_local_edit() -> None:
+    interpretation = RequirementInterpretationSummary(
+        clause_interpretations=[
+            RequirementClauseInterpretation(
+                clause_id="front_recess_clause",
+                clause_text="Add a centered rounded rectangle recess on the front face sized about 12mm x 6mm.",
+                status=RequirementClauseStatus.INSUFFICIENT_EVIDENCE,
+                evidence="front face edit observed from topology snapshot",
+                observation_tags=["clause:local_feature", "topology"],
+                decision_hints=["query_topology"],
+            )
+        ],
+        coverage_confidence=0.0,
+        insufficient_evidence=["front_recess_clause"],
+        observation_tags=["topology"],
+        decision_hints=["query_topology"],
+    )
+
+    updated, grounding_surface = attach_clause_grounding_surface(interpretation)
+
+    clause = updated.clause_interpretations[0]
+    assert clause.family_binding == "named_face_local_edit"
+    assert clause.required_evidence_kinds == ["topology"]
+    assert clause.overclaim_guard is None
+    assert "query_topology" in clause.repair_hints
+    assert grounding_surface["family_bindings"] == ["named_face_local_edit"]
+    assert "explicit_anchor_hole" not in grounding_surface["family_bindings"]
+
+
+def test_build_validation_blocker_taxonomy_prefers_local_finish_when_clause_grounding_requests_topology_targeting() -> None:
+    taxonomy = build_validation_blocker_taxonomy(
+        core_checks=[
+            RequirementCheck(
+                check_id="feature_countersink",
+                label="Hole feature preserves countersink geometry",
+                status=RequirementCheckStatus.FAIL,
+                blocking=True,
+                evidence="countersink_action=False",
+            )
+        ],
+        diagnostic_checks=[],
+        clause_interpretations=[
+            RequirementClauseInterpretation(
+                clause_id="a_countersink_on_the_mounting_face",
+                clause_text="a countersink on the mounting face",
+                status=RequirementClauseStatus.CONTRADICTED,
+                evidence="cone_like_face_present=False",
+                observation_tags=["clause:hole"],
+                decision_hints=["repair the contradicted clause before finishing"],
+                grounding_sources=["topology"],
+                grounding_strength="partial",
+                required_evidence_kinds=["geometry", "topology"],
+                repair_hints=["query_topology", "query_feature_probes"],
+                family_binding="explicit_anchor_hole",
+            )
+        ],
+    )
+
+    assert len(taxonomy) == 1
+    assert taxonomy[0].recommended_repair_lane == "local_finish"
+    assert "query_topology" in taxonomy[0].decision_hints
+    assert "family:explicit_anchor_hole" in taxonomy[0].observation_tags
+
+
+def test_interpret_requirement_clauses_verifies_directional_notch_when_feature_and_host_face_grounding_exist() -> None:
+    requirement_text = "Create a rounded enclosure with a front thumb notch."
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=1, bbox=[62.0, 40.0, 14.0]),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_notch_or_profile_cut",
+                label="Notch/profile cut is present",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="execute_build123d_geometry_fallback=true, observed_snapshot_profile_shapes=['polygon', 'rectangle'], feature=subtractive_notch_or_slot",
+            ),
+            RequirementCheck(
+                check_id="feature_target_face_edit",
+                label="Target-face edit is grounded on the front face",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="face_targets=['front'], execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_target_face_subtractive_merge",
+                label="Target-face subtractive feature stays merged",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="face_targets=['front'] merged_subtractive_feature execute_build123d_geometry_fallback=true",
+            ),
+        ],
+    )
+
+    assert summary.clause_interpretations[0].status == RequirementClauseStatus.VERIFIED
+    assert summary.insufficient_evidence == []
+
+
+def test_interpret_requirement_clauses_does_not_contradict_front_recess_from_hole_layout_only() -> None:
+    requirement_text = "Add a centered rounded rectangle recess on the front face sized about 12mm x 6mm."
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=1, bbox=[62.0, 40.0, 14.0]),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_local_anchor_count_alignment",
+                label="Hole center count aligns with requested anchors",
+                status=RequirementCheckStatus.FAIL,
+                blocking=True,
+                evidence=(
+                    "required_center_count=1, realized_center_count=2, "
+                    "realized_centers=[[-12.5, 0.0], [12.5, 0.0]]"
+                ),
+            )
+        ],
+    )
+
+    clause = summary.clause_interpretations[0]
+    assert clause.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+    assert "realized_center_count" not in str(clause.evidence or "")
+
+
+def test_interpret_requirement_clauses_keeps_cylindrical_magnet_slot_as_insufficient_without_slot_grounding() -> None:
+    requirement_text = "Add four corner magnet slots on the mating faces with 6mm diameter and 2mm depth."
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=2, bbox=[72.0, 64.0, 26.0]),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_notch_or_profile_cut",
+                label="Notch/profile cut is present",
+                status=RequirementCheckStatus.FAIL,
+                blocking=True,
+                evidence="no complex base profile or local subtractive notch window found",
+            )
+        ],
+    )
+
+    clause = summary.clause_interpretations[0]
+    assert clause.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+    assert "validation:legacy_fail" not in clause.observation_tags
+    assert "notch window" not in str(clause.evidence or "")
+
+
+def test_interpret_requirement_clauses_keeps_thumb_notch_as_insufficient_without_face_grounding() -> None:
+    requirement_text = "Create a snap clamshell enclosure with a thumb notch."
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=2, bbox=[72.0, 64.0, 26.0]),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_notch_or_profile_cut",
+                label="Notch/profile cut is present",
+                status=RequirementCheckStatus.FAIL,
+                blocking=True,
+                evidence="no complex base profile or local subtractive notch window found",
+            )
+        ],
+    )
+
+    clause = summary.clause_interpretations[0]
+    assert clause.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+    assert "validation:legacy_fail" not in clause.observation_tags
+    assert "notch window" not in str(clause.evidence or "")
+
+
 @pytest.mark.asyncio
 async def test_validate_requirement_applies_validation_llm_adjudication_to_unresolved_clause() -> None:
     service = SandboxMCPService(
@@ -240,8 +596,8 @@ async def test_validate_requirement_keeps_coordinate_clause_as_insufficient_evid
     result = await service.validate_requirement(
         ValidateRequirementInput(
             session_id=session_id,
-            requirement_text="Add a hole centered at x = 10.0 mm.",
-            requirements={"description": "Add a hole centered at x = 10.0 mm."},
+            requirement_text="Add a pocket on the top face.",
+            requirements={"description": "Add a pocket on the top face."},
         )
     )
 
@@ -249,6 +605,161 @@ async def test_validate_requirement_keeps_coordinate_clause_as_insufficient_evid
     assert result.clause_interpretations[0].status != RequirementClauseStatus.VERIFIED
     assert "llm:validation_adjudicated" not in result.clause_interpretations[0].observation_tags
     assert result.is_complete is False
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_surfaces_validation_llm_provider_error_as_diagnostic() -> None:
+    service = SandboxMCPService(
+        runner=_DummyRunner(),
+        validation_adjudicator=_ValidationAdjudicatorProviderErrorStub(),
+    )
+    session_id = "session-validation-llm-provider-error"
+    service._session_manager.clear_session(session_id)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(step=1, solids=1, bbox=[40.0, 20.0, 10.0]),
+            success=True,
+            error=None,
+        ),
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text="Make it elegant.",
+            requirements={"description": "Make it elegant."},
+        )
+    )
+
+    assert result.success is True
+    assert "validation:llm_provider_error" in result.observation_tags
+    assert "fallback_to_evidence_first_clause_interpretation" in result.decision_hints
+    assert any(
+        hint.startswith("validation_llm_provider_error:TimeoutError")
+        for hint in result.decision_hints
+    )
+    assert result.is_complete is False
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_skips_validation_llm_when_no_clause_is_eligible() -> None:
+    adjudicator = _RecordingValidationAdjudicatorStub()
+    service = SandboxMCPService(
+        runner=_DummyRunner(),
+        validation_adjudicator=adjudicator,
+    )
+    session_id = "session-validation-llm-skip-no-eligible"
+    service._session_manager.clear_session(session_id)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(step=1, solids=1, bbox=[40.0, 20.0, 10.0]),
+            success=True,
+            error=None,
+        ),
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text="Add a pocket on the top face.",
+            requirements={"description": "Add a pocket on the top face."},
+        )
+    )
+
+    assert result.success is True
+    assert adjudicator.called is False
+    assert "validation:llm_skipped" in result.observation_tags
+    assert "validation_llm_skipped:no_eligible_clause" in result.decision_hints
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_skips_validation_llm_when_budget_exceeded() -> None:
+    adjudicator = _RecordingValidationAdjudicatorStub()
+    service = SandboxMCPService(
+        runner=_DummyRunner(),
+        validation_adjudicator=adjudicator,
+    )
+    session_id = "session-validation-llm-skip-budget"
+    service._session_manager.clear_session(session_id)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(step=1, solids=1, bbox=[40.0, 20.0, 10.0]),
+            success=True,
+            error=None,
+        ),
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text="Make it elegant. Keep it smooth. Make it printable. Use a modern style.",
+            requirements={
+                "description": "Make it elegant. Keep it smooth. Make it printable. Use a modern style."
+            },
+        )
+    )
+
+    assert result.success is True
+    assert adjudicator.called is False
+    assert "validation:llm_skipped" in result.observation_tags
+    assert any(
+        hint.startswith("validation_llm_skipped:eligible_clause_budget_exceeded:")
+        for hint in result.decision_hints
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_skips_validation_llm_when_estimated_prompt_budget_exceeded() -> None:
+    adjudicator = _RecordingValidationAdjudicatorStub()
+    service = SandboxMCPService(
+        runner=_DummyRunner(),
+        validation_adjudicator=adjudicator,
+    )
+    session_id = "session-validation-llm-skip-estimated-prompt-budget"
+    service._session_manager.clear_session(session_id)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(step=1, solids=1, bbox=[40.0, 20.0, 10.0]),
+            success=True,
+            error=None,
+        ),
+    )
+    long_requirement = (
+        "Create an elegant printable enclosure with balanced flowing surfaces and "
+        "carefully controlled ergonomic curvature "
+    ) * 80
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=long_requirement,
+            requirements={"description": long_requirement},
+        )
+    )
+
+    assert result.success is True
+    assert adjudicator.called is False
+    assert "validation:llm_skipped" in result.observation_tags
+    assert any(
+        hint.startswith("validation_llm_skipped:estimated_prompt_budget_exceeded:")
+        for hint in result.decision_hints
+    )
 
 
 @pytest.mark.asyncio
@@ -290,6 +801,90 @@ async def test_validate_requirement_treats_signed_negative_volume_as_material_so
 
     assert result.success is True
     assert positive_volume_check.status == RequirementCheckStatus.PASS
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_defaults_to_latest_successful_snapshot_after_failed_write() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validation-latest-successful-snapshot"
+    service._session_manager.clear_session(session_id)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(step=1, solids=1, bbox=[10.0, 10.0, 10.0]),
+            success=True,
+            error=None,
+        ),
+    )
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=2,
+            action_type=CADActionType.MODIFY_ACTION,
+            action_params={"source": "apply_cad_action"},
+            result_snapshot=_snapshot(step=2, solids=0, volume=0.0, bbox=[0.0, 0.0, 0.0]),
+            success=False,
+            error="Exit code: 1",
+        ),
+    )
+
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text="Create a 10 mm by 10 mm by 10 mm block.",
+            requirements={"description": "Create a 10 mm by 10 mm by 10 mm block."},
+        )
+    )
+
+    solid_exists = next(check for check in result.checks if check.check_id == "solid_exists")
+    assert result.step == 1
+    assert result.success is True
+    assert solid_exists.status == RequirementCheckStatus.PASS
+
+
+@pytest.mark.asyncio
+async def test_query_topology_defaults_to_latest_successful_snapshot_after_failed_write() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-topology-latest-successful-snapshot"
+    service._session_manager.clear_session(session_id)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot_with_topology(step=1),
+            success=True,
+            error=None,
+        ),
+    )
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=2,
+            action_type=CADActionType.MODIFY_ACTION,
+            action_params={"source": "apply_cad_action"},
+            result_snapshot=_snapshot(step=2, solids=0, volume=0.0, bbox=[0.0, 0.0, 0.0]),
+            success=False,
+            error="Exit code: 1",
+        ),
+    )
+
+    result = await service.query_topology(
+        QueryTopologyInput(
+            session_id=session_id,
+            include_faces=True,
+            include_edges=False,
+        )
+    )
+
+    assert result.success is True
+    assert result.step == 1
+    assert result.topology_index is not None
+    assert result.topology_index.faces[0].face_ref == "face:1:F_top"
 
 
 def test_interpretation_projects_unknown_high_level_clause_without_marking_complete() -> None:
@@ -353,6 +948,41 @@ def test_single_dimension_clauses_reuse_passed_dimension_checks() -> None:
     assert clause_status["width_40"] == RequirementClauseStatus.VERIFIED
     assert clause_status["height_20"] == RequirementClauseStatus.VERIFIED
     assert clause_status["thickness_10"] == RequirementClauseStatus.VERIFIED
+
+
+def test_clamshell_wall_thickness_clause_requires_shell_grounding_instead_of_bbox_min_span() -> None:
+    requirement_text = (
+        "Create a snap clamshell enclosure with overall dimensions 72mm x 64mm x 26mm. "
+        "Use a pin hinge and keep wall thickness near 2.0mm."
+    )
+    bundle = RequirementEvidenceBundle(
+        requirement_text=requirement_text,
+        requirement_clauses=["keep wall thickness near 2.0mm"],
+        snapshot_step=1,
+        geometry_facts={
+            "solids": 4,
+            "faces": 28,
+            "edges": 54,
+            "volume": 31279.5,
+            "bbox": [72.0, 65.0, 26.0],
+            "bbox_min": [-36.0, -33.0, -13.0],
+            "bbox_max": [36.0, 32.0, 13.0],
+        },
+        topology_facts={},
+        process_facts={},
+        observation_tags=["geometry:object_index_available"],
+        decision_hints=[],
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    clause = summary.clause_interpretations[0]
+    assert clause.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+    assert "bbox_min_span is not a reliable wall-thickness proxy" in clause.evidence
 
 
 def test_full_span_channel_dimension_clauses_reuse_bbox_and_notch_alignment_evidence() -> None:
@@ -676,6 +1306,58 @@ def test_axis_direction_clause_is_treated_as_process_setup() -> None:
 
     assert summary.clause_interpretations[0].status == RequirementClauseStatus.NOT_APPLICABLE
     assert summary.insufficient_evidence == []
+
+
+def test_pin_hinge_clause_reuses_boundary_cylindrical_topology_evidence() -> None:
+    requirement_text = "Use a pin hinge at the back."
+    bundle = RequirementEvidenceBundle(
+        requirement_text=requirement_text,
+        requirement_clauses=[requirement_text],
+        snapshot_step=1,
+        geometry_facts={
+            "solids": 1,
+            "faces": 12,
+            "edges": 24,
+            "volume": 18000.0,
+            "bbox": [72.0, 64.0, 26.0],
+            "bbox_min": [-36.0, -32.0, 0.0],
+            "bbox_max": [36.0, 32.0, 26.0],
+        },
+        topology_facts={
+            "face_summaries": [
+                {
+                    "face_id": "F_hinge_barrel",
+                    "geom_type": "CYLINDER",
+                    "radius": 3.0,
+                    "axis_origin": [0.0, -32.0, 13.0],
+                    "axis_direction": [1.0, 0.0, 0.0],
+                    "bbox": {
+                        "xmin": -34.0,
+                        "xmax": 34.0,
+                        "ymin": -35.0,
+                        "ymax": -29.0,
+                        "zmin": 10.0,
+                        "zmax": 16.0,
+                    },
+                }
+            ]
+        },
+        process_facts={},
+        observation_tags=["geometry:object_index_available"],
+        decision_hints=[],
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    clause = summary.clause_interpretations[0]
+    assert clause.status == RequirementClauseStatus.VERIFIED
+    assert "matched_hinge_face=F_hinge_barrel" in clause.evidence
+    assert "hinge_axis=X" in clause.evidence
+    assert "topology:hinge_face" in clause.observation_tags
 
 
 def test_left_and_right_end_height_clauses_reuse_end_face_topology_spans() -> None:

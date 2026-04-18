@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -244,12 +245,16 @@ class OpenAICompatibleClient:
             ) from exc
 
     def _tool_to_openai_schema(self, tool: LLMToolDefinition) -> dict[str, Any]:
+        parameters = _sanitize_tool_input_schema(
+            tool.input_schema or {"type": "object", "properties": {}},
+            model_name=self._model,
+        )
         return {
             "type": "function",
             "function": {
                 "name": tool.name,
                 "description": tool.description or "",
-                "parameters": tool.input_schema or {"type": "object", "properties": {}},
+                "parameters": parameters,
             },
         }
 
@@ -301,3 +306,28 @@ class OpenAICompatibleClient:
             if isinstance(finish_reason, str) and finish_reason.strip():
                 return finish_reason.strip()
         return None
+
+
+def _sanitize_tool_input_schema(
+    schema: dict[str, Any],
+    *,
+    model_name: str,
+) -> dict[str, Any]:
+    sanitized = deepcopy(schema)
+    if model_name.strip().lower().startswith("kimi-"):
+        _strip_ref_conflicting_descriptions(sanitized)
+    return sanitized
+
+
+def _strip_ref_conflicting_descriptions(node: Any) -> None:
+    if isinstance(node, dict):
+        has_ref = "$ref" in node
+        has_combinator = any(key in node for key in ("allOf", "anyOf", "oneOf"))
+        if (has_ref or has_combinator) and "description" in node:
+            node.pop("description", None)
+        for value in list(node.values()):
+            _strip_ref_conflicting_descriptions(value)
+        return
+    if isinstance(node, list):
+        for item in node:
+            _strip_ref_conflicting_descriptions(item)

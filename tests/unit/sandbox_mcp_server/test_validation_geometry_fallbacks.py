@@ -1,8 +1,11 @@
 import math
+import sys
+import types
 
 import pytest
 
 from sandbox.interface import SandboxResult
+from sandbox.docker_runner import _build_runtime_code
 from sandbox_mcp_server.contracts import (
     ActionHistoryEntry,
     BoundingBox3D,
@@ -15,6 +18,7 @@ from sandbox_mcp_server.contracts import (
     RequirementCheck,
     RequirementCheckStatus,
     RequirementClauseStatus,
+    SolidEntity,
     TopologyEdgeEntity,
     TopologyFaceEntity,
     TopologyObjectIndex,
@@ -30,12 +34,172 @@ class _DummyRunner:
         raise RuntimeError("not used in this test")
 
 
+class _FakeShape:
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.wrapped = f"wrapped:{label}"
+
+    def solids(self) -> list["_FakeShape"]:
+        return [self]
+
+
+class _FakeShapeList(list):
+    def solids(self) -> list[_FakeShape]:
+        solids: list[_FakeShape] = []
+        for child in self:
+            if hasattr(child, "solids"):
+                solids.extend(list(child.solids()))
+        return solids
+
+
+class _FakeCompound:
+    def __init__(self, children=None, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        if children is None:
+            children = kwargs.get("children") or []
+        self.children = list(children)
+        self.wrapped = "wrapped:compound"
+
+    def solids(self) -> list[_FakeShape]:
+        solids: list[_FakeShape] = []
+        for child in self.children:
+            if hasattr(child, "solids"):
+                solids.extend(list(child.solids()))
+        return solids
+
+
+class _FakePart:
+    def __init__(self, source=None) -> None:  # type: ignore[no-untyped-def]
+        self.source = source
+        self.wrapped = "wrapped:part"
+
+    def solids(self) -> list[_FakeShape]:
+        if self.source is None or not hasattr(self.source, "solids"):
+            return []
+        return list(self.source.solids())
+
+
+def _install_fake_build123d(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    exported: list[tuple[object, str]] | None = None,
+) -> None:
+    module = types.ModuleType("build123d")
+    module.__all__ = ["Box", "Compound", "Part", "ShapeList", "export_step"]
+    module.ShapeList = _FakeShapeList
+    module.Compound = _FakeCompound
+    module.Part = _FakePart
+
+    def _fake_box(*args, **kwargs):  # type: ignore[no-untyped-def]
+        label = kwargs.get("label") or f"box:{len(args)}"
+        return _FakeShape(str(label))
+
+    def _fake_export_step(obj, path):  # type: ignore[no-untyped-def]
+        if not hasattr(obj, "wrapped"):
+            raise AttributeError(f"{type(obj).__name__!s} missing wrapped")
+        if exported is not None:
+            exported.append((obj, path))
+
+    module.Box = _fake_box
+    module.export_step = _fake_export_step
+    monkeypatch.setitem(sys.modules, "build123d", module)
+
+
+def _exec_runtime_code(
+    code: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    capture_export: bool = False,
+) -> tuple[dict[str, object], list[tuple[object, str]]]:
+    exported: list[tuple[object, str]] = []
+    _install_fake_build123d(
+        monkeypatch,
+        exported=exported if capture_export else None,
+    )
+    namespace: dict[str, object] = {}
+    exec(code, namespace, namespace)
+    return namespace, exported
+
+
 def test_runtime_wrap_build123d_code_falls_back_to_empty_result_for_probe_analysis() -> None:
     service = SandboxMCPService(runner=_DummyRunner())
 
     wrapped = service._runtime_wrap_build123d_code("x = 1")
 
     assert "else:\n    result = Part()\n    __aicad_last_result = result\n" in wrapped
+
+
+def test_runtime_wrap_build123d_code_canonicalizes_multi_shape_shapelist_to_compound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+
+    wrapped = service._runtime_wrap_build123d_code(
+        "result = ShapeList([Box(1, 1, 1, label='base'), Box(1, 1, 1, label='lid')])"
+    )
+
+    namespace, _ = _exec_runtime_code(wrapped, monkeypatch)
+
+    result = namespace["result"]
+    assert isinstance(result, _FakeCompound)
+    assert [child.label for child in result.children] == ["base", "lid"]
+
+
+def test_runtime_wrap_build123d_code_unwraps_singleton_shapelist_to_child_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+
+    wrapped = service._runtime_wrap_build123d_code(
+        "result = ShapeList([Box(1, 1, 1, label='base')])"
+    )
+
+    namespace, _ = _exec_runtime_code(wrapped, monkeypatch)
+
+    result = namespace["result"]
+    assert isinstance(result, _FakeShape)
+    assert result.label == "base"
+
+
+def test_docker_runtime_code_canonicalizes_multi_shape_shapelist_before_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wrapped = _build_runtime_code(
+        "result = ShapeList([Box(1, 1, 1, label='base'), Box(1, 1, 1, label='lid')])"
+    )
+
+    import pathlib
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", lambda self, parents=False, exist_ok=False: None)
+    _, exported = _exec_runtime_code(wrapped, monkeypatch, capture_export=True)
+
+    assert len(exported) == 1
+    exported_root, exported_path = exported[0]
+    assert isinstance(exported_root, _FakeCompound)
+    assert [child.label for child in exported_root.children] == ["base", "lid"]
+    assert exported_path == "/output/model.step"
+
+
+def test_runtime_wrap_build123d_code_normalizes_shapelist_results_for_export() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+
+    wrapped = service._runtime_wrap_build123d_code(
+        "\n".join(
+            [
+                "left = Box(1, 1, 1)",
+                "right = Pos(3, 0, 0) * Box(1, 1, 1)",
+                "result = Compound([left, right]).solids()",
+            ]
+        )
+    )
+
+    namespace: dict[str, object] = {}
+    exec(wrapped, namespace)
+
+    export_part = namespace["__aicad_resolve_export_part"]()
+
+    assert export_part is not None
+    assert hasattr(export_part, "wrapped")
+    assert len(list(export_part.solids())) == 2
 
 
 def test_execute_probe_summary_marks_path_rail_diagnostics_actionable_for_path_sweep() -> None:
@@ -180,6 +344,25 @@ def _bbox(
     )
 
 
+def _solid(
+    *,
+    solid_id: str,
+    volume: float,
+    bbox: BoundingBox3D,
+) -> SolidEntity:
+    return SolidEntity(
+        solid_id=solid_id,
+        volume=volume,
+        surface_area=max(volume, 1.0),
+        center_of_mass=[
+            (bbox.xmin + bbox.xmax) / 2.0,
+            (bbox.ymin + bbox.ymax) / 2.0,
+            (bbox.zmin + bbox.zmax) / 2.0,
+        ],
+        bbox=bbox,
+    )
+
+
 def _topology_face(
     *,
     step: int,
@@ -274,6 +457,7 @@ def _snapshot(
     bbox: list[float] | None = None,
     bbox_min: list[float] | None = None,
     bbox_max: list[float] | None = None,
+    geometry_objects: GeometryObjectIndex | None = None,
     topology_index: TopologyObjectIndex | None = None,
 ) -> CADStateSnapshot:
     bbox_value = bbox or [10.0, 10.0, 10.0]
@@ -298,7 +482,7 @@ def _snapshot(
         blockers=[],
         images=[],
         sketch_state=None,
-        geometry_objects=None,
+        geometry_objects=geometry_objects,
         topology_index=topology_index,
         success=True,
         error=None,
@@ -2853,7 +3037,313 @@ async def test_query_feature_probes_surfaces_centered_host_translation_hints_for
     ]
     assert probe.signals["host_frame_translation_from_corner"] == [-50.0, -30.0]
     assert probe.signals["host_frame_dimensions"] == [100.0, 60.0]
+    assert probe.family_binding == "explicit_anchor_hole"
+    assert probe.required_evidence_kinds == ["geometry", "topology"]
+    assert probe.anchor_summary["expected_local_center_count"] == 4
+    assert probe.anchor_summary["realized_local_center_count"] == 1
+    assert probe.anchor_summary["host_frame_translation_from_corner"] == [-50.0, -30.0]
+    assert "center_layout_not_fully_realized" in probe.grounding_blockers
     assert "centered host frame suggests normalized centers" in probe.summary
+
+
+@pytest.mark.asyncio
+async def test_query_feature_probes_tracks_expected_hole_count_without_explicit_coordinates() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-query-feature-probes-hole-count-without-coordinates"
+    service._session_manager.clear_session(session_id)
+
+    topology_index = _build_centered_plate_countersink_topology(head_radius=6.0)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=9,
+                edges=8,
+                volume=46574.806908831764,
+                bbox=[100.0, 60.0, 8.0],
+                bbox_min=[-50.0, -30.0, -4.0],
+                bbox_max=[50.0, 30.0, 4.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a rectangular electronics bracket sized 62mm x 40mm x 14mm with a top pocket, "
+        "two mounting holes, a front thumb notch, local edge fillets around the top opening, "
+        "and a countersink on the mounting face."
+    )
+    result = await service.query_feature_probes(
+        QueryFeatureProbesInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+            families=["explicit_anchor_hole"],
+        )
+    )
+
+    assert result.success is True
+    assert len(result.probes) == 1
+    probe = result.probes[0]
+    assert probe.family == "explicit_anchor_hole"
+    assert probe.anchor_summary["expected_local_center_count"] == 2
+    assert probe.anchor_summary["realized_local_center_count"] == 4
+    assert "missing_expected_local_centers" not in probe.grounding_blockers
+    assert "center_count_mismatch" in probe.grounding_blockers
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_surfaces_count_mismatch_for_holes_without_explicit_coordinates() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-hole-count-without-coordinates"
+    service._session_manager.clear_session(session_id)
+
+    topology_index = _build_centered_plate_countersink_topology(head_radius=6.0)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=9,
+                edges=8,
+                volume=46574.806908831764,
+                bbox=[100.0, 60.0, 8.0],
+                bbox_min=[-50.0, -30.0, -4.0],
+                bbox_max=[50.0, 30.0, 4.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a rectangular electronics bracket sized 62mm x 40mm x 14mm with a top pocket, "
+        "two mounting holes, a front thumb notch, local edge fillets around the top opening, "
+        "and a countersink on the mounting face."
+    )
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert result.is_complete is False
+    assert result.insufficient_evidence is False
+    assert "two_mounting_holes" in result.blockers
+    clause_status = {
+        clause.clause_id: clause.status for clause in result.clause_interpretations
+    }
+    assert clause_status["two_mounting_holes"] == RequirementClauseStatus.CONTRADICTED
+
+
+@pytest.mark.asyncio
+async def test_query_feature_probes_general_geometry_flags_part_count_and_bbox_mismatch() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-query-feature-probes-general-geometry-mismatch"
+    service._session_manager.clear_session(session_id)
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=3,
+                faces=56,
+                edges=165,
+                volume=20222.41657244004,
+                bbox=[78.0, 58.5, 35.5],
+                bbox_min=[-39.0, -30.5, -1.5],
+                bbox_max=[39.0, 28.0, 34.0],
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a two-part rounded clamshell storage enclosure with overall dimensions "
+        "78mm x 56mm x 32mm. Use a pin hinge at the back, keep wall thickness near 2.4mm, "
+        "add four corner magnet recesses on the mating faces, a front thumb notch about "
+        "10mm wide, two shallow organic top cavities for small earphone shells, one bottom "
+        "cable post, and one side plug pocket."
+    )
+    result = await service.query_feature_probes(
+        QueryFeatureProbesInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+            families=["general_geometry"],
+        )
+    )
+
+    assert result.success is True
+    assert len(result.probes) == 1
+    probe = result.probes[0]
+    assert probe.family == "general_geometry"
+    assert probe.success is False
+    assert "unexpected_part_count_for_requirement" in probe.blockers
+    assert "bbox_dimension_mismatch" in probe.blockers
+    assert probe.anchor_summary["expected_part_count"] == 2
+    assert probe.anchor_summary["expected_bbox"] == [78.0, 56.0, 32.0]
+    assert "grounding blocker" in probe.summary
+
+
+@pytest.mark.asyncio
+async def test_query_feature_probes_general_geometry_flags_detached_minor_fragment_even_when_part_count_matches() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-query-feature-probes-detached-minor-fragment"
+    service._session_manager.clear_session(session_id)
+
+    main_bbox = _bbox(-39.0, 39.0, -28.0, 28.0, -16.0, 16.0)
+    fragment_bbox = _bbox(18.0, 26.0, 18.0, 26.0, 2.0, 6.0)
+    geometry_objects = GeometryObjectIndex(
+        solids=[
+            _solid(solid_id="S_main", volume=44420.3, bbox=main_bbox),
+            _solid(solid_id="S_fragment", volume=201.06, bbox=fragment_bbox),
+        ],
+        faces=[],
+        edges=[],
+        solids_total=2,
+        faces_total=0,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=2,
+                faces=33,
+                edges=71,
+                volume=44621.36,
+                bbox=[78.0, 56.0, 32.0],
+                bbox_min=[-39.0, -28.0, -16.0],
+                bbox_max=[39.0, 28.0, 16.0],
+                geometry_objects=geometry_objects,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a two-part rounded clamshell storage enclosure with overall dimensions "
+        "78mm x 56mm x 32mm. Use a pin hinge at the back, keep wall thickness near 2.4mm, "
+        "add four corner magnet recesses on the mating faces, a front thumb notch about "
+        "10mm wide, two shallow organic top cavities for small earphone shells, one bottom "
+        "cable post, and one side plug pocket."
+    )
+    result = await service.query_feature_probes(
+        QueryFeatureProbesInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+            families=["general_geometry"],
+        )
+    )
+
+    assert result.success is True
+    probe = result.probes[0]
+    assert probe.family == "general_geometry"
+    assert probe.success is False
+    assert "suspected_detached_feature_fragment" in probe.blockers
+    assert probe.anchor_summary["suspected_detached_fragment_count"] == 1
+    assert probe.anchor_summary["suspected_detached_fragment_solid_ids"] == ["S_fragment"]
+    assert probe.anchor_summary["dominant_solid_volume_fraction"] > 0.95
+
+
+@pytest.mark.asyncio
+async def test_query_feature_probes_detects_half_shell_hinge_signals_for_clamshell_requirements() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-query-feature-probes-half-shell-hinge"
+    service._session_manager.clear_session(session_id)
+
+    hinge_face = _topology_face(
+        step=1,
+        face_id="F_hinge_barrel",
+        center=[0.0, -32.0, 13.0],
+        normal=[0.0, -1.0, 0.0],
+        geom_type="CYLINDER",
+        radius=3.0,
+        axis_origin=[0.0, -32.0, 13.0],
+        axis_direction=[1.0, 0.0, 0.0],
+        bbox=_bbox(-34.0, 34.0, -35.0, -29.0, 10.0, 16.0),
+        area=640.0,
+        edge_refs=["edge:1:E_hinge_a", "edge:1:E_hinge_b"],
+    )
+    topology_index = TopologyObjectIndex(
+        faces=[hinge_face],
+        edges=[],
+        faces_total=1,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=12,
+                edges=24,
+                volume=18000.0,
+                bbox=[72.0, 64.0, 26.0],
+                bbox_min=[-36.0, -32.0, 0.0],
+                bbox_max=[36.0, 32.0, 26.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a two-part rounded clamshell enclosure with a top lid, bottom base, "
+        "pin hinge at the back, and corner magnet slots on the mating faces."
+    )
+    result = await service.query_feature_probes(
+        QueryFeatureProbesInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert "half_shell" in result.detected_families
+    half_shell_probe = next(probe for probe in result.probes if probe.family == "half_shell")
+    assert half_shell_probe.success is False
+    assert half_shell_probe.signals["hinge_like_cylinder_count"] == 1
+    assert half_shell_probe.signals["hinge_like_axis"] == "X"
+    assert half_shell_probe.anchor_summary["requires_topology_host_ranking"] is True
+    assert half_shell_probe.anchor_summary["hinge_like_face_ids"] == ["F_hinge_barrel"]
+    assert "unexpected_part_count_for_requirement" in half_shell_probe.blockers
+    assert "query_topology" in half_shell_probe.recommended_next_tools
 
 
 @pytest.mark.asyncio
@@ -2948,6 +3438,56 @@ async def test_validate_requirement_accepts_face_sketch_coordinate_translation_f
     assert "feature_hole_position_alignment" not in result.blockers
     assert "feature_hole_exact_center_set" not in result.blockers
     assert "feature_local_anchor_alignment" not in result.blockers
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_accepts_hole_history_with_countersink_radius_alias() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-hole-history-countersink-radius-alias"
+    service._session_manager.clear_session(session_id)
+
+    topology_index = _build_centered_plate_countersink_topology(head_radius=4.5)
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.HOLE,
+            action_params={
+                "diameter": 6.0,
+                "depth": 8.0,
+                "face_ref": "face:1:F_plate_top",
+                "centers": [[-25.0, -15.0], [-25.0, 15.0], [25.0, -15.0], [25.0, 15.0]],
+                "countersink_radius": 4.5,
+                "countersink_angle": 90.0,
+            },
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=9,
+                edges=8,
+                volume=46996.261147178,
+                bbox=[100.0, 60.0, 8.0],
+                bbox_min=[-50.0, -30.0, -4.0],
+                bbox_max=[50.0, 30.0, 4.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = "Create a 100x60x8 mm plate with four countersunk through holes on the top face."
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    assert "feature_hole" not in result.blockers
+    assert "feature_countersink" not in result.blockers
 
 
 @pytest.mark.asyncio

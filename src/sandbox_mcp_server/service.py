@@ -72,6 +72,10 @@ from sandbox_mcp_server.contracts import (
     ValidateRequirementOutput,
 )
 from sandbox_mcp_server.evaluation_orchestrator import EvaluationOrchestrator
+from sandbox_mcp_server.feature_probe_grounding import (
+    build_feature_probe_grounding,
+    recommended_next_tools_for_feature_probe_grounding,
+)
 from sandbox_mcp_server.registry import (
     RequirementSemantics,
     analyze_requirement_semantics,
@@ -86,12 +90,19 @@ from sandbox_mcp_server.registry import (
     parse_topology_ref,
 )
 from sandbox_mcp_server.validation_evidence import RequirementEvidenceBuilder
+from sandbox_mcp_server.validation_grounding import (
+    attach_clause_grounding_surface,
+)
 from sandbox_mcp_server.validation_interpretation import (
     RequirementInterpretationSummary,
     build_interpretation_summary_from_clauses,
     interpret_requirement_clauses,
 )
-from sandbox_mcp_server.validation_llm import ValidationLLMAdjudicator
+from sandbox_mcp_server.validation_llm import (
+    ValidationLLMAdjudicator,
+    _INVALID_OUTPUT_SENTINEL,
+    _PROVIDER_ERROR_PREFIX,
+)
 from common.blocker_taxonomy import (
     classify_blocker_taxonomy_many,
     normalize_probe_family_ids,
@@ -102,6 +113,8 @@ from common.blocker_taxonomy import (
 DEFAULT_STEP_MIME_TYPE = "application/step"
 DEFAULT_RENDER_VIEW_FILENAME = "render_view.png"
 GEOMETRY_OBJECT_CAPTURE_LIMIT = 120
+_VALIDATION_LLM_MAX_ELIGIBLE_UNRESOLVED_CLAUSES = 3
+_VALIDATION_LLM_MAX_ESTIMATED_PROMPT_CHARS = 7000
 SKETCH_REF_PATTERN = re.compile(
     r"^(?P<kind>path|profile):(?P<step>[0-9]+):(?P<entity_id>[A-Z]_[A-Za-z0-9_]+)$"
 )
@@ -138,6 +151,7 @@ def build_validation_blocker_taxonomy(
     *,
     core_checks: list[RequirementCheck],
     diagnostic_checks: list[RequirementCheck],
+    clause_interpretations: list[RequirementClauseInterpretation] | None = None,
 ) -> list[BlockerTaxonomyRecord]:
     core_blockers = [
         check.check_id
@@ -162,21 +176,160 @@ def build_validation_blocker_taxonomy(
         ),
     ]
     return [
-        BlockerTaxonomyRecord(
-            blocker_id=item.blocker_id,
-            normalized_blocker_id=item.normalized_blocker_id,
-            family_ids=list(item.family_ids),
-            feature_ids=list(item.feature_ids),
-            primary_feature_id=item.primary_feature_id,
-            evidence_source=item.evidence_source,
-            completeness_relevance=item.completeness_relevance,
-            severity=item.severity,
-            recommended_repair_lane=item.recommended_repair_lane,
-            observation_tags=list(item.observation_tags),
-            decision_hints=list(item.decision_hints),
+        _apply_clause_grounding_to_blocker_taxonomy_record(
+            BlockerTaxonomyRecord(
+                blocker_id=item.blocker_id,
+                normalized_blocker_id=item.normalized_blocker_id,
+                family_ids=list(item.family_ids),
+                feature_ids=list(item.feature_ids),
+                primary_feature_id=item.primary_feature_id,
+                evidence_source=item.evidence_source,
+                completeness_relevance=item.completeness_relevance,
+                severity=item.severity,
+                recommended_repair_lane=item.recommended_repair_lane,
+                observation_tags=list(item.observation_tags),
+                decision_hints=list(item.decision_hints),
+            ),
+            clause_interpretations=clause_interpretations or [],
         )
         for item in records
     ]
+
+
+_LOCAL_FINISH_GROUNDING_HINTS = {"query_topology", "apply_cad_action"}
+_SEMANTIC_REFRESH_GROUNDING_HINTS = {"query_feature_probes", "query_kernel_state", "query_geometry"}
+_LOCAL_FINISH_FAMILY_BINDINGS = {"explicit_anchor_hole", "named_face_local_edit"}
+_LOCAL_FINISH_BLOCKER_IDS = {
+    "feature_hole",
+    "feature_countersink",
+    "feature_hole_position_alignment",
+    "feature_local_anchor_alignment",
+}
+
+
+def _apply_clause_grounding_to_blocker_taxonomy_record(
+    record: BlockerTaxonomyRecord,
+    *,
+    clause_interpretations: list[RequirementClauseInterpretation],
+) -> BlockerTaxonomyRecord:
+    relevant_clauses = _matching_clause_grounding_for_blocker(
+        blocker_id=str(record.blocker_id or "").strip(),
+        family_ids=list(record.family_ids or []),
+        clause_interpretations=clause_interpretations,
+    )
+    if not relevant_clauses:
+        return record
+    repair_lane_override = _repair_lane_override_from_clause_grounding(
+        blocker_id=str(record.blocker_id or "").strip(),
+        relevant_clauses=relevant_clauses,
+    )
+    observation_tags = list(record.observation_tags or [])
+    decision_hints = list(record.decision_hints or [])
+    for clause in relevant_clauses:
+        for tag in clause.observation_tags or []:
+            normalized = str(tag or "").strip()
+            if normalized and normalized not in observation_tags:
+                observation_tags.append(normalized)
+        family_binding = str(clause.family_binding or "").strip()
+        if family_binding:
+            binding_tag = f"family:{family_binding}"
+            if binding_tag not in observation_tags:
+                observation_tags.append(binding_tag)
+        for hint in [*(clause.decision_hints or []), *(clause.repair_hints or [])]:
+            normalized = str(hint or "").strip()
+            if normalized and normalized not in decision_hints:
+                decision_hints.append(normalized)
+    return record.model_copy(
+        update={
+            "recommended_repair_lane": repair_lane_override
+            or str(record.recommended_repair_lane or "").strip()
+            or "code_repair",
+            "observation_tags": observation_tags,
+            "decision_hints": decision_hints,
+        }
+    )
+
+
+def _matching_clause_grounding_for_blocker(
+    *,
+    blocker_id: str,
+    family_ids: list[str],
+    clause_interpretations: list[RequirementClauseInterpretation],
+) -> list[RequirementClauseInterpretation]:
+    if not blocker_id:
+        return []
+    normalized_family_ids = {
+        str(item).strip()
+        for item in family_ids
+        if isinstance(item, str) and str(item).strip()
+    }
+    relevant: list[RequirementClauseInterpretation] = []
+    for clause in clause_interpretations:
+        if not isinstance(clause, RequirementClauseInterpretation):
+            continue
+        if clause.status == RequirementClauseStatus.VERIFIED:
+            continue
+        clause_id = str(clause.clause_id or "").strip()
+        family_binding = str(clause.family_binding or "").strip()
+        repair_hints = {
+            str(item).strip()
+            for item in (clause.repair_hints or [])
+            if isinstance(item, str) and str(item).strip()
+        }
+        required_evidence_kinds = {
+            str(item).strip()
+            for item in (clause.required_evidence_kinds or [])
+            if isinstance(item, str) and str(item).strip()
+        }
+        if clause_id == blocker_id:
+            relevant.append(clause)
+            continue
+        if family_binding and family_binding in normalized_family_ids:
+            if _LOCAL_FINISH_GROUNDING_HINTS & repair_hints:
+                relevant.append(clause)
+                continue
+            if blocker_id in _LOCAL_FINISH_BLOCKER_IDS and family_binding in _LOCAL_FINISH_FAMILY_BINDINGS:
+                relevant.append(clause)
+                continue
+            if "topology" in required_evidence_kinds and family_binding in _LOCAL_FINISH_FAMILY_BINDINGS:
+                relevant.append(clause)
+                continue
+    return relevant
+
+
+def _repair_lane_override_from_clause_grounding(
+    *,
+    blocker_id: str,
+    relevant_clauses: list[RequirementClauseInterpretation],
+) -> str | None:
+    if not relevant_clauses:
+        return None
+    saw_probe_first = False
+    for clause in relevant_clauses:
+        repair_hints = {
+            str(item).strip()
+            for item in (clause.repair_hints or [])
+            if isinstance(item, str) and str(item).strip()
+        }
+        required_evidence_kinds = {
+            str(item).strip()
+            for item in (clause.required_evidence_kinds or [])
+            if isinstance(item, str) and str(item).strip()
+        }
+        family_binding = str(clause.family_binding or "").strip()
+        if _LOCAL_FINISH_GROUNDING_HINTS & repair_hints:
+            return "local_finish"
+        if (
+            blocker_id in _LOCAL_FINISH_BLOCKER_IDS
+            and family_binding in _LOCAL_FINISH_FAMILY_BINDINGS
+            and "topology" in required_evidence_kinds
+        ):
+            return "local_finish"
+        if _SEMANTIC_REFRESH_GROUNDING_HINTS & repair_hints:
+            saw_probe_first = True
+    if saw_probe_first:
+        return "probe_first"
+    return None
 
 
 class SessionState:
@@ -596,9 +749,18 @@ class SandboxMCPService:
             "        if hasattr(candidate, 'part'):\n"
             "            part = candidate.part\n"
             "            if hasattr(part, 'solids') and len(list(part.solids())) > 0:\n"
-                "                return part\n"
-            "        if hasattr(candidate, 'solids') and len(list(candidate.solids())) > 0:\n"
+            "                return part\n"
+            "        if hasattr(candidate, 'wrapped') and hasattr(candidate, 'solids') and len(list(candidate.solids())) > 0:\n"
             "            return candidate\n"
+            "        if hasattr(candidate, 'solids'):\n"
+            "            solids = [solid for solid in list(candidate.solids()) if hasattr(solid, 'wrapped')]\n"
+            "            if len(solids) == 1:\n"
+            "                return solids[0]\n"
+            "            if len(solids) > 1:\n"
+            "                try:\n"
+            "                    return Compound(children=solids)\n"
+            "                except Exception:\n"
+            "                    return Compound(solids)\n"
             "    except Exception:\n"
             "        return None\n"
             "    return None\n"
@@ -627,9 +789,10 @@ class SandboxMCPService:
         )
         epilogue = (
             "\nif 'result' in globals():\n"
+            "    result = __aicad_as_exportable(result) or result\n"
             "    __aicad_last_result = result\n"
             "elif __aicad_last_show_object is not None:\n"
-            "    result = __aicad_last_show_object\n"
+            "    result = __aicad_as_exportable(__aicad_last_show_object) or __aicad_last_show_object\n"
             "    __aicad_last_result = result\n"
             "else:\n"
             "    result = Part()\n"
@@ -785,6 +948,7 @@ class SandboxMCPService:
         ) = self._validate_action_contract(
             action_type=request.action_type,
             action_params=normalized_action_params,
+            action_history=action_history,
         )
         if contract_error is not None:
             return CADActionOutput(
@@ -1083,6 +1247,7 @@ class SandboxMCPService:
             entity_ids=request.entity_ids,
             ref_ids=request.ref_ids,
             selection_hints=applied_hints,
+            family_ids=request.family_ids,
             face_offset=request.face_offset,
             edge_offset=request.edge_offset,
         )
@@ -1421,6 +1586,9 @@ class SandboxMCPService:
             interpretation=interpretation,
             history=history,
         )
+        interpretation, grounding_surface = attach_clause_grounding_surface(
+            interpretation
+        )
 
         has_unresolved_clause_coverage = bool(interpretation.insufficient_evidence)
         has_contradicted_clause_coverage = any(
@@ -1459,6 +1627,7 @@ class SandboxMCPService:
         blocker_taxonomy = build_validation_blocker_taxonomy(
             core_checks=core_checks,
             diagnostic_checks=diagnostic_checks,
+            clause_interpretations=interpretation.clause_interpretations,
         )
         blockers = [
             check.check_id
@@ -1490,6 +1659,12 @@ class SandboxMCPService:
             insufficient_evidence=has_insufficient_evidence,
             observation_tags=interpretation.observation_tags,
             decision_hints=interpretation.decision_hints,
+            grounding_sources=grounding_surface.get("grounding_sources") or [],
+            grounding_strength=str(grounding_surface.get("grounding_strength") or "none"),
+            required_evidence_kinds=grounding_surface.get("required_evidence_kinds") or [],
+            overclaim_guard=grounding_surface.get("overclaim_guard"),
+            repair_hints=grounding_surface.get("repair_hints") or [],
+            family_bindings=grounding_surface.get("family_bindings") or [],
             blocker_taxonomy=blocker_taxonomy,
             relation_index=relation_index,
             summary=summary,
@@ -1507,14 +1682,53 @@ class SandboxMCPService:
             return interpretation
         if not interpretation.insufficient_evidence:
             return interpretation
+        adjudication_clauses = self._validation_llm_adjudication_clauses(interpretation)
+        eligible_unresolved = [
+            clause
+            for clause in adjudication_clauses
+            if clause.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+        ]
+        if not eligible_unresolved:
+            return self._validation_llm_skip_update(
+                interpretation,
+                reason="no_eligible_clause",
+                detail=None,
+            )
+        if len(eligible_unresolved) > _VALIDATION_LLM_MAX_ELIGIBLE_UNRESOLVED_CLAUSES:
+            return self._validation_llm_skip_update(
+                interpretation,
+                reason="eligible_clause_budget_exceeded",
+                detail=str(len(eligible_unresolved)),
+            )
+        estimated_prompt_chars = self._estimate_validation_llm_prompt_chars(
+            requirement_text=requirement_text,
+            bundle=bundle,
+            clauses=adjudication_clauses,
+            history=history,
+        )
+        if estimated_prompt_chars > _VALIDATION_LLM_MAX_ESTIMATED_PROMPT_CHARS:
+            return self._validation_llm_skip_update(
+                interpretation,
+                reason="estimated_prompt_budget_exceeded",
+                detail=(
+                    f"{estimated_prompt_chars}/"
+                    f"{_VALIDATION_LLM_MAX_ESTIMATED_PROMPT_CHARS}"
+                ),
+            )
         adjudicated = await self._validation_adjudicator.adjudicate(
             requirement_text=requirement_text,
             bundle=bundle,
-            clauses=interpretation.clause_interpretations,
+            clauses=adjudication_clauses,
             history=history,
         )
-        if adjudicated is None or not adjudicated.clauses:
+        if adjudicated is None:
             return interpretation
+        if not adjudicated.clauses:
+            diagnostic_update = self._validation_llm_diagnostic_update(
+                interpretation,
+                summary=str(adjudicated.summary or ""),
+            )
+            return diagnostic_update or interpretation
         decisions_by_clause_id = {
             decision.clause_id: decision
             for decision in adjudicated.clauses
@@ -1581,6 +1795,193 @@ class SandboxMCPService:
         if not changed:
             return interpretation
         return build_interpretation_summary_from_clauses(updated_clauses, bundle=bundle)
+
+    def _validation_llm_adjudication_clauses(
+        self,
+        interpretation: RequirementInterpretationSummary,
+    ) -> list[RequirementClauseInterpretation]:
+        clauses: list[RequirementClauseInterpretation] = []
+        for clause in interpretation.clause_interpretations:
+            if clause.status != RequirementClauseStatus.INSUFFICIENT_EVIDENCE:
+                clauses.append(clause)
+                continue
+            if self._clause_is_eligible_for_llm_adjudication(clause):
+                clauses.append(clause)
+        return clauses
+
+    def _validation_llm_skip_update(
+        self,
+        interpretation: RequirementInterpretationSummary,
+        *,
+        reason: str,
+        detail: str | None,
+    ) -> RequirementInterpretationSummary:
+        hint = f"validation_llm_skipped:{reason}" + (f":{detail}" if detail else "")
+        return interpretation.model_copy(
+            update={
+                "observation_tags": list(
+                    dict.fromkeys([*interpretation.observation_tags, "validation:llm_skipped"])
+                ),
+                "decision_hints": list(
+                    dict.fromkeys(
+                        [
+                            *interpretation.decision_hints,
+                            "fallback_to_evidence_first_clause_interpretation",
+                            hint,
+                        ]
+                    )
+                ),
+            }
+        )
+
+    def _estimate_validation_llm_prompt_chars(
+        self,
+        *,
+        requirement_text: str,
+        bundle: Any,
+        clauses: list[RequirementClauseInterpretation],
+        history: list[ActionHistoryEntry],
+    ) -> int:
+        unresolved_clauses = [
+            clause
+            for clause in clauses
+            if clause.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+        ]
+        payload = {
+            "requirement_text": requirement_text[:6000],
+            "unresolved_clauses": [
+                {
+                    "clause_id": clause.clause_id,
+                    "clause_text": clause.clause_text[:800],
+                    "current_status": clause.status.value,
+                    "current_evidence": clause.evidence[:600],
+                    "observation_tags": list(clause.observation_tags[:8]),
+                    "decision_hints": list(clause.decision_hints[:8]),
+                }
+                for clause in unresolved_clauses
+            ],
+            "all_clause_summaries": [
+                {
+                    "clause_id": clause.clause_id,
+                    "clause_text": clause.clause_text[:400],
+                    "status": clause.status.value,
+                    "evidence": clause.evidence[:300],
+                }
+                for clause in clauses
+            ],
+            "geometry_facts": self._validation_llm_budget_surface(
+                getattr(bundle, "geometry_facts", {}),
+                max_depth=3,
+                max_list_items=10,
+            ),
+            "topology_facts": self._validation_llm_budget_surface(
+                getattr(bundle, "topology_facts", {}),
+                max_depth=3,
+                max_list_items=8,
+            ),
+            "process_facts": self._validation_llm_budget_surface(
+                getattr(bundle, "process_facts", {}),
+                max_depth=3,
+                max_list_items=8,
+            ),
+            "latest_code_excerpt": self._validation_llm_latest_code_excerpt(history),
+        }
+        try:
+            return len(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
+        except Exception:
+            return len(requirement_text)
+
+    def _validation_llm_budget_surface(
+        self,
+        value: Any,
+        *,
+        max_depth: int,
+        max_list_items: int,
+    ) -> Any:
+        if max_depth <= 0:
+            return "<truncated>"
+        if isinstance(value, dict):
+            compact: dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= max_list_items:
+                    compact["__truncated__"] = True
+                    break
+                compact[str(key)] = self._validation_llm_budget_surface(
+                    item,
+                    max_depth=max_depth - 1,
+                    max_list_items=max_list_items,
+                )
+            return compact
+        if isinstance(value, list):
+            return [
+                self._validation_llm_budget_surface(
+                    item,
+                    max_depth=max_depth - 1,
+                    max_list_items=max_list_items,
+                )
+                for item in value[:max_list_items]
+            ]
+        if isinstance(value, str):
+            return value[:800]
+        return value
+
+    def _validation_llm_latest_code_excerpt(
+        self,
+        history: list[ActionHistoryEntry],
+    ) -> str:
+        for entry in reversed(history):
+            action_params = entry.action_params if isinstance(entry.action_params, dict) else {}
+            for key in ("build123d_code", "cad_code", "code"):
+                value = action_params.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value[:1800]
+        return ""
+
+    def _validation_llm_diagnostic_update(
+        self,
+        interpretation: RequirementInterpretationSummary,
+        *,
+        summary: str,
+    ) -> RequirementInterpretationSummary | None:
+        normalized = summary.strip()
+        if not normalized:
+            return None
+        if normalized.startswith(_PROVIDER_ERROR_PREFIX):
+            detail = normalized[len(_PROVIDER_ERROR_PREFIX) :].strip() or "provider_error"
+            return interpretation.model_copy(
+                update={
+                    "observation_tags": list(
+                        dict.fromkeys([*interpretation.observation_tags, "validation:llm_provider_error"])
+                    ),
+                    "decision_hints": list(
+                        dict.fromkeys(
+                            [
+                                *interpretation.decision_hints,
+                                "fallback_to_evidence_first_clause_interpretation",
+                                f"validation_llm_provider_error:{detail}",
+                            ]
+                        )
+                    ),
+                }
+            )
+        if normalized == _INVALID_OUTPUT_SENTINEL:
+            return interpretation.model_copy(
+                update={
+                    "observation_tags": list(
+                        dict.fromkeys([*interpretation.observation_tags, "validation:llm_invalid_output"])
+                    ),
+                    "decision_hints": list(
+                        dict.fromkeys(
+                            [
+                                *interpretation.decision_hints,
+                                "fallback_to_evidence_first_clause_interpretation",
+                                "validation_llm_invalid_output",
+                            ]
+                        )
+                    ),
+                }
+            )
+        return None
 
     def _clause_is_eligible_for_llm_adjudication(
         self,
@@ -1663,7 +2064,18 @@ class SandboxMCPService:
         if not history:
             return None, [], "No action history found for this session"
 
-        resolved_step = step if step is not None else len(history)
+        if step is None:
+            for entry in reversed(history):
+                snapshot = getattr(entry, "result_snapshot", None)
+                if (
+                    getattr(entry, "success", False)
+                    and snapshot is not None
+                    and bool(getattr(snapshot, "success", True))
+                ):
+                    return entry, history, None
+            return history[-1], history, None
+
+        resolved_step = step
         if resolved_step < 1 or resolved_step > len(history):
             return (
                 None,
@@ -1764,13 +2176,41 @@ class SandboxMCPService:
             for item in (snapshot.geometry.bbox or [])
             if isinstance(item, (int, float))
         ]
+        bbox_min = [
+            float(item)
+            for item in (snapshot.geometry.bbox_min or [])
+            if isinstance(item, (int, float))
+        ]
+        bbox_max = [
+            float(item)
+            for item in (snapshot.geometry.bbox_max or [])
+            if isinstance(item, (int, float))
+        ]
         signals: dict[str, Any] = {
             "solids": solids,
             "volume": volume,
             "bbox": bbox,
+            "bbox_min": bbox_min,
+            "bbox_max": bbox_max,
+            "bbox_min_span": min(bbox) if bbox else 0.0,
+            "bbox_max_span": max(bbox) if bbox else 0.0,
             "feature_count": len(snapshot.features),
             "history_steps": len(history),
         }
+        signals.update(self._snapshot_detached_fragment_signals(snapshot))
+        expected_bbox = self._extract_overall_bbox_dimensions(requirement_text)
+        if expected_bbox:
+            signals["expected_bbox"] = expected_bbox
+        expected_part_count = self._extract_expected_part_count(requirement_text)
+        if expected_part_count is not None:
+            signals["expected_part_count"] = expected_part_count
+        if family == "half_shell":
+            signals.update(
+                self._half_shell_probe_signals(
+                    snapshot=snapshot,
+                    requirement_text=requirement_text,
+                )
+            )
         if family == "nested_hollow_section":
             signals["prefers_explicit_inner_void_cut"] = bool(
                 semantics.prefers_explicit_inner_void_cut
@@ -1783,11 +2223,21 @@ class SandboxMCPService:
             expected_centers = self._infer_expected_local_feature_centers(
                 requirement_text
             )
+            expected_center_count = (
+                len(expected_centers)
+                if expected_centers
+                else self._infer_expected_local_feature_count(
+                    requirement_text,
+                    family="explicit_anchor_hole",
+                )
+            )
             realized_centers = self._snapshot_collect_subtractive_feature_centers(
                 snapshot,
                 face_targets=semantics.face_targets,
             )
             signals["expected_local_centers"] = expected_centers
+            if expected_center_count is not None:
+                signals["expected_local_center_count"] = expected_center_count
             signals["realized_centers"] = realized_centers
             layout_hints = self._explicit_anchor_probe_layout_hints(
                 requirement_text=requirement_text,
@@ -1841,10 +2291,81 @@ class SandboxMCPService:
         else:
             material_volume = abs(float(volume)) if isinstance(volume, (int, float)) else 0.0
             confidence = 0.35 if solids > 0 and material_volume > 0.0 else 0.15
-            success = solids > 0 and material_volume > 0.0 and family == "general_geometry"
-            summary = (
-                f"{family}: no dedicated validator checks mapped yet; using generic solid/volume signals"
-            )
+            if family == "general_geometry":
+                geometry_blockers = self._general_geometry_probe_blockers(
+                    solids=solids,
+                    bbox=bbox,
+                    expected_bbox=expected_bbox,
+                    expected_part_count=expected_part_count,
+                    suspected_detached_fragment_count=int(
+                        signals.get("suspected_detached_fragment_count") or 0
+                    ),
+                )
+                blockers.extend(
+                    blocker_id
+                    for blocker_id in geometry_blockers
+                    if blocker_id not in blockers
+                )
+                success = solids > 0 and material_volume > 0.0 and not blockers
+                if blockers:
+                    summary = (
+                        f"{family}: generic geometry signals expose {len(blockers)} "
+                        "grounding blocker(s)"
+                    )
+                else:
+                    summary = (
+                        f"{family}: generic solid/volume/part-count/bbox signals currently look stable"
+                    )
+            else:
+                if family == "half_shell":
+                    half_shell_blockers = self._half_shell_probe_blockers(
+                        solids=solids,
+                        bbox=bbox,
+                        expected_bbox=expected_bbox,
+                        expected_part_count=expected_part_count,
+                        suspected_detached_fragment_count=int(
+                            signals.get("suspected_detached_fragment_count") or 0
+                        ),
+                        hinge_requested=bool(signals.get("hinge_requested")),
+                        hinge_like_cylinder_count=int(
+                            signals.get("hinge_like_cylinder_count") or 0
+                        ),
+                    )
+                    blockers.extend(
+                        blocker_id
+                        for blocker_id in half_shell_blockers
+                        if blocker_id not in blockers
+                    )
+                    success = solids > 0 and material_volume > 0.0 and not blockers
+                    if blockers:
+                        summary = (
+                            f"{family}: clamshell hinge/split signals expose {len(blockers)} "
+                            "grounding blocker(s)"
+                        )
+                    else:
+                        summary = (
+                            f"{family}: clamshell hinge/split signals currently look grounded"
+                        )
+                    confidence = 0.55 if success else 0.3
+                else:
+                    success = (
+                        solids > 0 and material_volume > 0.0 and family == "general_geometry"
+                    )
+                    summary = (
+                        f"{family}: no dedicated validator checks mapped yet; using generic solid/volume signals"
+                    )
+
+        probe_grounding = build_feature_probe_grounding(
+            family=family,
+            signals=signals,
+            blockers=blockers,
+        )
+        recommended_next_tools = recommended_next_tools_for_feature_probe_grounding(
+            base_tools=recommended_probe_tools_for_family(family),
+            required_evidence_kinds=probe_grounding["required_evidence_kinds"],
+            anchor_summary=probe_grounding["anchor_summary"],
+            grounding_blockers=probe_grounding["grounding_blockers"],
+        )
 
         return FeatureProbeRecord(
             family=family,
@@ -1853,7 +2374,11 @@ class SandboxMCPService:
             confidence=confidence,
             signals=signals,
             blockers=blockers,
-            recommended_next_tools=recommended_probe_tools_for_family(family),
+            recommended_next_tools=recommended_next_tools,
+            family_binding=probe_grounding["family_binding"],
+            required_evidence_kinds=probe_grounding["required_evidence_kinds"],
+            anchor_summary=probe_grounding["anchor_summary"],
+            grounding_blockers=probe_grounding["grounding_blockers"],
         )
 
     def _explicit_anchor_probe_layout_hints(
@@ -6858,9 +7383,14 @@ class SandboxMCPService:
                     entry.action_type == CADActionType.HOLE
                     and isinstance(entry.action_params, dict)
                     and isinstance(
-                        entry.action_params.get("countersink_diameter"), (int, float)
+                        (
+                            normalized_hole_params := self._normalize_hole_action_params(
+                                entry.action_params
+                            )
+                        ).get("countersink_diameter"),
+                        (int, float),
                     )
-                    and float(entry.action_params.get("countersink_diameter")) > 0.0
+                    and float(normalized_hole_params.get("countersink_diameter")) > 0.0
                     and self._history_action_materially_changes_geometry(history, index)
                     for index, entry in enumerate(history)
                 )
@@ -6982,7 +7512,21 @@ class SandboxMCPService:
         expected_local_feature_centers = self._infer_expected_local_feature_centers(
             requirement_text
         )
-        if expected_local_feature_centers and (
+        expected_local_feature_count = (
+            len(expected_local_feature_centers)
+            if expected_local_feature_centers
+            else self._infer_expected_local_feature_count(
+                requirement_text,
+                family="explicit_anchor_hole"
+                if (
+                    semantics.mentions_hole
+                    or semantics.mentions_pattern
+                    or getattr(semantics, "mentions_spherical_recess", False)
+                )
+                else None,
+            )
+        )
+        if (expected_local_feature_centers or expected_local_feature_count is not None) and (
             semantics.mentions_hole
             or semantics.mentions_pattern
             or getattr(semantics, "mentions_spherical_recess", False)
@@ -7008,35 +7552,54 @@ class SandboxMCPService:
                     )
                     if len(center) >= 2
                 ]
-            realized_feature_centers = self._filter_extra_center_feature_for_requirement(
-                requirement_text,
-                realized_feature_centers,
-                expected_local_feature_centers,
-            )
-            allow_centered_translation = (
-                self._requirement_uses_centered_pattern_local_coordinates(requirement_text)
-            )
-            local_anchor_alignment = self._center_sets_match_with_requirement_coordinate_modes(
-                realized_feature_centers,
-                expected_local_feature_centers,
-                requirement_text=requirement_text,
-                allow_translation=allow_centered_translation,
-            )
-            checks.append(
-                RequirementCheck(
-                    check_id="feature_local_anchor_alignment",
-                    label="Direct feature centers stay aligned with the requested local anchor layout",
-                    status=(
-                        RequirementCheckStatus.PASS
-                        if local_anchor_alignment
-                        else RequirementCheckStatus.FAIL
-                    ),
-                    blocking=True,
-                    evidence=(
-                        f"required_centers={expected_local_feature_centers}, realized_centers={realized_feature_centers}"
-                    ),
+            if expected_local_feature_centers:
+                realized_feature_centers = self._filter_extra_center_feature_for_requirement(
+                    requirement_text,
+                    realized_feature_centers,
+                    expected_local_feature_centers,
                 )
-            )
+                allow_centered_translation = (
+                    self._requirement_uses_centered_pattern_local_coordinates(requirement_text)
+                )
+                local_anchor_alignment = self._center_sets_match_with_requirement_coordinate_modes(
+                    realized_feature_centers,
+                    expected_local_feature_centers,
+                    requirement_text=requirement_text,
+                    allow_translation=allow_centered_translation,
+                )
+                checks.append(
+                    RequirementCheck(
+                        check_id="feature_local_anchor_alignment",
+                        label="Direct feature centers stay aligned with the requested local anchor layout",
+                        status=(
+                            RequirementCheckStatus.PASS
+                            if local_anchor_alignment
+                            else RequirementCheckStatus.FAIL
+                        ),
+                        blocking=True,
+                        evidence=(
+                            f"required_centers={expected_local_feature_centers}, realized_centers={realized_feature_centers}"
+                        ),
+                    )
+                )
+            elif expected_local_feature_count is not None:
+                checks.append(
+                    RequirementCheck(
+                        check_id="feature_local_anchor_count_alignment",
+                        label="Direct feature count stays aligned with the requested local anchor count",
+                        status=(
+                            RequirementCheckStatus.PASS
+                            if len(realized_feature_centers) == expected_local_feature_count
+                            else RequirementCheckStatus.FAIL
+                        ),
+                        blocking=True,
+                        evidence=(
+                            f"required_center_count={expected_local_feature_count}, "
+                            f"realized_center_count={len(realized_feature_centers)}, "
+                            f"realized_centers={realized_feature_centers}"
+                        ),
+                    )
+                )
 
         if (
             history
@@ -12381,6 +12944,69 @@ class SandboxMCPService:
             return circular_pattern
         return []
 
+    def _infer_expected_local_feature_count(
+        self,
+        requirement_text: str | None,
+        *,
+        family: str | None = None,
+    ) -> int | None:
+        text = str(requirement_text or "").strip().lower()
+        if not text:
+            return None
+        family_name = str(family or "").strip().lower()
+        word_to_count = {
+            "a": 1,
+            "an": 1,
+            "single": 1,
+            "one": 1,
+            "two": 2,
+            "pair": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+            "eleven": 11,
+            "twelve": 12,
+        }
+        if family_name == "explicit_anchor_hole":
+            noun_patterns = (
+                r"(?:mounting|countersunk?|counterbored|clearance|pilot|fastener|anchor|through|threaded)\s+holes?",
+                r"holes?",
+                r"countersinks?",
+                r"counterbores?",
+                r"(?:magnet\s+)?recess(?:es)?",
+            )
+        else:
+            noun_patterns = (r"features?",)
+        counts: list[int] = []
+        for noun_pattern in noun_patterns:
+            for match in re.finditer(
+                rf"\b(?P<count>\d+|a|an|single|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b"
+                rf"[^.;,\n]{{0,40}}\b(?:{noun_pattern})\b",
+                text,
+                re.IGNORECASE,
+            ):
+                raw = str(match.group("count")).lower()
+                count = word_to_count.get(raw)
+                if count is None:
+                    try:
+                        count = int(raw)
+                    except Exception:
+                        count = None
+                if isinstance(count, int) and count > 0:
+                    counts.append(count)
+            if re.search(
+                rf"\bpair\s+of\b[^.;,\n]{{0,24}}\b(?:{noun_pattern})\b",
+                text,
+                re.IGNORECASE,
+            ):
+                counts.append(2)
+        return max(counts) if counts else None
+
     def _extract_explicit_point_centers_from_requirement(
         self,
         requirement_text: str | None,
@@ -12978,6 +13604,276 @@ class SandboxMCPService:
                 return width, height
         return None
 
+    def _extract_overall_bbox_dimensions(
+        self,
+        requirement_text: str | None,
+    ) -> list[float]:
+        text = str(requirement_text or "").strip().lower()
+        if not text:
+            return []
+        patterns = (
+            r"overall dimensions[^0-9]{0,32}([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?",
+            r"bounding box[^0-9]{0,32}([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?\s*(?:x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match is None:
+                continue
+            try:
+                dims = [float(match.group(1)), float(match.group(2)), float(match.group(3))]
+            except Exception:
+                continue
+            if all(value > 0.0 for value in dims):
+                return dims
+        return []
+
+    def _extract_expected_part_count(
+        self,
+        requirement_text: str | None,
+    ) -> int | None:
+        text = str(requirement_text or "").strip().lower()
+        if not text:
+            return None
+        if any(
+            token in text
+            for token in (
+                "two-part",
+                "two part",
+                "separate parts",
+                "lid and base",
+                "top lid",
+                "bottom base",
+            )
+        ):
+            return 2
+        return None
+
+    def _general_geometry_probe_blockers(
+        self,
+        *,
+        solids: int,
+        bbox: list[float],
+        expected_bbox: list[float],
+        expected_part_count: int | None,
+        suspected_detached_fragment_count: int = 0,
+    ) -> list[str]:
+        blockers: list[str] = []
+        if expected_part_count is not None and solids != expected_part_count:
+            blockers.append("unexpected_part_count_for_requirement")
+        if (
+            expected_part_count is not None
+            and expected_part_count >= 2
+            and suspected_detached_fragment_count > 0
+        ):
+            blockers.append("suspected_detached_feature_fragment")
+        if expected_bbox and len(bbox) >= 3:
+            observed_dims = [abs(float(value)) for value in bbox[:3]]
+            unmatched_targets = 0
+            for target in expected_bbox[:3]:
+                tolerance = max(1.0, abs(float(target)) * 0.1)
+                if not any(abs(observed - float(target)) <= tolerance for observed in observed_dims):
+                    unmatched_targets += 1
+            if unmatched_targets > 0:
+                blockers.append("bbox_dimension_mismatch")
+        return blockers
+
+    def _half_shell_probe_signals(
+        self,
+        *,
+        snapshot: CADStateSnapshot,
+        requirement_text: str | None,
+    ) -> dict[str, Any]:
+        text = str(requirement_text or "").strip().lower()
+        hinge_requested = "hinge" in text
+        global_bounds = self._snapshot_global_bbox_bounds(snapshot)
+        x_min, x_max, y_min, y_max, z_min, z_max = global_bounds
+        axis_tolerances = (
+            self._extent_tolerance(x_min, x_max),
+            self._extent_tolerance(y_min, y_max),
+            self._extent_tolerance(z_min, z_max),
+        )
+        horizontal_spans = (
+            max(0.0, x_max - x_min),
+            max(0.0, y_max - y_min),
+        )
+        horizontal_reference = max(horizontal_spans) if any(horizontal_spans) else 0.0
+        hinge_faces: list[dict[str, Any]] = []
+        boundary_cylindrical_face_count = 0
+
+        for face in self._snapshot_feature_faces(snapshot):
+            if str(getattr(face, "geom_type", "")).strip().upper() != "CYLINDER":
+                continue
+            bbox = getattr(face, "bbox", None)
+            if bbox is None:
+                continue
+            boundary_cylindrical_face_count += 1
+            axis_index = self._face_parallel_axis_index(face)
+            if axis_index is None or axis_index == 2:
+                continue
+            span = abs(
+                float((bbox.xlen, bbox.ylen, bbox.zlen)[axis_index])
+            )
+            if span < max(4.0, horizontal_reference * 0.18):
+                continue
+            surface_center = self._snapshot_feature_surface_center_point(face)
+            if not (
+                isinstance(surface_center, list)
+                and len(surface_center) >= 3
+                and all(isinstance(item, (int, float)) for item in surface_center[:3])
+            ):
+                continue
+            boundary_axis: int | None = None
+            boundary_side: str | None = None
+            for candidate_axis in range(3):
+                if candidate_axis == axis_index:
+                    continue
+                center_value = float(surface_center[candidate_axis])
+                lower_bound = global_bounds[candidate_axis * 2]
+                upper_bound = global_bounds[candidate_axis * 2 + 1]
+                tolerance = max(
+                    axis_tolerances[candidate_axis],
+                    abs(float(getattr(face, "radius", 0.0) or 0.0)) * 1.5,
+                )
+                if self._near_min(center_value, lower_bound, tolerance):
+                    boundary_axis = candidate_axis
+                    boundary_side = "min"
+                    break
+                if self._near_max(center_value, upper_bound, tolerance):
+                    boundary_axis = candidate_axis
+                    boundary_side = "max"
+                    break
+            if boundary_axis is None:
+                continue
+            hinge_faces.append(
+                {
+                    "face_id": str(getattr(face, "face_id", "") or "").strip(),
+                    "axis": "XYZ"[axis_index],
+                    "axis_index": axis_index,
+                    "span": round(span, 6),
+                    "radius": round(float(getattr(face, "radius", 0.0) or 0.0), 6),
+                    "boundary_axis": "XYZ"[boundary_axis],
+                    "boundary_side": boundary_side,
+                }
+            )
+
+        dominant_hinge_face = max(
+            hinge_faces,
+            key=lambda item: float(item.get("span") or 0.0),
+            default=None,
+        )
+        signals: dict[str, Any] = {
+            "hinge_requested": hinge_requested,
+            "boundary_cylindrical_face_count": boundary_cylindrical_face_count,
+            "hinge_like_cylinder_count": len(hinge_faces),
+            "hinge_like_face_ids": [
+                item["face_id"] for item in hinge_faces if str(item.get("face_id") or "").strip()
+            ][:4],
+        }
+        if dominant_hinge_face is not None:
+            signals["hinge_like_axis"] = dominant_hinge_face["axis"]
+            signals["hinge_like_span"] = dominant_hinge_face["span"]
+            signals["hinge_like_radius"] = dominant_hinge_face["radius"]
+            signals["hinge_boundary_axis"] = dominant_hinge_face["boundary_axis"]
+            signals["hinge_boundary_side"] = dominant_hinge_face["boundary_side"]
+        return signals
+
+    def _half_shell_probe_blockers(
+        self,
+        *,
+        solids: int,
+        bbox: list[float],
+        expected_bbox: list[float],
+        expected_part_count: int | None,
+        suspected_detached_fragment_count: int,
+        hinge_requested: bool,
+        hinge_like_cylinder_count: int,
+    ) -> list[str]:
+        blockers = self._general_geometry_probe_blockers(
+            solids=solids,
+            bbox=bbox,
+            expected_bbox=expected_bbox,
+            expected_part_count=expected_part_count,
+            suspected_detached_fragment_count=suspected_detached_fragment_count,
+        )
+        if hinge_requested and hinge_like_cylinder_count <= 0:
+            blockers.append("missing_hinge_like_cylindrical_evidence")
+        return blockers
+
+    def _snapshot_detached_fragment_signals(
+        self,
+        snapshot: CADStateSnapshot,
+    ) -> dict[str, Any]:
+        geometry_objects = snapshot.geometry_objects
+        if geometry_objects is None or len(geometry_objects.solids) < 2:
+            return {}
+
+        ranked_solids = [
+            solid
+            for solid in geometry_objects.solids
+            if abs(float(getattr(solid, "volume", 0.0) or 0.0)) > 1e-6
+        ]
+        if len(ranked_solids) < 2:
+            return {}
+
+        ranked_solids.sort(
+            key=lambda solid: abs(float(getattr(solid, "volume", 0.0) or 0.0)),
+            reverse=True,
+        )
+        total_volume = sum(
+            abs(float(getattr(solid, "volume", 0.0) or 0.0)) for solid in ranked_solids
+        )
+        if total_volume <= 1e-6:
+            return {}
+
+        dominant = ranked_solids[0]
+        dominant_volume = abs(float(getattr(dominant, "volume", 0.0) or 0.0))
+        dominant_fraction = dominant_volume / total_volume
+        dominant_bbox = getattr(dominant, "bbox", None)
+        dominant_max_span = max(
+            float(getattr(dominant_bbox, "xlen", 0.0) or 0.0),
+            float(getattr(dominant_bbox, "ylen", 0.0) or 0.0),
+            float(getattr(dominant_bbox, "zlen", 0.0) or 0.0),
+        )
+        fragment_ids: list[str] = []
+        fragment_volume_fractions: list[float] = []
+        fragment_bbox_max_spans: list[float] = []
+        fragment_span_limit = max(12.0, dominant_max_span * 0.25)
+
+        for solid in ranked_solids[1:]:
+            volume = abs(float(getattr(solid, "volume", 0.0) or 0.0))
+            fraction = volume / total_volume
+            bbox = getattr(solid, "bbox", None)
+            bbox_max_span = max(
+                float(getattr(bbox, "xlen", 0.0) or 0.0),
+                float(getattr(bbox, "ylen", 0.0) or 0.0),
+                float(getattr(bbox, "zlen", 0.0) or 0.0),
+            )
+            if (
+                dominant_fraction >= 0.92
+                and fraction <= 0.08
+                and bbox_max_span <= fragment_span_limit
+            ):
+                solid_id = str(getattr(solid, "solid_id", "") or "").strip()
+                if solid_id:
+                    fragment_ids.append(solid_id)
+                fragment_volume_fractions.append(round(fraction, 6))
+                fragment_bbox_max_spans.append(round(bbox_max_span, 6))
+
+        signals: dict[str, Any] = {
+            "dominant_solid_volume_fraction": round(dominant_fraction, 6),
+            "secondary_solid_count": max(0, len(ranked_solids) - 1),
+        }
+        if fragment_ids:
+            signals["suspected_detached_fragment_count"] = len(fragment_ids)
+            signals["suspected_detached_fragment_solid_ids"] = fragment_ids[:4]
+            signals["suspected_detached_fragment_volume_fractions"] = (
+                fragment_volume_fractions[:4]
+            )
+            signals["suspected_detached_fragment_bbox_max_spans"] = (
+                fragment_bbox_max_spans[:4]
+            )
+        return signals
+
     def _requirement_uses_centered_pattern_local_coordinates(
         self,
         requirement_text: str | None,
@@ -13534,6 +14430,11 @@ class SandboxMCPService:
             if latest_entry is not None
             else None
         )
+        actions_requiring_planar_face_ref = {
+            CADActionType.CREATE_SKETCH,
+            CADActionType.HOLE,
+            CADActionType.SPHERE_RECESS,
+        }
 
         for field_name in definition.topology_fields:
             if field_name == "face_ref":
@@ -13547,6 +14448,13 @@ class SandboxMCPService:
                     continue
                 parsed = parse_topology_ref(face_ref)
                 if parsed is None or parsed.get("kind") != "face":
+                    if isinstance(face_ref, str) and face_ref.strip() and not face_ref.strip().startswith("face:"):
+                        return (
+                            "invalid_reference: malformed face_ref "
+                            f"{face_ref!r}; face_ref must be one concrete "
+                            "`face:<step>:<entity_id>` ref from the latest query_topology, "
+                            "not a candidate-set label or host-role alias"
+                        )
                     return f"invalid_reference: malformed face_ref={face_ref!r}"
                 if parsed["step"] != expected_step:
                     return (
@@ -13558,13 +14466,28 @@ class SandboxMCPService:
                         "invalid_reference: no topology snapshot available; "
                         "run query_topology before using face_ref"
                     )
-                if not any(
-                    face.face_ref == parsed["ref"] for face in topology_index.faces
-                ):
+                matched_face = next(
+                    (
+                        face
+                        for face in topology_index.faces
+                        if face.face_ref == parsed["ref"]
+                    ),
+                    None,
+                )
+                if matched_face is None:
                     return (
                         "invalid_reference: face_ref not found in latest topology "
                         f"{face_ref!r}"
                     )
+                if action_type in actions_requiring_planar_face_ref:
+                    geom_type = str(getattr(matched_face, "geom_type", "") or "").upper()
+                    if geom_type and geom_type != "PLANE":
+                        return (
+                            "invalid_reference: face_ref "
+                            f"{face_ref!r} is not planar (geom_type={geom_type}); "
+                            "use a planar face candidate from the latest query_topology "
+                            "before creating a face-attached local frame"
+                        )
 
             if field_name == "edge_refs":
                 edge_refs = action_params.get("edge_refs")
@@ -13579,6 +14502,13 @@ class SandboxMCPService:
                 for edge_ref in edge_refs:
                     parsed = parse_topology_ref(edge_ref)
                     if parsed is None or parsed.get("kind") != "edge":
+                        if isinstance(edge_ref, str) and edge_ref.strip() and not edge_ref.strip().startswith("edge:"):
+                            return (
+                                "invalid_reference: malformed edge_ref "
+                                f"{edge_ref!r}; edge_refs must contain concrete "
+                                "`edge:<step>:<entity_id>` refs from the latest query_topology, "
+                                "not candidate-set labels or host-role aliases"
+                            )
                         return f"invalid_reference: malformed edge_ref={edge_ref!r}"
                     if parsed["step"] != expected_step:
                         return (
@@ -13600,6 +14530,8 @@ class SandboxMCPService:
         action_history: list[ActionHistoryEntry],
     ) -> dict[str, Any]:
         resolved = normalize_action_params(action_type, action_params)
+        if action_type == CADActionType.HOLE:
+            resolved = self._normalize_hole_action_params(resolved)
         resolved = self._normalize_face_ref_alias_in_params(
             resolved,
             action_history,
@@ -13671,8 +14603,36 @@ class SandboxMCPService:
         self,
         action_type: CADActionType,
         action_params: dict[str, Any],
+        action_history: list[ActionHistoryEntry] | None = None,
     ) -> tuple[dict[str, Any], str | None, list[str]]:
         resolved = dict(action_params)
+        history = action_history or []
+        if action_type == CADActionType.HOLE:
+            resolved = self._normalize_hole_action_params(resolved)
+            face_ref = str(resolved.get("face_ref") or "").strip()
+            face_hint = str(resolved.get("_face_candidate_hint") or "").strip()
+            sketch_index = self._find_preceding_sketch_index(history, len(history))
+            has_face_attached_sketch = False
+            if sketch_index is not None:
+                sketch_entry = history[sketch_index]
+                sketch_params = normalize_action_params(
+                    CADActionType.CREATE_SKETCH,
+                    sketch_entry.action_params,
+                )
+                has_face_attached_sketch = bool(
+                    str(sketch_params.get("face_ref") or "").strip()
+                    or str(sketch_params.get("_face_candidate_hint") or "").strip()
+                )
+            if not face_ref and not face_hint and not has_face_attached_sketch:
+                return (
+                    resolved,
+                    "invalid_request: hole on an existing solid needs a face-attached local frame; "
+                    "provide face_ref from query_topology or open create_sketch on the target face first.",
+                    [
+                        "Run query_topology and pass a fresh face_ref to hole so the center stays in the target face's local frame.",
+                        "Or open create_sketch(face_ref=...) on the target face first, then use hole with 2D local centers instead of world XYZ coordinates.",
+                    ],
+                )
         if action_type != CADActionType.EXTRUDE:
             return resolved, None, []
 
@@ -13993,7 +14953,13 @@ class SandboxMCPService:
             "            return None",
             "",
             "def _aicad_entity_id(prefix, parts):",
-            "    normalized = '|'.join(f'{_aicad_to_float(part):.6f}' for part in parts)",
+            "    normalized_parts = []",
+            "    for part in parts:",
+            "        value = _aicad_to_float(part)",
+            "        if abs(value) < 1e-6:",
+            "            value = 0.0",
+            "        normalized_parts.append(f'{value:.6f}')",
+            "    normalized = '|'.join(normalized_parts)",
             "    digest = hashlib.sha1(normalized.encode('utf-8')).hexdigest()[:12]",
             "    return f'{prefix}_{digest}'",
             "",
@@ -14372,7 +15338,13 @@ class SandboxMCPService:
             "        return 'unknown'",
             "",
             "def _aicad_entity_id(prefix, parts):",
-            "    normalized = '|'.join(f'{_aicad_to_float(part):.6f}' for part in parts)",
+            "    normalized_parts = []",
+            "    for part in parts:",
+            "        value = _aicad_to_float(part)",
+            "        if abs(value) < 1e-6:",
+            "            value = 0.0",
+            "        normalized_parts.append(f'{value:.6f}')",
+            "    normalized = '|'.join(normalized_parts)",
             "    digest = hashlib.sha1(normalized.encode('utf-8')).hexdigest()[:12]",
             "    return f'{prefix}_{digest}'",
             "",
@@ -14891,7 +15863,6 @@ class SandboxMCPService:
                         f"_aicad_plane, _aicad_sketch_origin_3d, [{position_u}, {position_v}]"
                         ")"
                     ),
-                    "result = _aicad_result_or_preview(result, _aicad_sketch)",
                 ]
             else:
                 code_lines = [
@@ -14914,8 +15885,75 @@ class SandboxMCPService:
                         f"use_world_origin={use_world_origin!r}"
                         ")"
                     ),
-                    "result = _aicad_result_or_preview(result, _aicad_sketch)",
                 ]
+            bootstrap_width = self._to_positive_float(params.get("width"), default=0.0)
+            bootstrap_height = self._to_positive_float(params.get("height"), default=0.0)
+            bootstrap_inner_width = self._to_positive_float(
+                params.get("inner_width"),
+                default=0.0,
+            )
+            bootstrap_inner_height = self._to_positive_float(
+                params.get("inner_height"),
+                default=0.0,
+            )
+            bootstrap_position = params.get("position", params.get("center"))
+            bootstrap_x = 0.0
+            bootstrap_y = 0.0
+            if (
+                isinstance(bootstrap_position, list)
+                and len(bootstrap_position) >= 2
+                and isinstance(bootstrap_position[0], (int, float))
+                and isinstance(bootstrap_position[1], (int, float))
+            ):
+                bootstrap_x = float(bootstrap_position[0])
+                bootstrap_y = float(bootstrap_position[1])
+            if bootstrap_width > 0.0 and bootstrap_height > 0.0:
+                inner_size = (
+                    repr([bootstrap_inner_width, bootstrap_inner_height])
+                    if (
+                        bootstrap_inner_width > 0.0
+                        and bootstrap_inner_height > 0.0
+                        and bootstrap_inner_width < bootstrap_width
+                        and bootstrap_inner_height < bootstrap_height
+                    )
+                    else "None"
+                )
+                code_lines.extend(
+                    [
+                        "_aicad_stepped_profile = None",
+                        (
+                            "_aicad_sketch = _aicad_add_rectangle_to_sketch("
+                            "_aicad_sketch, "
+                            f"{bootstrap_width}, {bootstrap_height}, ({bootstrap_x}, {bootstrap_y}), "
+                            f"inner_size={inner_size}"
+                            ")"
+                        ),
+                    ]
+                )
+            else:
+                bootstrap_radius = self._to_positive_float(params.get("radius"), default=0.0)
+                if bootstrap_radius <= 0.0:
+                    bootstrap_diameter = self._to_positive_float(
+                        params.get("diameter"),
+                        default=0.0,
+                    )
+                    if bootstrap_diameter > 0.0:
+                        bootstrap_radius = bootstrap_diameter / 2.0
+                if bootstrap_radius > 0.0:
+                    code_lines.extend(
+                        [
+                            "_aicad_stepped_profile = None",
+                            f"_aicad_circle_points_raw = {[[bootstrap_x, bootstrap_y]]!r}",
+                            "_aicad_circle_points = _aicad_localize_points_for_plane(_aicad_state_plane(_aicad_sketch), _aicad_circle_points_raw)",
+                            (
+                                "_aicad_sketch = _aicad_add_circles_to_sketch("
+                                "_aicad_sketch, "
+                                f"{bootstrap_radius}, _aicad_circle_points, radius_inner=0.0"
+                                ")"
+                            ),
+                        ]
+                    )
+            code_lines.append("result = _aicad_result_or_preview(result, _aicad_sketch)")
 
         elif action_type == CADActionType.ADD_RECTANGLE:
             width = params.get("width", 50)
@@ -15334,7 +16372,7 @@ class SandboxMCPService:
                 f"_aicad_cut_depth_raw = {repr(distance)}",
                 f"_aicad_cut_through_all = {through_all!r}",
                 f"_aicad_cut_outside = {outside_cut!r}",
-                f"    _aicad_cut_both_sides = {both_sides!r}",
+                f"_aicad_cut_both_sides = {both_sides!r}",
                 "result = _aicad_apply_cut_extrude(",
                 "    result,",
                 "    _aicad_sketch,",
@@ -15429,6 +16467,7 @@ class SandboxMCPService:
                 ]
 
         elif action_type == CADActionType.HOLE:
+            params = self._normalize_hole_action_params(params)
             diameter = params.get("diameter", 5)
             depth = params.get("depth", None)
             countersink_diameter = params.get("countersink_diameter")
@@ -15754,6 +16793,16 @@ class SandboxMCPService:
         if isinstance(value, (int, float)) and value > 0:
             return float(value)
         return default
+
+    def _normalize_hole_action_params(
+        self,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = normalize_action_params(CADActionType.HOLE, params)
+        countersink_diameter = normalized.get("countersink_diameter")
+        if isinstance(countersink_diameter, (int, float)) and float(countersink_diameter) > 0.0:
+            normalized["countersink_diameter"] = float(countersink_diameter)
+        return normalized
 
     def _resolve_linear_span_param(
         self,
@@ -17703,6 +18752,7 @@ class SandboxMCPService:
         entity_ids: list[str],
         ref_ids: list[str],
         selection_hints: list[str],
+        family_ids: list[str],
         face_offset: int,
         edge_offset: int,
     ) -> tuple[
@@ -17736,21 +18786,17 @@ class SandboxMCPService:
             faces=faces,
             edges=edges,
             selection_hints=selection_hints,
+            family_ids=family_ids,
         )
-        ordered_candidate_sets = {
-            candidate.candidate_id: candidate for candidate in candidate_sets
-        }
         face_priority_ids = [
-            hint
-            for hint in selection_hints
-            if hint in ordered_candidate_sets
-            and ordered_candidate_sets[hint].entity_type == "face"
+            candidate.candidate_id
+            for candidate in candidate_sets
+            if candidate.entity_type == "face"
         ]
         edge_priority_ids = [
-            hint
-            for hint in selection_hints
-            if hint in ordered_candidate_sets
-            and ordered_candidate_sets[hint].entity_type == "edge"
+            candidate.candidate_id
+            for candidate in candidate_sets
+            if candidate.entity_type == "edge"
         ]
 
         if face_priority_ids:
@@ -17849,10 +18895,43 @@ class SandboxMCPService:
 
         def _add_hint(raw_hint: str) -> None:
             hint = raw_hint.strip().lower().replace("-", "_").replace(" ", "_")
-            if not hint or hint in seen:
-                return
-            seen.add(hint)
-            normalized.append(hint)
+            alias_map: dict[str, tuple[str, ...]] = {
+                "top": ("top_faces",),
+                "top_face": ("top_faces",),
+                "bottom": ("bottom_faces",),
+                "bottom_face": ("bottom_faces",),
+                "front": ("front_faces",),
+                "front_face": ("front_faces",),
+                "back": ("back_faces",),
+                "back_face": ("back_faces",),
+                "left": ("left_faces",),
+                "left_face": ("left_faces",),
+                "right": ("right_faces",),
+                "right_face": ("right_faces",),
+                "mounting": ("mating_faces",),
+                "mounting_face": ("mating_faces",),
+                "mounting_faces": ("mating_faces",),
+                "mating": ("mating_faces",),
+                "mating_face": ("mating_faces",),
+                "mating_faces": ("mating_faces",),
+                "planar": ("upward_planar_faces", "downward_planar_faces"),
+                "planar_face": ("upward_planar_faces", "downward_planar_faces"),
+                "planar_faces": ("upward_planar_faces", "downward_planar_faces"),
+                "flat": ("upward_planar_faces", "downward_planar_faces"),
+                "flat_faces": ("upward_planar_faces", "downward_planar_faces"),
+                "rim": ("opening_rim_edges",),
+                "opening_rim": ("opening_rim_edges",),
+                "notch_rim": ("opening_rim_edges",),
+                "split": ("split_plane_faces",),
+                "split_plane": ("split_plane_faces",),
+                "seam": ("split_plane_faces",),
+            }
+            expanded_hints = alias_map.get(hint, (hint,))
+            for expanded_hint in expanded_hints:
+                if not expanded_hint or expanded_hint in seen:
+                    continue
+                seen.add(expanded_hint)
+                normalized.append(expanded_hint)
 
         for item in selection_hints:
             if isinstance(item, str):
@@ -18084,6 +19163,7 @@ class SandboxMCPService:
         faces: list[TopologyFaceEntity],
         edges: list[TopologyEdgeEntity],
         selection_hints: list[str],
+        family_ids: list[str],
     ) -> list[TopologyCandidateSet]:
         if not selection_hints:
             return []
@@ -18351,6 +19431,63 @@ class SandboxMCPService:
                 if abs(_edge_center_z(edge) - target_value) <= tolerance
             ]
 
+        def _dedupe_faces(face_list: list[TopologyFaceEntity]) -> list[TopologyFaceEntity]:
+            ordered: list[TopologyFaceEntity] = []
+            seen: set[str] = set()
+            for face in face_list:
+                if face.face_ref in seen:
+                    continue
+                seen.add(face.face_ref)
+                ordered.append(face)
+            return ordered
+
+        def _dedupe_edges(edge_list: list[TopologyEdgeEntity]) -> list[TopologyEdgeEntity]:
+            ordered: list[TopologyEdgeEntity] = []
+            seen: set[str] = set()
+            for edge in edge_list:
+                if edge.edge_ref in seen:
+                    continue
+                seen.add(edge.edge_ref)
+                ordered.append(edge)
+            return ordered
+
+        def _host_role_metadata(
+            *,
+            base_metadata: dict[str, Any],
+            primary_role: str,
+            role_confidence: str,
+            role_candidates: list[str],
+        ) -> dict[str, Any]:
+            metadata = dict(base_metadata)
+            metadata["host_role"] = primary_role
+            metadata["host_role_confidence"] = role_confidence
+            metadata["semantic_host_roles"] = role_candidates
+            metadata["semantic_host_digest"] = {
+                "primary_role": primary_role,
+                "role_confidence": role_confidence,
+                "role_candidates": role_candidates,
+            }
+            return metadata
+
+        def _face_axis_center(face: TopologyFaceEntity, axis: str) -> float:
+            axis_index = {"X": 0, "Y": 1, "Z": 2}.get(axis, 2)
+            return float(face.center[axis_index])
+
+        def _matching_mid_axes(face: TopologyFaceEntity) -> list[str]:
+            if str(face.geom_type).strip().upper() != "PLANE":
+                return []
+            matched_axes: list[str] = []
+            for axis in ("X", "Y", "Z"):
+                axis_min, axis_max = axis_bounds[axis]
+                axis_midpoint = (axis_min + axis_max) / 2.0
+                axis_span = axis_spans.get(axis, 0.0)
+                if abs(_face_axis_center(face, axis) - axis_midpoint) > max(1.0, axis_span * 0.12):
+                    continue
+                if _bbox_axis_length(face.bbox, axis) > max(1.0, axis_span * 0.18):
+                    continue
+                matched_axes.append(axis)
+            return matched_axes
+
         candidate_builders: dict[
             str,
             tuple[str, str, list[str], list[str], str, dict[str, Any]],
@@ -18397,6 +19534,7 @@ class SandboxMCPService:
             )
         ]
         outer_face_ref_set = {face.face_ref for face in outer_faces}
+        interior_faces = [face for face in faces if face.face_ref not in outer_face_ref_set]
         top_inner_planar_faces = [
             face
             for face in upward_planar_faces
@@ -18434,6 +19572,23 @@ class SandboxMCPService:
         inner_edges = [edge for edge in edges if edge.edge_ref not in outer_edge_refs]
         primary_outer_faces = sorted(
             outer_faces,
+            key=lambda face: (-float(face.area), face.face_ref),
+        )
+        shell_exterior_faces = primary_outer_faces
+        shell_interior_faces = sorted(
+            interior_faces,
+            key=lambda face: (-float(face.area), face.face_ref),
+        )
+        mating_faces = sorted(
+            _dedupe_faces([*top_inner_planar_faces, *bottom_inner_planar_faces]),
+            key=lambda face: (-float(face.area), face.face_ref),
+        )
+        split_plane_faces = sorted(
+            [
+                face
+                for face in faces
+                if _matching_mid_axes(face)
+            ],
             key=lambda face: (-float(face.area), face.face_ref),
         )
         primary_axis_outer_edges = sorted(
@@ -18511,6 +19666,10 @@ class SandboxMCPService:
         back_inner_top_edges = _edge_subset_by_z(back_inner_edges, pick="max")
         left_inner_top_edges = _edge_subset_by_z(left_inner_edges, pick="max")
         right_inner_top_edges = _edge_subset_by_z(right_inner_edges, pick="max")
+        opening_rim_edges = sorted(
+            _dedupe_edges([*inner_top_edges, *front_inner_top_edges, *back_inner_top_edges, *left_inner_top_edges, *right_inner_top_edges]),
+            key=lambda edge: (-float(edge.length), edge.edge_ref),
+        )
 
         candidate_builders["top_faces"] = (
             "Top Faces",
@@ -18667,6 +19826,69 @@ class SandboxMCPService:
                 ),
             },
         )
+        candidate_builders["shell_exterior_faces"] = (
+            "Shell Exterior Faces",
+            "face",
+            [face.face_ref for face in shell_exterior_faces],
+            [face.face_id for face in shell_exterior_faces],
+            "Outer shell host faces ranked for enclosure, housing, lid, and base edits.",
+            _host_role_metadata(
+                base_metadata=common_metadata,
+                primary_role="shell_exterior",
+                role_confidence="high",
+                role_candidates=["shell_exterior", "outer_host", "enclosure_wall"],
+            ),
+        )
+        candidate_builders["shell_interior_faces"] = (
+            "Shell Interior Faces",
+            "face",
+            [face.face_ref for face in shell_interior_faces],
+            [face.face_id for face in shell_interior_faces],
+            "Interior shell host faces ranked for cavity, pocket, and enclosure-inner edits.",
+            _host_role_metadata(
+                base_metadata=common_metadata,
+                primary_role="shell_interior",
+                role_confidence="medium",
+                role_candidates=["shell_interior", "cavity_host", "inner_wall"],
+            ),
+        )
+        candidate_builders["mating_faces"] = (
+            "Mating Faces",
+            "face",
+            [face.face_ref for face in mating_faces],
+            [face.face_id for face in mating_faces],
+            "Large inner planar faces that can act as lid/base mating surfaces or closure landing faces.",
+            _host_role_metadata(
+                base_metadata=common_metadata,
+                primary_role="mating_face",
+                role_confidence="medium",
+                role_candidates=["mating_face", "closure_landing", "inner_planar_host"],
+            ),
+        )
+        candidate_builders["split_plane_faces"] = (
+            "Split-Plane Faces",
+            "face",
+            [face.face_ref for face in split_plane_faces],
+            [face.face_id for face in split_plane_faces],
+            "Planar faces near the dominant-axis mid-band, useful for half-shell split, seam, and mating diagnostics.",
+            _host_role_metadata(
+                base_metadata={
+                    **common_metadata,
+                    "target_axis": "midband",
+                    "target_axis_side": "mid",
+                    "candidate_split_axes": sorted(
+                        {
+                            axis
+                            for face in split_plane_faces
+                            for axis in _matching_mid_axes(face)
+                        }
+                    ),
+                },
+                primary_role="split_plane",
+                role_confidence="medium",
+                role_candidates=["split_plane", "seam_host", "mating_face"],
+            ),
+        )
         candidate_builders["top_edges"] = (
             "Top Edges",
             "edge",
@@ -18751,6 +19973,25 @@ class SandboxMCPService:
                     inner_top_edges[0].edge_ref if inner_top_edges else None
                 ),
             },
+        )
+        candidate_builders["opening_rim_edges"] = (
+            "Opening Rim Edges",
+            "edge",
+            [edge.edge_ref for edge in opening_rim_edges],
+            [edge.edge_id for edge in opening_rim_edges],
+            "High-confidence interior rim edges around openings, recess mouths, and notch lips.",
+            _host_role_metadata(
+                base_metadata={
+                    **common_metadata,
+                    "anchor_role": "opening_rim_edge",
+                    "dominant_ref_id": (
+                        opening_rim_edges[0].edge_ref if opening_rim_edges else None
+                    ),
+                },
+                primary_role="opening_rim",
+                role_confidence="medium",
+                role_candidates=["opening_rim", "notch_rim", "cut_lip"],
+            ),
         )
         candidate_builders["primary_axis_outer_edges"] = (
             "Primary-Axis Outer Edges",
@@ -19085,7 +20326,208 @@ class SandboxMCPService:
                     metadata=metadata,
                 )
             )
-        return candidate_sets
+        return self._annotate_family_priority_on_topology_candidate_sets(
+            candidate_sets,
+            family_ids=family_ids,
+            selection_hints=selection_hints,
+        )
+
+    def _annotate_family_priority_on_topology_candidate_sets(
+        self,
+        candidate_sets: list[TopologyCandidateSet],
+        *,
+        family_ids: list[str],
+        selection_hints: list[str],
+    ) -> list[TopologyCandidateSet]:
+        normalized_family_ids: list[str] = []
+        seen_family_ids: set[str] = set()
+        for family_id in family_ids:
+            normalized = str(family_id or "").strip()
+            if not normalized or normalized in seen_family_ids:
+                continue
+            seen_family_ids.add(normalized)
+            normalized_family_ids.append(normalized)
+        if not candidate_sets or not normalized_family_ids:
+            return candidate_sets
+
+        family_preferences: dict[str, dict[str, tuple[str, ...]]] = {
+            "explicit_anchor_hole": {
+                "candidate_ids": (
+                    "mating_faces",
+                    "top_inner_planar_faces",
+                    "bottom_inner_planar_faces",
+                    "upward_planar_faces",
+                    "downward_planar_faces",
+                    "top_faces",
+                    "bottom_faces",
+                    "opening_rim_edges",
+                ),
+                "host_roles": (
+                    "mating_face",
+                    "closure_landing",
+                    "inner_planar_host",
+                    "opening_rim",
+                    "shell_interior",
+                ),
+            },
+            "named_face_local_edit": {
+                "candidate_ids": (
+                    "front_faces",
+                    "back_faces",
+                    "left_faces",
+                    "right_faces",
+                    "top_faces",
+                    "bottom_faces",
+                    "opening_rim_edges",
+                    "front_inner_edges",
+                    "back_inner_edges",
+                    "left_inner_edges",
+                    "right_inner_edges",
+                ),
+                "host_roles": (
+                    "opening_rim",
+                    "notch_rim",
+                    "cut_lip",
+                    "shell_exterior",
+                    "shell_interior",
+                    "mating_face",
+                ),
+            },
+            "slots": {
+                "candidate_ids": (
+                    "opening_rim_edges",
+                    "front_inner_edges",
+                    "back_inner_edges",
+                    "left_inner_edges",
+                    "right_inner_edges",
+                    "front_faces",
+                    "back_faces",
+                    "left_faces",
+                    "right_faces",
+                ),
+                "host_roles": (
+                    "opening_rim",
+                    "cut_lip",
+                    "shell_interior",
+                    "shell_exterior",
+                ),
+            },
+            "nested_hollow_section": {
+                "candidate_ids": (
+                    "shell_interior_faces",
+                    "mating_faces",
+                    "opening_rim_edges",
+                    "top_inner_planar_faces",
+                    "bottom_inner_planar_faces",
+                ),
+                "host_roles": (
+                    "shell_interior",
+                    "cavity_host",
+                    "mating_face",
+                    "opening_rim",
+                ),
+            },
+            "half_shell": {
+                "candidate_ids": (
+                    "split_plane_faces",
+                    "mating_faces",
+                    "shell_exterior_faces",
+                    "shell_interior_faces",
+                    "opening_rim_edges",
+                ),
+                "host_roles": (
+                    "split_plane",
+                    "mating_face",
+                    "shell_exterior",
+                    "shell_interior",
+                ),
+            },
+            "general_geometry": {
+                "candidate_ids": (
+                    "primary_outer_faces",
+                    "shell_exterior_faces",
+                    "shell_interior_faces",
+                    "split_plane_faces",
+                ),
+                "host_roles": (
+                    "shell_exterior",
+                    "shell_interior",
+                    "split_plane",
+                ),
+            },
+            "spherical_recess": {
+                "candidate_ids": (
+                    "shell_exterior_faces",
+                    "shell_interior_faces",
+                    "mating_faces",
+                    "top_faces",
+                    "bottom_faces",
+                ),
+                "host_roles": (
+                    "shell_exterior",
+                    "shell_interior",
+                    "mating_face",
+                ),
+            },
+        }
+        hint_rank = {
+            str(hint).strip(): idx for idx, hint in enumerate(selection_hints)
+        }
+        ranked_candidates: list[tuple[int, int, TopologyCandidateSet]] = []
+
+        for candidate in candidate_sets:
+            metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+            host_role = str(metadata.get("host_role") or "").strip()
+            semantic_host_roles = [
+                str(item).strip()
+                for item in (metadata.get("semantic_host_roles") or [])
+                if str(item).strip()
+            ]
+            candidate_family_scores: list[tuple[str, int]] = []
+            for family_id in normalized_family_ids:
+                preference = family_preferences.get(family_id)
+                if preference is None:
+                    continue
+                candidate_score = 0
+                candidate_ids = preference.get("candidate_ids", ())
+                if candidate.candidate_id in candidate_ids:
+                    candidate_score = max(
+                        candidate_score,
+                        100 - candidate_ids.index(candidate.candidate_id),
+                    )
+                host_roles = preference.get("host_roles", ())
+                if host_role in host_roles:
+                    candidate_score = max(
+                        candidate_score,
+                        60 - host_roles.index(host_role),
+                    )
+                if any(role in host_roles for role in semantic_host_roles):
+                    candidate_score = max(candidate_score, 45)
+                if candidate_score > 0:
+                    candidate_family_scores.append((family_id, candidate_score))
+            candidate_family_scores.sort(key=lambda item: (-item[1], item[0]))
+            update_payload: dict[str, Any] = {}
+            best_score = 0
+            if candidate_family_scores:
+                best_score = candidate_family_scores[0][1]
+                update_payload["family_id"] = candidate_family_scores[0][0]
+                update_payload["family_ids"] = [
+                    family_id for family_id, _ in candidate_family_scores
+                ]
+                if candidate.ref_ids:
+                    update_payload["preferred_ref_id"] = candidate.ref_ids[0]
+                if candidate.entity_ids:
+                    update_payload["preferred_entity_id"] = candidate.entity_ids[0]
+            ranked_candidates.append(
+                (
+                    -best_score,
+                    hint_rank.get(candidate.candidate_id, len(selection_hints)),
+                    candidate.model_copy(update=update_payload),
+                )
+            )
+
+        ranked_candidates.sort(key=lambda item: (item[0], item[1], item[2].candidate_id))
+        return [candidate for _, _, candidate in ranked_candidates]
 
     def _sort_topology_faces_by_candidate_priority(
         self,

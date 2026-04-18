@@ -1,0 +1,95 @@
+[
+  {
+    "seed_id": "clamshell_enclosure_highwater",
+    "title": "高难 clamshell 收纳盒",
+    "prompt_template": "Create a {closure_style} clamshell enclosure with overall dimensions {width_mm}mm x {depth_mm}mm x {height_mm}mm. Use a {hinge_style}, keep wall thickness near {wall_thickness_mm}mm, include two-part lid/base separation, corner magnet slots, and a thumb notch. The outer form should remain smooth and printable.",
+    "difficulty_band": "high",
+    "expected_part_count": 2,
+    "target_feature_families": [
+      "half_shell",
+      "directional_hole",
+      "explicit_anchor_hole"
+    ],
+    "local_topology_targeting_expected": false,
+    "variation_knobs": {
+      "closure_style": ["magnetic", "snap"],
+      "hinge_style": ["living hinge", "pin hinge"],
+      "width_mm": [72, 80],
+      "depth_mm": [58, 64],
+      "height_mm": [26, 34],
+      "wall_thickness_mm": [2.0, 2.4]
+    }
+  },
+  {
+    "seed_id": "directional_half_shell_medium",
+    "title": "半壳定向开孔中难度案例",
+    "prompt_template": "Create a two-part rounded enclosure sized {width_mm}mm x {depth_mm}mm x {height_mm}mm. The base should include side holes on the {hole_side} side and a cable relief on the front. Keep the lid and base mating faces aligned and printable, with wall thickness near {wall_thickness_mm}mm.",
+    "difficulty_band": "medium",
+    "expected_part_count": 2,
+    "target_feature_families": ["half_shell", "directional_hole"],
+    "local_topology_targeting_expected": false,
+    "variation_knobs": {
+      "width_mm": [60, 68],
+      "depth_mm": [44, 52],
+      "height_mm": [20, 28],
+      "hole_side": ["left", "right"],
+      "wall_thickness_mm": [1.8, 2.2]
+    }
+  },
+  {
+    "seed_id": "organic_clamshell_storage_midhigh",
+    "title": "中高难有机双壳收纳盒",
+    "prompt_template": "Create a two-part rounded clamshell storage enclosure with overall dimensions {width_mm}mm x {depth_mm}mm x {height_mm}mm. Use a {hinge_style} at the back, keep wall thickness near {wall_thickness_mm}mm, add four corner magnet recesses on the mating faces, a front thumb notch about {thumb_notch_mm}mm wide, two shallow organic top cavities for small earphone shells, one bottom cable post, and one side plug pocket. Keep the shape smooth, printable, and clearly separated into lid and base.",
+    "difficulty_band": "high",
+    "expected_part_count": 2,
+    "target_feature_families": [
+      "half_shell",
+      "explicit_anchor_hole",
+      "spherical_recess"
+    ],
+    "local_topology_targeting_expected": false,
+    "variation_knobs": {
+      "width_mm": [74, 78],
+      "depth_mm": [56, 60],
+      "height_mm": [28, 32],
+      "hinge_style": ["living hinge", "pin hinge"],
+      "wall_thickness_mm": [2.0, 2.4],
+      "thumb_notch_mm": [8, 10]
+    }
+  },
+  {
+    "seed_id": "topology_local_finish_focus",
+    "title": "局部拓扑修饰练习",
+    "prompt_template": "Create a rectangular electronics bracket sized {width_mm}mm x {depth_mm}mm x {height_mm}mm with a top pocket, two mounting holes, and a front thumb notch. Finish the model with local edge fillets around the top opening and a countersink on the mounting face so that a topology-aware local finishing pass is useful.",
+    "difficulty_band": "medium",
+    "expected_part_count": 1,
+    "target_feature_families": ["explicit_anchor_hole", "local_finish"],
+    "local_topology_targeting_expected": true,
+    "variation_knobs": {
+      "width_mm": [54, 62],
+      "depth_mm": [34, 40],
+      "height_mm": [10, 14]
+    }
+  },
+  {
+    "seed_id": "front_face_sketch_recess_focus",
+    "title": "前表面草图切除练习",
+    "prompt_template": "Create a rectangular service bracket sized {width_mm}mm x {depth_mm}mm x {height_mm}mm with a shallow top pocket and two mounting holes on the bottom face. Add a centered rounded-rectangle recess on the front face sized about {recess_width_mm}mm x {recess_height_mm}mm and {recess_depth_mm}mm deep, plus small fillets around the top opening and countersinks on the mounting holes, so that a topology-aware local finishing pass on the front face is useful.",
+    "difficulty_band": "medium",
+    "expected_part_count": 1,
+    "target_feature_families": [
+      "explicit_anchor_hole",
+      "named_face_local_edit",
+      "local_finish"
+    ],
+    "local_topology_targeting_expected": true,
+    "variation_knobs": {
+      "width_mm": [58, 66],
+      "depth_mm": [36, 42],
+      "height_mm": [12, 16],
+      "recess_width_mm": [12, 16],
+      "recess_height_mm": [6, 8],
+      "recess_depth_mm": [2, 3]
+    }
+  }
+]

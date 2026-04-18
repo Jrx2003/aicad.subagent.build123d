@@ -9,6 +9,7 @@ from sub_agent_runtime.feature_graph import DomainKernelState
 _SEMANTIC_REFRESH_TOOL_NAMES = {
     "query_kernel_state",
     "query_feature_probes",
+    "query_topology",
     "validate_requirement",
     "execute_build123d_probe",
 }
@@ -335,6 +336,26 @@ def count_consecutive_write_turns(
     return count
 
 
+def count_consecutive_successful_write_turns(
+    run_state: RunState,
+    *,
+    tool_name: str,
+) -> int:
+    count = 0
+    for turn in reversed(run_state.turns):
+        if turn.write_tool_name != tool_name:
+            break
+        if not any(
+            result.category == ToolCategory.WRITE
+            and result.name == tool_name
+            and result.success
+            for result in turn.tool_results
+        ):
+            break
+        count += 1
+    return count
+
+
 def _extract_geometry_from_payload(payload: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
@@ -448,8 +469,6 @@ def build_post_solid_semantic_admission_signal(
     for turn in run_state.turns:
         if turn.round_no >= latest_write_turn.round_no:
             break
-        if turn.write_tool_name != "apply_cad_action":
-            continue
         if _turn_has_stable_write_solid(turn):
             return None
 
@@ -521,7 +540,7 @@ def build_feature_chain_budget_risk(
     if len(unsatisfied_feature_ids) < 2:
         return None
 
-    consecutive_apply_action_writes = count_consecutive_write_turns(
+    consecutive_apply_action_writes = count_consecutive_successful_write_turns(
         run_state,
         tool_name="apply_cad_action",
     )

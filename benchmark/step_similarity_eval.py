@@ -909,7 +909,10 @@ async def _evaluate_step_pair_async(
         cwd=settings.sandbox_mcp_server_cwd_effective,
         timeout_buffer_seconds=settings.sandbox_mcp_timeout_buffer_seconds,
     )
-    result = await runner.execute(code=code, timeout=timeout_seconds, requirement_text=None)
+    try:
+        result = await runner.execute(code=code, timeout=timeout_seconds, requirement_text=None)
+    finally:
+        await runner.aclose()
 
     raw_output_files = list(
         dict.fromkeys([*result.output_files, *result.output_file_contents.keys()])

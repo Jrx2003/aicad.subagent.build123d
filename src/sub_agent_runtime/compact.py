@@ -23,6 +23,8 @@ _HARD_BUDGET_PRIORITY_SECTIONS = (
     "round_budget",
     "evidence_status",
     "freshest_evidence",
+    "topology_targeting_summary",
+    "local_finish_contract",
     "fresh_write_pending_judgment",
     "freshness_source_round",
     "primary_write_mode",
@@ -143,12 +145,34 @@ def apply_turn_budget_with_report(
         else None
     )
     if evidence_key is not None:
+        original_evidence = compacted[evidence_key]
         compacted[evidence_key] = compact_jsonish(
             compacted[evidence_key],
             max_depth=3,
             max_items=5,
             max_string_chars=120,
         )
+        if isinstance(original_evidence, dict):
+            query_topology_payload = original_evidence.get("query_topology")
+            targeting_summary = (
+                query_topology_payload.get("targeting_summary")
+                if isinstance(query_topology_payload, dict)
+                else None
+            )
+            if isinstance(targeting_summary, dict):
+                compacted_evidence = compacted.get(evidence_key)
+                compacted_query_topology = (
+                    compacted_evidence.get("query_topology")
+                    if isinstance(compacted_evidence, dict)
+                    else None
+                )
+                if isinstance(compacted_query_topology, dict):
+                    compacted_query_topology["targeting_summary"] = compact_jsonish(
+                        targeting_summary,
+                        max_depth=3,
+                        max_items=6,
+                        max_string_chars=120,
+                    )
         report["summarized_sections"].append(evidence_key)
         report["post_compact_messages"].append(
             f"{evidence_key} was compacted after diagnostics/history trimming was insufficient."

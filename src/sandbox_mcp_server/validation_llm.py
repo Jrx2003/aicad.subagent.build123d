@@ -19,6 +19,8 @@ from sandbox_mcp_server.validation_evidence import RequirementEvidenceBundle
 logger = get_logger(__name__)
 
 _JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_PROVIDER_ERROR_PREFIX = "__validation_llm_provider_error__:"
+_INVALID_OUTPUT_SENTINEL = "__validation_llm_invalid_output__"
 
 
 class ValidationLLMClauseDecision(BaseModel):
@@ -93,7 +95,13 @@ class ValidationLLMAdjudicator:
                     reason=str(exc),
                     exc_info=True,
                 )
-                return None
+                return ValidationLLMOutput(
+                    summary=(
+                        f"{_PROVIDER_ERROR_PREFIX}"
+                        f"{exc.__class__.__name__}:{str(exc).strip()[:240]}"
+                    ),
+                    clauses=[],
+                )
             parsed = self._parse_output(response.content)
             if parsed is not None:
                 return parsed
@@ -107,7 +115,7 @@ class ValidationLLMAdjudicator:
                     retry_hint="schema_fix",
                 )
         logger.warning("validation_llm_invalid_output")
-        return None
+        return ValidationLLMOutput(summary=_INVALID_OUTPUT_SENTINEL, clauses=[])
 
     def _build_messages(
         self,

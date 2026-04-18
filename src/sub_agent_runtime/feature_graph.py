@@ -552,6 +552,15 @@ class DomainKernelState:
             "latest_repair_packet_recipe_skeleton": (
                 dict(latest_packet.recipe_skeleton) if latest_packet else {}
             ),
+            "latest_packet_anchor_summary": (
+                dict(latest_packet.target_anchor_summary) if latest_packet else {}
+            ),
+            "latest_packet_recipe_skeleton": (
+                dict(latest_packet.recipe_skeleton) if latest_packet else {}
+            ),
+            "grounding_blocker_ids": (
+                list(latest_binding.blocker_ids[:max_nodes]) if latest_binding else []
+            ),
         }
 
     def to_query_payload(
@@ -753,6 +762,12 @@ def sync_domain_kernel_state(
         graph,
         blockers=blockers,
         blocker_taxonomy=blocker_taxonomy,
+        latest_validation=latest_validation,
+        blocked_feature_ids=blocked_feature_ids,
+    )
+    _reconcile_feature_node_statuses(
+        graph,
+        blocked_feature_ids=blocked_feature_ids,
         latest_validation=latest_validation,
     )
     _sync_evidence_nodes(
@@ -1203,9 +1218,16 @@ def _sync_blocker_nodes(
                 for family_id in (taxonomy_record.get("family_ids") or [])
                 if isinstance(family_id, str) and family_id.strip()
             ]
-            recommended_repair_lane = str(
-                taxonomy_record.get("recommended_repair_lane") or "code_repair"
-            ).strip() or "code_repair"
+            recommended_repair_lane = (
+                _canonical_recommended_repair_lane(
+                    taxonomy_record.get("recommended_repair_lane") or "code_repair",
+                    family_ids=blocker_family_ids,
+                    primary_feature_id=str(
+                        taxonomy_record.get("primary_feature_id") or ""
+                    ).strip(),
+                )
+                or "code_repair"
+            )
             feature_ids = _feature_ids_from_taxonomy_record(taxonomy_record)
         else:
             blocker_taxonomy_fallback = classify_blocker_taxonomy_many([blocker])
@@ -1213,9 +1235,18 @@ def _sync_blocker_nodes(
                 blocker_taxonomy_fallback[0].family_ids if blocker_taxonomy_fallback else []
             )
             recommended_repair_lane = (
-                blocker_taxonomy_fallback[0].recommended_repair_lane
-                if blocker_taxonomy_fallback
-                else "code_repair"
+                _canonical_recommended_repair_lane(
+                    blocker_taxonomy_fallback[0].recommended_repair_lane
+                    if blocker_taxonomy_fallback
+                    else "code_repair",
+                    family_ids=list(blocker_family_ids),
+                    primary_feature_id=(
+                        blocker_taxonomy_fallback[0].primary_feature_id
+                        if blocker_taxonomy_fallback
+                        else None
+                    ),
+                )
+                or "code_repair"
             )
             feature_ids = _blocker_to_feature_ids(blocker)
         node_id = f"blocker.{_slugify(blocker)}"
@@ -1341,7 +1372,14 @@ def _sync_feature_instances_and_patches(
     blockers: list[str],
     blocker_taxonomy: list[dict[str, Any]] | None,
     latest_validation: dict[str, Any] | None,
+    blocked_feature_ids: set[str] | None = None,
 ) -> None:
+    blocked_feature_ids = {
+        feature_id
+        for feature_id in (blocked_feature_ids or set())
+        if isinstance(feature_id, str) and feature_id.strip()
+    }
+    validation_family_status_hints = _validation_family_status_hints(latest_validation)
     taxonomy_by_blocker = {
         item["blocker_id"]: item
         for item in (blocker_taxonomy or [])
@@ -1388,20 +1426,41 @@ def _sync_feature_instances_and_patches(
         if isinstance(blocker_id, str) and blocker_id.strip()
     }
     for feature_instance in graph.feature_instances.values():
-        if not feature_instance.blocker_ids:
+        family_statuses = validation_family_status_hints.get(feature_instance.family_id, set())
+        if feature_instance.blocker_ids:
+            remaining_blockers = [
+                blocker_id
+                for blocker_id in feature_instance.blocker_ids
+                if blocker_id in current_blocker_ids
+            ]
+            if remaining_blockers:
+                feature_instance.blocker_ids = remaining_blockers
+                continue
+            feature_instance.status = "resolved"
+            feature_instance.blocker_ids = []
+            feature_instance.latest_repair_mode = None
+            feature_instance.repair_intent = None
             continue
-        remaining_blockers = [
-            blocker_id
-            for blocker_id in feature_instance.blocker_ids
-            if blocker_id in current_blocker_ids
-        ]
-        if remaining_blockers:
-            feature_instance.blocker_ids = remaining_blockers
+        if "contradicted" in family_statuses:
+            feature_instance.status = "blocked"
             continue
-        feature_instance.status = "resolved"
-        feature_instance.blocker_ids = []
-        feature_instance.latest_repair_mode = None
-        feature_instance.repair_intent = None
+        if (
+            "insufficient_evidence" in family_statuses
+            or feature_instance.primary_feature_id in blocked_feature_ids
+        ):
+            if feature_instance.status in {"resolved", "satisfied", "blocked"}:
+                feature_instance.status = "active"
+            continue
+        if latest_validation is not None and feature_instance.status in {"active", "blocked", "observed"}:
+            feature_instance.status = "resolved"
+            feature_instance.blocker_ids = []
+            feature_instance.latest_repair_mode = None
+            feature_instance.repair_intent = None
+
+    _refresh_active_general_geometry_instances(
+        graph,
+        latest_execution_binding=latest_execution_binding,
+    )
 
     active_instance_ids: list[str] = []
     patch_blocker_ids: list[str] = []
@@ -1443,6 +1502,11 @@ def _sync_feature_instances_and_patches(
         patch_blocker_ids.extend(feature_instance.blocker_ids)
         patch_binding_ids.extend(feature_instance.linked_binding_ids)
         active_instances.append(feature_instance)
+
+    _refresh_feature_instances_with_latest_execution_geometry(
+        graph,
+        latest_execution_binding=latest_execution_binding,
+    )
 
     if not active_instance_ids:
         return
@@ -1499,6 +1563,99 @@ def _sync_feature_instances_and_patches(
         )
     )
     _replace_repair_packets_from_active_instances(graph, active_instances)
+
+
+def _validation_family_status_hints(
+    latest_validation: dict[str, Any] | None,
+) -> dict[str, set[str]]:
+    if not isinstance(latest_validation, dict):
+        return {}
+    hints: dict[str, set[str]] = {}
+    for field_name in ("requirement_checks", "clause_interpretations"):
+        items = latest_validation.get(field_name)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            family_id = str(item.get("family_binding") or item.get("family_id") or "").strip()
+            if not family_id:
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status not in {"verified", "contradicted", "insufficient_evidence"}:
+                continue
+            hints.setdefault(family_id, set()).add(status)
+    return hints
+
+
+def _feature_node_family_ids(node_id: str) -> list[str]:
+    normalized = str(node_id or "").strip()
+    if not normalized.startswith("feature."):
+        return []
+    family_id = normalized.split(".", 1)[1].strip()
+    if not family_id:
+        return []
+    return [family_id]
+
+
+def _reconcile_feature_node_statuses(
+    graph: DomainKernelState,
+    *,
+    blocked_feature_ids: set[str],
+    latest_validation: dict[str, Any] | None,
+) -> None:
+    if isinstance(latest_validation, dict) and bool(latest_validation.get("is_complete")):
+        for node in graph.nodes.values():
+            if node.kind == "feature":
+                node.status = "satisfied"
+        return
+
+    validation_family_status_hints = _validation_family_status_hints(latest_validation)
+    active_instance_statuses_by_feature: dict[str, set[str]] = {}
+    feature_ids_with_any_instances: set[str] = set()
+    for feature_instance in graph.feature_instances.values():
+        primary_feature_id = str(feature_instance.primary_feature_id or "").strip()
+        if not primary_feature_id:
+            continue
+        feature_ids_with_any_instances.add(primary_feature_id)
+        if feature_instance.status not in {"active", "blocked", "observed"}:
+            continue
+        active_instance_statuses_by_feature.setdefault(primary_feature_id, set()).add(
+            feature_instance.status
+        )
+
+    for node in graph.nodes.values():
+        if node.kind != "feature":
+            continue
+        family_statuses: set[str] = set()
+        for family_id in _feature_node_family_ids(node.node_id):
+            family_statuses.update(validation_family_status_hints.get(family_id, set()))
+        instance_statuses = active_instance_statuses_by_feature.get(node.node_id, set())
+        if (
+            node.node_id in blocked_feature_ids
+            or "blocked" in instance_statuses
+            or "contradicted" in family_statuses
+        ):
+            node.status = "blocked"
+            continue
+        if (
+            "active" in instance_statuses
+            or "observed" in instance_statuses
+            or "insufficient_evidence" in family_statuses
+        ):
+            node.status = "active"
+            continue
+        if (
+            latest_validation is not None
+            and (
+                node.node_id in feature_ids_with_any_instances
+                or node.status in {"blocked", "failed"}
+            )
+        ):
+            node.status = "resolved"
+            continue
+        if node.status == "planned":
+            node.status = "active"
 
 
 def _validation_uses_only_general_geometry_lane(
@@ -1612,8 +1769,25 @@ def _feature_instance_from_taxonomy_record(
         if key in {"host_face", "host_faces"}:
             continue
         parameter_bindings[key] = _sanitize_anchor_signal_value(value)
-    if latest_execution_binding is not None and latest_execution_binding.geometry_summary:
+    if (
+        latest_execution_binding is not None
+        and _has_meaningful_geometry_summary(latest_execution_binding.geometry_summary)
+    ):
         parameter_bindings["geometry_summary"] = dict(latest_execution_binding.geometry_summary)
+    geometry_anchor_overrides = _geometry_anchor_overrides_from_execution_binding(
+        latest_execution_binding
+    )
+    if geometry_anchor_overrides:
+        anchor_summary = (
+            dict(parameter_bindings.get("anchor_summary"))
+            if isinstance(parameter_bindings.get("anchor_summary"), dict)
+            else {}
+        )
+        for key, value in geometry_anchor_overrides.items():
+            parameter_bindings[key] = value
+            anchor_summary[key] = value
+        if anchor_summary:
+            parameter_bindings["anchor_summary"] = anchor_summary
     linked_binding_ids: list[str] = []
     if latest_anchor_binding is not None and latest_anchor_binding.binding_id:
         linked_binding_ids.append(latest_anchor_binding.binding_id)
@@ -1648,8 +1822,10 @@ def _merge_feature_instance(
     if existing is None:
         return incoming
 
-    parameter_bindings = dict(existing.parameter_bindings)
-    parameter_bindings.update(incoming.parameter_bindings)
+    parameter_bindings = _merge_feature_parameter_bindings(
+        existing.parameter_bindings,
+        incoming.parameter_bindings,
+    )
 
     host_ids = list(dict.fromkeys([*incoming.host_ids, *existing.host_ids]))
     if any(host_id != "body.primary" for host_id in host_ids):
@@ -1676,6 +1852,180 @@ def _merge_feature_instance(
         latest_repair_mode=incoming.latest_repair_mode or existing.latest_repair_mode,
         repair_intent=incoming.repair_intent or existing.repair_intent,
     )
+
+
+_GEOMETRY_DERIVED_PARAMETER_BINDING_KEYS = {
+    "geometry_summary",
+    "bbox",
+    "bbox_min",
+    "bbox_max",
+    "bbox_min_span",
+    "bbox_max_span",
+    "realized_bbox",
+    "realized_centers",
+    "actual_snapshot_centers",
+    "observed_bounds",
+    "observed_spans",
+    "observed_split_bounds",
+}
+
+
+def _merge_feature_parameter_bindings(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(existing)
+    incoming_bindings = dict(incoming)
+    if _parameter_bindings_include_fresh_geometry(incoming_bindings):
+        _drop_stale_geometry_derived_binding_keys(merged)
+        existing_anchor_summary = merged.get("anchor_summary")
+        if isinstance(existing_anchor_summary, dict):
+            refreshed_anchor_summary = dict(existing_anchor_summary)
+            _drop_stale_geometry_derived_binding_keys(refreshed_anchor_summary)
+            if refreshed_anchor_summary:
+                merged["anchor_summary"] = refreshed_anchor_summary
+            else:
+                merged.pop("anchor_summary", None)
+    incoming_anchor_summary = incoming_bindings.get("anchor_summary")
+    existing_anchor_summary = merged.get("anchor_summary")
+    if isinstance(existing_anchor_summary, dict) and isinstance(incoming_anchor_summary, dict):
+        merged_anchor_summary = dict(existing_anchor_summary)
+        merged_anchor_summary.update(incoming_anchor_summary)
+        merged["anchor_summary"] = merged_anchor_summary
+        incoming_bindings.pop("anchor_summary", None)
+    merged.update(incoming_bindings)
+    return merged
+
+
+def _refresh_feature_instances_with_latest_execution_geometry(
+    graph: DomainKernelState,
+    *,
+    latest_execution_binding: KernelBinding | None,
+) -> None:
+    execution_geometry_bindings = _fresh_geometry_parameter_bindings_from_execution_binding(
+        latest_execution_binding
+    )
+    if not execution_geometry_bindings:
+        return
+    latest_binding_id = (
+        latest_execution_binding.binding_id
+        if latest_execution_binding is not None and latest_execution_binding.binding_id
+        else None
+    )
+    for feature_instance in graph.feature_instances.values():
+        if feature_instance.status in {"resolved", "satisfied"}:
+            continue
+        if not _feature_instance_tracks_geometry(feature_instance):
+            continue
+        feature_instance.parameter_bindings = _merge_feature_parameter_bindings(
+            feature_instance.parameter_bindings,
+            execution_geometry_bindings,
+        )
+        if latest_binding_id:
+            feature_instance.linked_binding_ids = list(
+                dict.fromkeys([latest_binding_id, *feature_instance.linked_binding_ids])
+            )
+
+
+def _fresh_geometry_parameter_bindings_from_execution_binding(
+    binding: KernelBinding | None,
+) -> dict[str, Any]:
+    if binding is None or not _has_meaningful_geometry_summary(binding.geometry_summary):
+        return {}
+    refreshed_bindings: dict[str, Any] = {
+        "geometry_summary": dict(binding.geometry_summary),
+    }
+    geometry_anchor_overrides = _geometry_anchor_overrides_from_execution_binding(binding)
+    if geometry_anchor_overrides:
+        refreshed_bindings.update(geometry_anchor_overrides)
+        refreshed_bindings["anchor_summary"] = dict(geometry_anchor_overrides)
+    return refreshed_bindings
+
+
+def _feature_instance_tracks_geometry(feature_instance: FeatureInstance) -> bool:
+    if any(
+        key in _GEOMETRY_DERIVED_PARAMETER_BINDING_KEYS
+        for key in feature_instance.parameter_bindings.keys()
+    ):
+        return True
+    if isinstance(feature_instance.parameter_bindings.get("anchor_summary"), dict):
+        return True
+    return any(
+        key == "anchor_summary" or key in _GEOMETRY_DERIVED_PARAMETER_BINDING_KEYS
+        for key in feature_instance.anchor_keys
+    )
+
+
+def _parameter_bindings_include_fresh_geometry(bindings: dict[str, Any]) -> bool:
+    geometry_summary = bindings.get("geometry_summary")
+    if isinstance(geometry_summary, dict) and _has_meaningful_geometry_summary(geometry_summary):
+        return True
+    strong_geometry_keys = {
+        "bbox",
+        "bbox_min",
+        "bbox_max",
+        "realized_bbox",
+        "realized_centers",
+        "actual_snapshot_centers",
+        "observed_bounds",
+        "observed_spans",
+        "observed_split_bounds",
+    }
+    return any(key in bindings for key in strong_geometry_keys)
+
+
+def _drop_stale_geometry_derived_binding_keys(bindings: dict[str, Any]) -> None:
+    for key in list(bindings.keys()):
+        if key in _GEOMETRY_DERIVED_PARAMETER_BINDING_KEYS:
+            bindings.pop(key, None)
+
+
+def _refresh_active_general_geometry_instances(
+    graph: DomainKernelState,
+    *,
+    latest_execution_binding: KernelBinding | None,
+) -> None:
+    if latest_execution_binding is None or not _has_meaningful_geometry_summary(
+        latest_execution_binding.geometry_summary
+    ):
+        return
+
+    incoming_bindings: dict[str, Any] = {
+        "geometry_summary": dict(latest_execution_binding.geometry_summary)
+    }
+    geometry_anchor_overrides = _geometry_anchor_overrides_from_execution_binding(
+        latest_execution_binding
+    )
+    if geometry_anchor_overrides:
+        incoming_bindings.update(geometry_anchor_overrides)
+        incoming_bindings["anchor_summary"] = dict(geometry_anchor_overrides)
+
+    if not incoming_bindings:
+        return
+
+    for feature_instance in graph.feature_instances.values():
+        if feature_instance.family_id != "general_geometry":
+            continue
+        if feature_instance.status not in {"active", "blocked", "observed"}:
+            continue
+        feature_instance.parameter_bindings = _merge_feature_parameter_bindings(
+            feature_instance.parameter_bindings,
+            incoming_bindings,
+        )
+        incoming_anchor_keys = [
+            key
+            for key in geometry_anchor_overrides.keys()
+            if isinstance(key, str) and key.strip()
+        ]
+        if incoming_anchor_keys:
+            feature_instance.anchor_keys = list(
+                dict.fromkeys([*feature_instance.anchor_keys, *incoming_anchor_keys])
+            )
+        if (
+            latest_execution_binding.binding_id
+            and latest_execution_binding.binding_id not in feature_instance.linked_binding_ids
+        ):
+            feature_instance.linked_binding_ids.append(latest_execution_binding.binding_id)
 
 
 def _default_feature_instance_id(feature_id: str) -> str:
@@ -1718,6 +2068,37 @@ def _repair_mode_from_taxonomy_record(taxonomy_record: dict[str, Any] | None) ->
     if not family_ids or "general_geometry" in family_ids or primary_feature_id == "feature.core_geometry":
         return "whole_part_rebuild"
     return "subtree_rebuild"
+
+
+def _canonical_recommended_repair_lane(
+    lane: str | None,
+    *,
+    family_ids: list[str] | None = None,
+    primary_feature_id: str | None = None,
+) -> str | None:
+    lane_text = str(lane or "").strip()
+    if not lane_text:
+        return None
+    if lane_text != "local_finish":
+        return lane_text
+    normalized_family_ids = [
+        str(item).strip()
+        for item in (family_ids or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    normalized_primary_feature_id = str(primary_feature_id or "").strip()
+    if (
+        "named_face_local_edit" in normalized_family_ids
+        and normalized_primary_feature_id == "feature.named_face_local_edit"
+    ):
+        return "local_finish"
+    if (
+        not normalized_family_ids
+        or "general_geometry" in normalized_family_ids
+        or normalized_primary_feature_id == "feature.core_geometry"
+    ):
+        return "code_repair"
+    return "probe_first"
 
 
 def _aggregate_repair_mode(repair_modes: list[str]) -> str:
@@ -1885,6 +2266,45 @@ def _build_centered_bbox_host_frame(
     }
 
 
+def _repair_packet_geometry_summary(
+    parameter_bindings: dict[str, Any],
+) -> dict[str, Any]:
+    geometry_summary = (
+        parameter_bindings.get("geometry_summary")
+        if isinstance(parameter_bindings.get("geometry_summary"), dict)
+        else {}
+    )
+    bbox = geometry_summary.get("bbox")
+    bbox_min = geometry_summary.get("bbox_min")
+    bbox_max = geometry_summary.get("bbox_max")
+    if (
+        isinstance(bbox, list)
+        and len(bbox) >= 2
+        and isinstance(bbox_min, list)
+        and len(bbox_min) >= 2
+        and isinstance(bbox_max, list)
+        and len(bbox_max) >= 2
+    ):
+        return geometry_summary
+    fallback_bbox = parameter_bindings.get("bbox")
+    fallback_bbox_min = parameter_bindings.get("bbox_min")
+    fallback_bbox_max = parameter_bindings.get("bbox_max")
+    if (
+        isinstance(fallback_bbox, list)
+        and len(fallback_bbox) >= 2
+        and isinstance(fallback_bbox_min, list)
+        and len(fallback_bbox_min) >= 2
+        and isinstance(fallback_bbox_max, list)
+        and len(fallback_bbox_max) >= 2
+    ):
+        synthesized = dict(geometry_summary)
+        synthesized["bbox"] = fallback_bbox
+        synthesized["bbox_min"] = fallback_bbox_min
+        synthesized["bbox_max"] = fallback_bbox_max
+        return synthesized
+    return geometry_summary
+
+
 def _normalize_points_for_host_frame(
     *,
     points: list[list[float]],
@@ -1938,31 +2358,69 @@ def _explicit_anchor_hole_recipe_packet(
         if isinstance(feature_instance.parameter_bindings, dict)
         else {}
     )
-    geometry_summary = (
-        parameter_bindings.get("geometry_summary")
-        if isinstance(parameter_bindings.get("geometry_summary"), dict)
-        else {}
-    )
+    geometry_summary = _repair_packet_geometry_summary(parameter_bindings)
     expected_centers = _coerce_xy_points(parameter_bindings.get("expected_local_centers"))
     realized_centers = _coerce_xy_points(parameter_bindings.get("realized_centers"))
+    expected_center_count_raw = parameter_bindings.get("expected_local_center_count")
+    expected_center_count = (
+        int(expected_center_count_raw)
+        if isinstance(expected_center_count_raw, (int, float))
+        else None
+    )
+    realized_center_count_raw = parameter_bindings.get("realized_center_count")
+    realized_center_count = (
+        int(realized_center_count_raw)
+        if isinstance(realized_center_count_raw, (int, float))
+        else (len(realized_centers) if realized_centers else None)
+    )
     host_frame = _build_centered_bbox_host_frame(
         host_ids=feature_instance.host_ids,
         geometry_summary=geometry_summary,
     )
+    host_face = str(
+        parameter_bindings.get("host_face")
+        or host_frame.get("host_face")
+        or (feature_instance.host_ids[0] if feature_instance.host_ids else "top")
+    ).strip() or "top"
+    if host_frame:
+        host_frame = {
+            **host_frame,
+            "host_face": host_face,
+        }
     normalized_expected, normalization_applied = _normalize_points_for_host_frame(
         points=expected_centers,
         geometry_summary=geometry_summary,
+    )
+    recommended_center_count = (
+        len(expected_centers)
+        if expected_centers
+        else (
+            expected_center_count
+            if expected_center_count is not None
+            else realized_center_count
+        )
     )
     target_anchor_summary = (
         {
             "requested_centers": expected_centers,
             "normalized_local_centers": normalized_expected,
             "normalization_applied": normalization_applied,
+            "host_face": host_face,
+            "recommended_center_count": recommended_center_count,
+            "expected_center_count": recommended_center_count,
         }
-        if expected_centers
+        if expected_centers or recommended_center_count is not None
         else {}
     )
-    realized_anchor_summary = {"realized_centers": realized_centers} if realized_centers else {}
+    realized_anchor_summary = (
+        {
+            "realized_centers": realized_centers,
+            "host_face": host_face,
+            "realized_center_count": realized_center_count,
+        }
+        if realized_centers or realized_center_count is not None
+        else {}
+    )
     recipe_id = None
     recipe_summary = None
     recipe_skeleton: dict[str, Any] = {}
@@ -1977,17 +2435,57 @@ def _explicit_anchor_hole_recipe_packet(
             "hole array with the countersink recipe on that local frame."
         )
         recipe_skeleton = {
-            "host_face": feature_instance.host_ids[0] if feature_instance.host_ids else "top",
+            "host_face": host_face,
             "workplane_frame": host_frame.get("frame_kind", "host_face_local"),
+            "workplane_normal_strategy": "host_face_outward_normal",
+            "center_frame_kind": "host_face_local_2d",
             "point_strategy": "pushPoints",
             "center_source_key": "normalized_local_centers"
             if normalization_applied
             else "requested_centers",
+            "center_count_hint": len(expected_centers),
+            "center_count_source": "requested_centers",
             "hole_call": (
                 "cskHole"
                 if any("countersink" in blocker for blocker in feature_instance.blocker_ids)
                 else "hole"
             ),
+        }
+    elif (
+        str(feature_instance.repair_intent or "").strip()
+        == "restore_explicit_anchor_countersink"
+        or any(
+            isinstance(blocker, str)
+            and ("countersink" in blocker or "hole" in blocker)
+            for blocker in feature_instance.blocker_ids
+        )
+    ):
+        recipe_id = "explicit_anchor_hole_helper_contract_fallback"
+        recipe_summary = (
+            "Keep the host body authoritative, bind helper-based hole/countersink creation "
+            "to the actual host-face plane with the face's outward normal, preserve the "
+            "intended planar center count, and avoid manual cone/cylinder cutters inside "
+            "the active BuildPart when the center layout is not yet fully grounded."
+        )
+        recipe_skeleton = {
+            "mode": "subtree_rebuild_via_execute_build123d",
+            "host_face": host_face,
+            "workplane_frame": host_frame.get("frame_kind", "host_face_local"),
+            "workplane_normal_strategy": "host_face_outward_normal",
+            "center_frame_kind": "host_face_local_2d",
+            "center_source_key": "derive_from_requirement_or_validation",
+            "center_count_hint": recommended_center_count,
+            "center_count_source": (
+                "realized_centers"
+                if realized_centers
+                else "requirement_or_validation"
+            ),
+            "hole_call": "CounterSinkHole_or_Hole",
+            "helper_contract": (
+                "CounterSinkHole(radius=..., counter_sink_radius=..., "
+                "depth=..., counter_sink_angle=...)"
+            ),
+            "cutter_strategy": "avoid_manual_cone_cylinder_inside_active_builder",
         }
     return (
         host_frame,
@@ -2008,11 +2506,7 @@ def _spherical_recess_recipe_packet(
         if isinstance(feature_instance.parameter_bindings, dict)
         else {}
     )
-    geometry_summary = (
-        parameter_bindings.get("geometry_summary")
-        if isinstance(parameter_bindings.get("geometry_summary"), dict)
-        else {}
-    )
+    geometry_summary = _repair_packet_geometry_summary(parameter_bindings)
     expected_centers = _coerce_xy_points(parameter_bindings.get("expected_local_centers"))
     realized_centers = _coerce_xy_points(parameter_bindings.get("realized_centers"))
     host_frame = _build_centered_bbox_host_frame(
@@ -2362,6 +2856,51 @@ def _sanitize_anchor_signal_value(value: Any) -> Any:
     return str(value)
 
 
+def _geometry_anchor_overrides_from_execution_binding(
+    binding: KernelBinding | None,
+) -> dict[str, Any]:
+    if binding is None or not _has_meaningful_geometry_summary(binding.geometry_summary):
+        return {}
+    geometry_summary = binding.geometry_summary
+    overrides: dict[str, Any] = {}
+
+    bbox = geometry_summary.get("bbox")
+    if isinstance(bbox, list) and bbox:
+        overrides["bbox"] = _sanitize_anchor_signal_value(bbox)
+        numeric_bbox = [
+            float(value)
+            for value in bbox
+            if isinstance(value, (int, float))
+        ]
+        if numeric_bbox:
+            overrides["bbox_min_span"] = min(numeric_bbox)
+            overrides["bbox_max_span"] = max(numeric_bbox)
+
+    bbox_min = geometry_summary.get("bbox_min")
+    if isinstance(bbox_min, list) and bbox_min:
+        overrides["bbox_min"] = _sanitize_anchor_signal_value(bbox_min)
+
+    bbox_max = geometry_summary.get("bbox_max")
+    if isinstance(bbox_max, list) and bbox_max:
+        overrides["bbox_max"] = _sanitize_anchor_signal_value(bbox_max)
+
+    return overrides
+
+
+def _has_meaningful_geometry_summary(summary: dict[str, Any] | None) -> bool:
+    if not isinstance(summary, dict) or not summary:
+        return False
+    for key in ("bbox", "bbox_min", "bbox_max"):
+        value = summary.get(key)
+        if isinstance(value, list) and value:
+            return True
+    for key in ("solids", "faces", "edges", "volume"):
+        value = summary.get(key)
+        if isinstance(value, (int, float)) and float(value) > 0:
+            return True
+    return bool(summary.get("persisted")) and bool(summary.get("step_file"))
+
+
 def _compact_parameter_bindings(bindings: dict[str, Any]) -> dict[str, Any]:
     compacted: dict[str, Any] = {}
     for key, value in list(bindings.items())[:8]:
@@ -2642,8 +3181,11 @@ def _extract_feature_anchor_summary(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(probes, list) or not probes:
         return {}
     successful_families: list[str] = []
+    family_bindings: dict[str, str] = {}
     anchor_signal_keys_by_family: dict[str, list[str]] = {}
     signal_values_by_family: dict[str, dict[str, Any]] = {}
+    grounding_blockers_by_family: dict[str, list[str]] = {}
+    required_evidence_kinds_by_family: dict[str, list[str]] = {}
     for item in probes:
         if not isinstance(item, dict):
             continue
@@ -2652,9 +3194,26 @@ def _extract_feature_anchor_summary(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         if bool(item.get("success")) and family not in successful_families:
             successful_families.append(family)
+        family_binding = str(item.get("family_binding") or "").strip()
+        if family_binding:
+            family_bindings[family] = family_binding
+        required_evidence_kinds = [
+            str(kind).strip()
+            for kind in (item.get("required_evidence_kinds") or [])
+            if isinstance(kind, str) and str(kind).strip()
+        ]
+        if required_evidence_kinds:
+            required_evidence_kinds_by_family[family] = required_evidence_kinds
+        grounding_blockers = [
+            str(blocker).strip()
+            for blocker in (item.get("grounding_blockers") or [])
+            if isinstance(blocker, str) and str(blocker).strip()
+        ]
+        if grounding_blockers:
+            grounding_blockers_by_family[family] = grounding_blockers
         signals = item.get("signals")
         if not isinstance(signals, dict):
-            continue
+            signals = {}
         anchor_keys = sorted(
             {
                 str(key)
@@ -2676,19 +3235,49 @@ def _extract_feature_anchor_summary(payload: dict[str, Any]) -> dict[str, Any]:
                 )
             }
         )
-        if anchor_keys:
-            anchor_signal_keys_by_family[family] = anchor_keys
-            signal_values_by_family[family] = {
+        anchor_summary = item.get("anchor_summary")
+        anchor_payload: dict[str, Any] = (
+            {
                 key: _sanitize_anchor_signal_value(signals.get(key))
                 for key in anchor_keys
                 if key in signals
             }
+            if anchor_keys
+            else {}
+        )
+        if isinstance(anchor_summary, dict) and anchor_summary:
+            for key in (
+                "expected_local_center_count",
+                "realized_local_center_count",
+                "bbox",
+                "bbox_min",
+                "bbox_max",
+                "bbox_min_span",
+                "bbox_max_span",
+                "host_face",
+            ):
+                if key in anchor_summary and key not in anchor_payload:
+                    anchor_payload[key] = _sanitize_anchor_signal_value(
+                        anchor_summary.get(key)
+                    )
+            anchor_payload["anchor_summary"] = {
+                str(key): _sanitize_anchor_signal_value(value)
+                for key, value in anchor_summary.items()
+                if isinstance(key, str)
+            }
+        if anchor_payload:
+            if anchor_keys:
+                anchor_signal_keys_by_family[family] = anchor_keys
+            signal_values_by_family[family] = anchor_payload
     return {
         "probe_count": sum(1 for item in probes if isinstance(item, dict)),
         "successful_probe_count": len(successful_families),
         "successful_families": successful_families,
+        "family_bindings": family_bindings,
         "anchor_signal_keys_by_family": anchor_signal_keys_by_family,
         "signal_values_by_family": signal_values_by_family,
+        "grounding_blockers_by_family": grounding_blockers_by_family,
+        "required_evidence_kinds_by_family": required_evidence_kinds_by_family,
     }
 
 
@@ -2904,11 +3493,10 @@ def _parse_structured_signal_value(raw_value: str) -> Any:
     value = raw_value.strip()
     if not value:
         return value
-    if value.startswith(("[", "{", "(")):
-        try:
-            return ast.literal_eval(value)
-        except (ValueError, SyntaxError):
-            return value
+    try:
+        return ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return value
     return value
 
 
@@ -2925,10 +3513,20 @@ def _normalize_validation_signals_for_family(
         normalized: dict[str, Any] = {}
         if "required_centers" in signals:
             normalized["expected_local_centers"] = signals["required_centers"]
+        required_center_count = signals.get("required_center_count")
+        if isinstance(required_center_count, (int, float)):
+            normalized["expected_local_center_count"] = int(required_center_count)
+        elif isinstance(signals.get("expected_local_center_count"), (int, float)):
+            normalized["expected_local_center_count"] = int(
+                signals["expected_local_center_count"]
+            )
         if "realized_centers" in signals:
             normalized["realized_centers"] = signals["realized_centers"]
         elif "actual_snapshot_centers" in signals:
             normalized["realized_centers"] = signals["actual_snapshot_centers"]
+        realized_center_count = signals.get("realized_center_count")
+        if isinstance(realized_center_count, (int, float)):
+            normalized["realized_center_count"] = int(realized_center_count)
         if "host_face" in signals:
             normalized["host_face"] = signals["host_face"]
         if "bbox" in signals:
@@ -2949,6 +3547,23 @@ def _normalize_validation_signals_for_family(
         if "required_shapes" in signals:
             normalized["required_shapes"] = signals["required_shapes"]
         return normalized
+    if family_id == "named_face_local_edit":
+        return {
+            key: value
+            for key, value in signals.items()
+            if key
+            not in {
+                "required_center_count",
+                "realized_center_count",
+                "required_centers",
+                "realized_centers",
+                "actual_snapshot_centers",
+                "countersink_action",
+                "hole_feature",
+                "cone_like_face_present",
+                "snapshot_countersink_geometry",
+            }
+        }
     return signals
 
 
@@ -3067,7 +3682,7 @@ def _latest_active_binding(
             continue
         if binding_kind is not None and binding.binding_kind != binding_kind:
             continue
-        if require_geometry and not binding.geometry_summary:
+        if require_geometry and not _has_meaningful_geometry_summary(binding.geometry_summary):
             continue
         if require_feature_anchor and not binding.feature_anchor_summary:
             continue
@@ -3223,7 +3838,20 @@ def _binding_from_tool_result(
                 severity = severity_text or "blocking"
             lane = str(taxonomy.get("recommended_repair_lane") or "").strip()
             if lane:
-                recommended_repair_lane = lane
+                recommended_repair_lane = (
+                    _canonical_recommended_repair_lane(
+                        lane,
+                        family_ids=[
+                            str(family_id).strip()
+                            for family_id in (taxonomy.get("family_ids") or [])
+                            if isinstance(family_id, str) and str(family_id).strip()
+                        ],
+                        primary_feature_id=str(
+                            taxonomy.get("primary_feature_id") or ""
+                        ).strip(),
+                    )
+                    or recommended_repair_lane
+                )
                 break
         if not validation_taxonomy and bool(payload.get("is_complete")):
             family_ids = list(feature_family_ids)
@@ -3301,7 +3929,14 @@ def _binding_from_tool_result(
             for taxonomy in probe_taxonomy:
                 lane = str(taxonomy.recommended_repair_lane or "").strip()
                 if lane:
-                    recommended_repair_lane = lane
+                    recommended_repair_lane = (
+                        _canonical_recommended_repair_lane(
+                            lane,
+                            family_ids=list(taxonomy.family_ids),
+                            primary_feature_id=taxonomy.primary_feature_id,
+                        )
+                        or recommended_repair_lane
+                    )
                     break
         evidence_source = "probe"
         completeness_relevance = "diagnostic"
@@ -3323,7 +3958,13 @@ def _binding_from_tool_result(
                 family_ids = actionable_families
             lane = str(probe_summary.get("recommended_repair_lane") or "").strip()
             if lane:
-                recommended_repair_lane = lane
+                recommended_repair_lane = (
+                    _canonical_recommended_repair_lane(
+                        lane,
+                        family_ids=list(family_ids),
+                    )
+                    or recommended_repair_lane
+                )
             feature_anchor_summary = _extract_execute_probe_feature_anchor_summary(payload)
         if not family_ids:
             family_ids = list(feature_family_ids)
@@ -3346,9 +3987,14 @@ def _binding_from_tool_result(
             family_ids = list(failure_taxonomy.get("family_ids") or [])
             blocker_ids = list(failure_taxonomy.get("blocker_ids") or [])
             primary_feature_ids = list(failure_taxonomy.get("primary_feature_ids") or [])
-            recommended_repair_lane = str(
-                failure_taxonomy.get("recommended_repair_lane") or ""
-            ).strip() or recommended_repair_lane
+            recommended_repair_lane = (
+                _canonical_recommended_repair_lane(
+                    str(failure_taxonomy.get("recommended_repair_lane") or "").strip(),
+                    family_ids=list(family_ids),
+                    primary_feature_id=primary_feature_ids[0] if primary_feature_ids else None,
+                )
+                or recommended_repair_lane
+            )
             severity = "blocking"
         if not primary_feature_ids:
             primary_feature_ids = list(feature_node_ids)

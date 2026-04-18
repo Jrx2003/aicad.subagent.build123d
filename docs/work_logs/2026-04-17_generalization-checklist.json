@@ -1,0 +1,183 @@
+{
+  "metadata": {
+    "date": "2026-04-17",
+    "owner": "codex",
+    "theme": "practice_lane_feedback_chain_and_family_aware_read_model",
+    "status_values": [
+      "pending",
+      "in_progress",
+      "done",
+      "blocked"
+    ]
+  },
+  "items": [
+    {
+      "id": "mcp_uv_fallback_for_practice_lane",
+      "title": "Ensure real practice runs do not fail immediately when the local environment lacks uv",
+      "status": "done",
+      "notes": "Updated src/sandbox/mcp_runner.py so MCP stdio can fall back to the repo Python interpreter. practice_runs/20260417_124756 captured the old failure and practice_runs/20260417_124950 confirmed the repaired path."
+    },
+    {
+      "id": "count_only_explicit_anchor_grounding",
+      "title": "Carry count-only explicit-anchor evidence into feature graph and repair packets without requiring explicit center coordinates",
+      "status": "done",
+      "notes": "Updated src/sub_agent_runtime/feature_graph.py and added focused tests so expected/realized center counts, bbox, and anchor summaries survive into the packet path."
+    },
+    {
+      "id": "family_aware_query_topology",
+      "title": "Connect runtime family semantics into query_topology so candidate sets can expose family-aware preferred hosts",
+      "status": "done",
+      "notes": "Added QueryTopologyInput.family_ids, TopologyCandidateSet.family/preferred-ref fields, runtime-managed family injection in tool_runtime, and family-aware candidate ranking in sandbox_mcp_server/service.py."
+    },
+    {
+      "id": "topology_local_finish_positive_proof",
+      "title": "Keep a live proof that query_topology -> face_ref -> apply_cad_action works in a real run",
+      "status": "done",
+      "notes": "practice_runs/20260417_124950/topology_local_finish_focus_v00_95ab3188 first proved face_ref consumption after query_topology, and practice_runs/20260417_131654/topology_local_finish_focus_v00_95ab3188 now provides a complete validation_complete positive example with family-aware topology candidate sets and evaluation previews."
+    },
+    {
+      "id": "organic_complex_prompt_bottleneck_refresh",
+      "title": "Use a new complex organic clamshell prompt to confirm the current dominant bottleneck without relying on benchmark L1/L2",
+      "status": "done",
+      "notes": "practice_runs/20260417_125325/organic_clamshell_storage_midhigh_v00_0605b8a8 confirms the read chain is active but the dominant failure layer remains write_surface structural contract violations."
+    },
+    {
+      "id": "host_face_local_frame_convergence",
+      "title": "Reduce remaining local host-frame drift after successful topology-targeted local finish",
+      "status": "in_progress",
+      "notes": "The topology-local case now fails later and more narrowly. The main remaining gap is host-face local coordinate/frame stability after successful local edits, not lack of topology refs."
+    },
+    {
+      "id": "local_sketch_window_budget_closure",
+      "title": "Keep bounded local sketch windows alive through query_sketch and bias the final round toward materializing profile-ready local edits",
+      "status": "done",
+      "notes": "Updated agent_loop_v2 and context_manager so query_sketch no longer prematurely closes the local_finish lane, and profile-ready sketch windows under budget pressure now prefer apply_cad_action over broad execute_build123d escape."
+    },
+    {
+      "id": "practice_analysis_family_aware_topology_visibility",
+      "title": "Expose family-aware topology candidate semantics directly in practice_analysis so read-model gains are visible without reopening raw query payloads",
+      "status": "done",
+      "notes": "Updated practice_runner to carry candidate_family_ids plus family_id/family_ids/preferred_ref_id/preferred_entity_id into topology_examples, with focused tests in test_practice_runner.py."
+    },
+    {
+      "id": "structural_repair_precedence_for_complex_whole_part",
+      "title": "Make repair surfaces prioritize structural BuildPart/builder contracts over superficial helper or keyword fixes on complex whole-part prompts",
+      "status": "in_progress",
+      "notes": "The latest organic clamshell run narrows the dominant failure to active-builder part mutation and temporary primitive arithmetic. practice_runs/20260417_155555 then proved the clamshell-specific contract is entering real rounds 1-2, but round 3 still fell back to generic nested-hollow repair on `nested_subtractive_buildpart_inside_active_builder`. That gap is now patched so the next rerun can validate a more stable clamshell-specific repair precedence across rounds 1-3."
+    },
+    {
+      "id": "highwater_clamshell_failure_shape_refresh",
+      "title": "Keep a live comparison showing how the clamshell highwater case moved from repeated runtime exceptions to executable-but-underconverged geometry plus late preflight lint",
+      "status": "done",
+      "notes": "Compared practice_runs/20260417_132226 and practice_runs/20260417_154500. The old run hit Nothing to subtract from / nested builder .part.move runtime failures early; the new run reaches repeated successful writes first and later surfaces transform_context_manager / cylinder_axis as structured invalid_api_contract events."
+    },
+    {
+      "id": "detached_subtractive_builder_governance",
+      "title": "Move subtract-without-host builder failures out of runtime exceptions and into preflight governance",
+      "status": "done",
+      "notes": "Added invalid_build123d_contract.detached_subtractive_builder_without_host plus a dedicated repair recipe and focused tests, so detached mini-builders that start with subtractive materialization are now classified before sandbox execution."
+    },
+    {
+      "id": "nested_builder_part_transform_governance",
+      "title": "Classify nested builder .part transform misuse as a structural write-side hallucination instead of a late runtime exception",
+      "status": "done",
+      "notes": "invalid_build123d_api.nested_buildpart_part_transform is now covered by preflight lint, repair recipes, and active builder authority guidance; current follow-up is to validate the impact through fresh complex practice reruns."
+    },
+    {
+      "id": "repeated_whole_part_rebuild_feature_probe_reentry",
+      "title": "Reopen feature-probe assessment when actionable packets collapse to general_geometry but blocked local families remain active",
+      "status": "done",
+      "notes": "Updated agent_loop_v2 so blocked feature-instance families participate in feature-probe gating, and repeated validation blockers can now re-enter graph_refresh even when the latest actionable packet surface is broad general_geometry. practice_runs/20260417_171900 confirmed the live policy chain now includes feature_probe_assessment_before_actionable_kernel_patch_repair plus topology_refresh_after_feature_probe_assessment_from_code_write."
+    },
+    {
+      "id": "extrude_without_sketch_governance_candidate",
+      "title": "Classify sketch-less subtractive extrude patterns before they keep recurring in organic enclosure prompts",
+      "status": "in_progress",
+      "notes": "practice_runs/20260417_172400 exposed a new shared failure surface: extrude(amount=..., mode=Mode.SUBTRACT) with no live face/sketch payload. Need to decide whether to preflight this directly or route it through a narrower probe/repair lane."
+    },
+    {
+      "id": "fragmented_two_part_shell_topology_refresh_gate",
+      "title": "Let moderately close fragmented two-part shells re-enter topology refresh when non-general families explicitly request host selection",
+      "status": "done",
+      "notes": "Added a focused red test plus agent_loop_v2 gate relaxation so bbox-close / solid-gap<=2 cases with named_face_local_edit or slots topology signals can leave blind code_repair. practice_runs/20260417_181500 now proves the healthier chain `feature_probes -> query_topology -> graph_refresh_after_read_stall`, replacing the old 20260417_180900 kernel-state ping-pong."
+    },
+    {
+      "id": "validator_cylindrical_local_cavity_grounding",
+      "title": "Stop collapsing cylindrical local cavities such as magnet slots into notch-like legacy contradiction before geometry/topology grounding exists",
+      "status": "done",
+      "notes": "Updated validation_interpretation so slot/recess/pocket/cavity clauses with cylindrical cues (`diameter` / `radius` / `cylindrical` / `magnet`) route through `clause:cylindrical_local_cavity` + `clause:local_feature` instead of hard `clause:notch_like`. Focused contract test is green."
+    },
+    {
+      "id": "detached_cylindrical_cutter_guidance",
+      "title": "Bias whole-part rebuilds away from detached subtractive notch builders and unsupported Cylinder axis keywords",
+      "status": "done",
+      "notes": "practice_runs/20260417_181500 exposed the shared pair `invalid_build123d_contract.detached_subtractive_builder_without_host` + `invalid_build123d_keyword.cylinder_axis` in round 8. Added a dedicated detached-cylindrical contract, then promoted the mixed `active_builder_temporary_primitive_transform_rebind + plane_normal_alias + cylinder_axis` cluster into `execute_build123d_explicit_cylindrical_slot_recipe_contract`. practice_runs/20260417_143530 then completed with `build123d_hallucination.event_count = 0`."
+    },
+    {
+      "id": "thumb_notch_evidence_first_grounding",
+      "title": "Keep generic thumb-notch blockers in insufficient_evidence until target-face or topology grounding exists",
+      "status": "done",
+      "notes": "Updated validation_interpretation so generic notch failures no longer become immediate contradictions without positive host-face grounding. Focused contract test is green, and practice_runs/20260417_143530/queries/round_01_validate_requirement_post_write.json now shows `a_thumb_notch` as `insufficient_evidence` instead of `validation:legacy_fail`."
+    },
+    {
+      "id": "compound_children_governance",
+      "title": "Move malformed Compound positional-child assembly calls into preflight governance instead of waiting for runtime exceptions",
+      "status": "done",
+      "notes": "practice_runs/20260417_144530/plans/round_05_response.json used `Compound(base_shell.part, lid_final.part, hinge.part, hinge_pin.part)` and actions/round_05_execute_build123d.json raised `TypeError: Unsupported color definition`. Added invalid_build123d_contract.compound_positional_children_contract plus build123d_compound_children_contract and focused tests."
+    },
+    {
+      "id": "clamshell_shared_footprint_and_hinge_axis_bias",
+      "title": "Bias clamshell whole-part rebuilds toward shared lid/base footprint, explicit split axis, and correct hinge-cylinder orientation",
+      "status": "in_progress",
+      "notes": "practice_runs/20260417_144530 exposed the old footprint-halving / default-+Z hinge failure. practice_runs/20260417_151144 proved the lane is healthier overall (hallucination 10 -> 3, all concentrated in round 8 preflight), but round 6 still regressed to bbox=[72,99.5,26] because the model confused hinge seam location with hinge axis direction and let a long rod protrude from the back. practice_runs/20260417_151802 then confirmed read-model already sees hinge cylinders while validator still left `use_a_pin_hinge` at insufficient_evidence. practice_runs/20260417_153052 then showed `half_shell` probe + `pin hinge` validation grounding already entered the live lane. practice_runs/20260417_160315 now shows repair precedence is healthier, but the first successful whole-part write can still come out as bbox=[72,69,64] with missing hinge-like cylindrical evidence. practice_runs/20260417_082020 then proved the strengthened prompt surface removed the old detached magnet-slot builder failure from round 1 entirely, shrinking the remaining first-write hallucinations to `cylinder_axis` plus active-builder transform rebind; the latest follow-up strengthens that shared cylinder transform contract and is being validated in the next rerun."
+    },
+    {
+      "id": "active_general_geometry_execution_refresh",
+      "title": "Keep active general_geometry feature instances synchronized with the latest successful execution geometry even after blocker focus shifts",
+      "status": "done",
+      "notes": "Added a feature_graph refresh pass so active/blocked/observed general_geometry instances inherit the latest execution bbox/geometry_summary instead of leaving stale envelopes in query_kernel_state. Covered by a focused regression in tests/unit/sub_agent_runtime/test_feature_graph.py."
+    },
+    {
+      "id": "runtime_export_shapelist_normalization",
+      "title": "Normalize ShapeList-like final results into canonical exportable Build123d shapes before STEP export",
+      "status": "done",
+      "notes": "Updated sandbox_mcp_server/service.py and sandbox/docker_runner.py so ShapeList results are collapsed to a single shape or Compound([...]) before export_step. Added a focused wrapper test in tests/unit/sandbox_mcp_server/test_validation_geometry_fallbacks.py."
+    },
+    {
+      "id": "clamshell_half_shell_family_detection",
+      "title": "Detect clamshell lid/base + hinge requirements as half_shell practice families instead of dropping them into only general_geometry or axisymmetric_profile",
+      "status": "done",
+      "notes": "Updated sandbox_mcp_server/registry.py and blocker taxonomy so clamshell + lid/base + hinge/mating prompts now surface `half_shell` in query_feature_probes. Covered by a focused registry semantics test and a live half-shell probe test."
+    },
+    {
+      "id": "pin_hinge_topology_grounding",
+      "title": "Teach validator and feature probes to reuse boundary cylindrical topology evidence for explicit pin-hinge clauses",
+      "status": "done",
+      "notes": "Added half-shell hinge probe signals in sandbox_mcp_server/service.py + feature_probe_grounding.py and a new pin-hinge clause interpreter in validation_interpretation.py. Focused contract tests are green; the next live rerun is checking whether `use_a_pin_hinge` leaves insufficient_evidence in practice."
+    },
+    {
+      "id": "clamshell_builder_boundary_contract",
+      "title": "Unify clamshell shell-host / local-cut / detached-hinge repair into one shared builder-boundary governance surface",
+      "status": "done",
+      "notes": "After practice_runs/20260417_153052 showed `half_shell` probing and pin-hinge grounding were already healthy, the remaining failures concentrated in round 5/6 write-surface hallucinations: detached subtractive mini-builders, active-builder temporary primitive rebinds, and sketch primitives outside BuildSketch. Added lint-side half_shell family carry-through, repair recipe `clamshell_host_local_cut_contract`, skill-pack guidance `execute_build123d_clamshell_host_local_cut_contract`, and focused tests. practice_runs/20260417_155555 now confirms the real live lane is also issuing `clamshell_host_local_cut_contract` in rounds 1-2 instead of regressing to generic nested-hollow repair."
+    },
+    {
+      "id": "today_report_material_with_artifact_chain",
+      "title": "Produce a presenter-friendly 4/17 progress page that directly answers what changed today, how it is proven, and what comes next",
+      "status": "done",
+      "notes": "Added report-20260417-build123d-practice-progress/ with both index.html and shareable-report.md. The page now starts with a presenter-friendly 'what changed / where to look / what it proves' structure and explicitly recommends three live artifact sets for demo: 20260417_131654 as the clean topology-targeting positive case, 20260417_125325 as the complex custom-prompt bottleneck case, and 20260417_160850 -> 20260417_082020 as the before/after failure-shape comparison."
+    },
+    {
+      "id": "first_turn_enclosure_detached_subtractive_bias",
+      "title": "Push the detached-subtractive-builder prohibition into the first-turn enclosure local-feature contract so complex clamshell prompts see it before the first whole-part write",
+      "status": "in_progress",
+      "notes": "Updated src/sub_agent_runtime/skill_pack.py so `enclosure_local_feature_placement_contract` now explicitly forbids a detached BuildPart whose first real operation is subtractive for magnet recess / thumb notch / plug pocket style cuts, and also warns against broad first-pass `edges().filter_by(Axis.Z)` shell fillets. Focused unit test is green. practice_runs/20260417_091500 showed the old remaining gap: round 1 moved from detached-subtractive regressions to a broad early-fillet failure, then round 2 still fell back to `base_magnets`. A fresh live rerun, practice_runs/20260417_193500, is now checking whether the newest combined first-turn whole-part guidance keeps the first failure on even earlier shared host-prism contracts (`Box(..., radius=...)`) instead of dropping back into detached local cutters."
+    },
+    {
+      "id": "runtime_skill_visibility_budget_for_enclosure_repairs",
+      "title": "Keep enclosure/clamshell host-local repair skills visible in compacted execute_build123d repair turns instead of truncating them away",
+      "status": "done",
+      "notes": "practice_runs/20260417_193500 exposed that round-2 repair prompts were still losing `enclosure_local_feature_placement_contract` because V2ContextManager._prepare_runtime_skills_payload only kept six skills. Added a failing regression in tests/unit/sub_agent_runtime/test_context_manager.py, raised the visible skill budget to 8 in src/sub_agent_runtime/context_manager.py, and re-ran the focused truncation suite (4 passed). This is a shared control-surface fix, not a case-specific modeling rule."
+    }
+  ]
+}

@@ -93,6 +93,16 @@ def _aicad_shape_area(shape):
             return 0.0
 
 
+def _aicad_shape_volume(shape):
+    try:
+        return _aicad_to_float(shape.volume)
+    except Exception:
+        try:
+            return _aicad_to_float(shape.Volume())
+        except Exception:
+            return 0.0
+
+
 def _aicad_shape_length(shape):
     try:
         return _aicad_to_float(shape.length)
@@ -103,20 +113,36 @@ def _aicad_shape_length(shape):
             return 0.0
 
 
+def _aicad_face_normal(face):
+    try:
+        return _aicad_vec3(face.normal_at())
+    except Exception:
+        try:
+            return _aicad_vec3(face.normalAt())
+        except Exception:
+            return None
+
+
 def _aicad_entity_id(prefix, parts):
-    payload = [prefix]
+    normalized_parts = []
     for part in list(parts or []):
-        if isinstance(part, float):
-            payload.append(f"{part:.5f}")
-        else:
-            payload.append(str(part))
-    digest = hashlib.sha1("|".join(payload).encode("utf-8")).hexdigest()[:12].upper()
+        value = _aicad_to_float(part)
+        if abs(value) < 1e-6:
+            value = 0.0
+        normalized_parts.append(f"{value:.6f}")
+    normalized = "|".join(normalized_parts)
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
     return f"{prefix}_{digest}"
 
 
 def _aicad_face_entity_id(face):
     bbox = _aicad_bbox(face)
     center = _aicad_shape_center(face)
+    face_normal = None
+    try:
+        face_normal = _aicad_face_normal(face)
+    except Exception:
+        pass
     return _aicad_entity_id(
         "F",
         [
@@ -124,6 +150,9 @@ def _aicad_face_entity_id(face):
             center[0],
             center[1],
             center[2],
+            (face_normal[0] if face_normal else 0.0),
+            (face_normal[1] if face_normal else 0.0),
+            (face_normal[2] if face_normal else 0.0),
             bbox["xlen"],
             bbox["ylen"],
             bbox["zlen"],
@@ -183,7 +212,7 @@ def _aicad_result_has_positive_solid(target):
     total = 0.0
     for solid in solids:
         try:
-            total += abs(_aicad_to_float(getattr(solid, "volume", solid.Volume())))
+            total += abs(_aicad_shape_volume(solid))
         except Exception:
             continue
     return total > 1e-6
@@ -201,7 +230,13 @@ def _aicad_as_part(target):
             return getattr(target, "part")
     try:
         if _aicad_result_has_positive_solid(target):
-            return Part(target)
+            try:
+                converted = Part(target)
+                if _aicad_result_has_positive_solid(converted):
+                    return converted
+            except Exception:
+                pass
+            return target
     except Exception:
         pass
     return Part()

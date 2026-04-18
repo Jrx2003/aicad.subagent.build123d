@@ -205,6 +205,22 @@ def test_build123d_codegen_prompt_discourages_temporary_primitives_inside_active
     assert "close the host builder before doing explicit solid arithmetic" in prompt
 
 
+def test_build123d_codegen_prompt_discourages_active_builder_transform_rebind() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "Inside an active `BuildPart`, do not create `solid = Box(...)`" in prompt
+    assert "`solid = Pos(...) * solid` or `solid = Rot(...) * solid`" in prompt
+    assert "use `Locations(...)` at creation time" in prompt
+
+
+def test_build123d_codegen_prompt_describes_detached_hinge_rotation_pattern() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "do not write `with Rot(...): Cylinder(...)` inside `BuildPart`" in prompt
+    assert "`Rot(...) * hinge_barrel.part`" in prompt
+    assert "`Pos(...) * Rot(...) * hinge_barrel.part`" in prompt
+
+
 def test_build123d_codegen_prompt_preserves_named_feature_face_on_shelled_hosts() -> None:
     prompt = load_prompt("codegen")
 
