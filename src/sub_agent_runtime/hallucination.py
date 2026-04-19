@@ -43,6 +43,7 @@ _UNEXPECTED_KEYWORD_ARGUMENT_RE = re.compile(
 _INFRASTRUCTURE_WRITE_ERROR_RE = re.compile(
     r"docker api error|docker desktop is unable to start|container wait failed|container_wait_failed|"
     r"error while fetching server api version|unixhttpconnectionpool|503 server error.*docker|"
+    r"docker daemon appears unavailable|checked candidate sockets|"
     r"modulenotfounderror:\s+no module named 'lib3mf'",
     flags=re.IGNORECASE,
 )

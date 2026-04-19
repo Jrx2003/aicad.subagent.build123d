@@ -1534,6 +1534,10 @@ class RequirementClauseInterpretation(BaseModel):
         default_factory=list,
         description="Evidence kinds this clause ideally needs before a strong verification claim.",
     )
+    grounding_gap_reasons: list[str] = Field(
+        default_factory=list,
+        description="Structured reasons that explain which grounding surfaces are still missing.",
+    )
     overclaim_guard: str | None = Field(
         default=None,
         description="Guard reason that blocks premature verification when grounding is weak.",
@@ -1707,6 +1711,10 @@ class ValidateRequirementOutput(BaseModel):
     required_evidence_kinds: list[str] = Field(
         default_factory=list,
         description="Union of evidence kinds still most relevant for trustworthy completion claims.",
+    )
+    grounding_gap_reasons: list[str] = Field(
+        default_factory=list,
+        description="Union of grounding gap reasons observed across clause interpretations.",
     )
     overclaim_guard: str | None = Field(
         default=None,

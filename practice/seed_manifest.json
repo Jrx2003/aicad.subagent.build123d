@@ -91,5 +91,26 @@
       "recess_height_mm": [6, 8],
       "recess_depth_mm": [2, 3]
     }
+  },
+  {
+    "seed_id": "hinged_pillbox_magnet_medium",
+    "title": "中难度铰链磁吸小盒",
+    "prompt_template": "Create a two-part rounded pillbox enclosure sized {width_mm}mm x {depth_mm}mm x {height_mm}mm with a {hinge_style} at the back. Keep wall thickness near {wall_thickness_mm}mm, separate the lid and base cleanly, add two magnet recesses on the mating faces near the front corners, add a front thumb notch about {thumb_notch_mm}mm wide, and add one shallow rounded recess on the front face for a label window. Keep the shell smooth, printable, and suitable for a follow-up topology-aware local finish if needed.",
+    "difficulty_band": "medium",
+    "expected_part_count": 2,
+    "target_feature_families": [
+      "half_shell",
+      "explicit_anchor_hole",
+      "named_face_local_edit"
+    ],
+    "local_topology_targeting_expected": false,
+    "variation_knobs": {
+      "width_mm": [58, 64],
+      "depth_mm": [42, 48],
+      "height_mm": [20, 24],
+      "hinge_style": ["living hinge", "pin hinge"],
+      "wall_thickness_mm": [1.8, 2.2],
+      "thumb_notch_mm": [7, 9]
+    }
   }
 ]

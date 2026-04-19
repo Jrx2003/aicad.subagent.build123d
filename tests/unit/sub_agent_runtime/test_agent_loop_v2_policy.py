@@ -1125,6 +1125,181 @@ def test_feature_probe_topology_refresh_can_preempt_code_repair_when_geometry_ga
     ]
 
 
+def test_feature_probe_assessment_reopens_code_repair_on_last_round() -> None:
+    run_state = RunState(
+        session_id="session-feature-probe-last-round-repair",
+        requirements={
+            "description": (
+                "Create a two-part rounded clamshell enclosure with overall dimensions 78mm x 56mm x 32mm, "
+                "four corner magnet recesses, and a front thumb notch."
+            )
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="initial enclosure write",
+            tool_calls=[
+                ToolCallRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 2,
+                                "volume": 37308.74,
+                                "bbox": [78.0, 56.0, 24.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="inspect localized blockers",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "probes": [
+                            {
+                                "family": "named_face_local_edit",
+                                "recommended_next_tools": [
+                                    "query_topology",
+                                    "apply_cad_action",
+                                ],
+                                "grounding_blockers": [
+                                    "feature_target_face_subtractive_merge"
+                                ],
+                            },
+                            {
+                                "family": "slots",
+                                "recommended_next_tools": [
+                                    "query_topology",
+                                    "query_feature_probes",
+                                    "query_kernel_state",
+                                ],
+                                "grounding_blockers": [
+                                    "feature_notch_or_profile_cut",
+                                    "need_topology_host_selection",
+                                ],
+                                "anchor_summary": {
+                                    "requires_topology_host_ranking": True,
+                                },
+                            },
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    run_state.latest_write_payload = {
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 2,
+                "volume": 37308.74,
+                "bbox": [78.0, 56.0, 24.0],
+            }
+        },
+    }
+    run_state.latest_validation = {
+        "success": True,
+        "is_complete": False,
+        "summary": "Requirement validation has 4 blocker(s)",
+        "blockers": [
+            "feature_target_face_subtractive_merge",
+            "feature_notch_or_profile_cut",
+            "keep_wall_thickness_near_2_4mm",
+            "add_four_corner_magnet_recesses_on_the_mating_faces",
+        ],
+        "blocker_taxonomy": [
+            {
+                "blocker_id": "feature_target_face_subtractive_merge",
+                "family_ids": ["named_face_local_edit"],
+            },
+            {
+                "blocker_id": "feature_notch_or_profile_cut",
+                "family_ids": ["slots"],
+            },
+        ],
+    }
+    run_state.add_agent_event(
+        SimpleNamespace(  # type: ignore[arg-type]
+            kind="validation_result",
+            round_no=1,
+            role="runtime",
+            payload={
+                "summary": "Requirement validation has 4 blocker(s)",
+                "is_complete": False,
+                "blockers": [
+                    "feature_target_face_subtractive_merge",
+                    "feature_notch_or_profile_cut",
+                    "keep_wall_thickness_near_2_4mm",
+                    "add_four_corner_magnet_recesses_on_the_mating_faces",
+                ],
+            },
+        )
+    )
+    run_state.feature_graph = SimpleNamespace(
+        nodes={},
+        bindings={},
+        repair_packets={},
+        repair_patches={"patch-1": _LocalFeatureProbePatch()},
+        feature_instances={
+            "instance.named_face_local_edit.magnet_recesses": SimpleNamespace(
+                family_id="named_face_local_edit",
+                status="blocked",
+            ),
+            "instance.slots.front_notch": SimpleNamespace(
+                family_id="slots",
+                status="blocked",
+            ),
+        },
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=3,
+        max_rounds=3,
+        all_tool_names=[
+            "execute_build123d",
+            "query_kernel_state",
+            "query_feature_probes",
+            "query_topology",
+            "execute_build123d_probe",
+            "apply_cad_action",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "repair_last_round_after_feature_probe_assessment"
+    assert policy.mode == "code_repair"
+    assert policy.allowed_tool_names == ["execute_build123d"]
+    assert policy.preferred_tool_names == ["execute_build123d"]
+
+
 def test_feature_probe_general_geometry_gap_stays_on_code_repair_when_bbox_is_far_from_expected_envelope() -> None:
     run_state = RunState(
         session_id="session-feature-probe-whole-part-gap-severe",
@@ -2087,6 +2262,161 @@ def test_under_grounded_kernel_patch_yields_semantic_refresh_for_local_feature_e
     assert "query_topology" in policy.allowed_tool_names
     assert "query_feature_probes" in policy.allowed_tool_names
     assert "execute_build123d" not in policy.allowed_tool_names
+
+
+def test_under_grounded_kernel_patch_reopens_code_repair_after_topology_refresh_under_short_budget() -> None:
+    run_state = RunState(
+        session_id="session-under-grounded-kernel-patch-short-budget",
+        requirements={"description": "Create a bracket with two mounting holes and a countersink."},
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="build bracket",
+            tool_calls=[
+                ToolCallRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 12000.0,
+                                "bbox": [62.0, 40.0, 14.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="refresh topology",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={"success": True},
+                )
+            ],
+        )
+    )
+    run_state.latest_write_payload = {
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 1,
+                "volume": 12000.0,
+                "bbox": [62.0, 40.0, 14.0],
+            }
+        },
+    }
+    run_state.feature_graph = SimpleNamespace(
+        nodes={},
+        repair_packets={"packet-1": _UnderGroundedPacket()},
+        repair_patches={"patch-1": _UnderGroundedPatch()},
+        feature_instances={
+            "instance.explicit_anchor_hole.feature_countersink": SimpleNamespace(
+                family_id="explicit_anchor_hole",
+                status="blocked",
+            ),
+            "instance.explicit_anchor_hole.two_mounting_holes": SimpleNamespace(
+                family_id="explicit_anchor_hole",
+                status="blocked",
+            ),
+        },
+    )
+    run_state.latest_validation = {
+        "success": True,
+        "is_complete": False,
+        "summary": "Hole family still needs localized evidence before completion.",
+        "blockers": [
+            "feature_countersink",
+            "two_mounting_holes",
+            "a_countersink_on_the_mounting_face_so_that_a_topology_aware_local_finishing_pass_is_useful",
+        ],
+        "insufficient_evidence": True,
+        "coverage_confidence": 0.8,
+        "decision_hints": [
+            "repair the contradicted clause before finishing",
+            "inspect count or placement with geometry/topology evidence",
+        ],
+        "repair_hints": [
+            "query_topology",
+            "query_feature_probes",
+        ],
+        "observation_tags": [
+            "geometry:solid_present",
+            "topology:host_selection_needed",
+        ],
+        "clause_interpretations": [
+            {
+                "clause_id": "two_mounting_holes",
+                "status": "contradicted",
+                "family_binding": "explicit_anchor_hole",
+                "grounding_gap_reasons": [
+                    "local_host_target_not_grounded",
+                ],
+                "required_evidence_kinds": ["geometry", "topology"],
+                "repair_hints": ["query_topology"],
+            }
+        ],
+    }
+    run_state.add_agent_event(
+        SimpleNamespace(  # type: ignore[arg-type]
+            kind="validation_result",
+            round_no=1,
+            role="runtime",
+            payload={
+                "summary": "Hole family still needs localized evidence before completion.",
+                "is_complete": False,
+                "blockers": [
+                    "feature_countersink",
+                    "two_mounting_holes",
+                    "a_countersink_on_the_mounting_face_so_that_a_topology_aware_local_finishing_pass_is_useful",
+                ],
+                "insufficient_evidence": True,
+            },
+        )
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=3,
+        max_rounds=4,
+        all_tool_names=[
+            "execute_build123d",
+            "query_topology",
+            "query_kernel_state",
+            "query_feature_probes",
+            "execute_build123d_probe",
+            "validate_requirement",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "repair_after_topology_refresh_under_budget"
+    assert policy.allowed_tool_names == ["execute_build123d"]
+    assert policy.preferred_tool_names == ["execute_build123d"]
+    assert "query_feature_probes" not in policy.allowed_tool_names
 
 
 def test_last_round_successful_artifactless_probe_reopens_code_repair_lane() -> None:
@@ -4359,6 +4689,167 @@ def test_open_sketch_window_persists_after_query_sketch_when_profile_is_ready() 
     assert policy.mode == "local_finish"
     assert policy.allowed_tool_names == ["apply_cad_action", "query_sketch"]
     assert policy.preferred_tool_names == ["apply_cad_action", "query_sketch"]
+
+
+def test_open_sketch_window_under_critical_budget_exits_to_code_first_escape() -> None:
+    host_payload = {
+        "success": True,
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 1,
+                "faces": 12,
+                "edges": 28,
+                "volume": 16000.0,
+                "bbox": [62.0, 40.0, 14.0],
+            }
+        },
+    }
+    run_state = RunState(
+        session_id="session-open-sketch-critical-budget",
+        requirements={
+            "description": "Create a bracket with a front-face recess and remaining hole features."
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="initial whole-part build",
+            tool_calls=[
+                ToolCallRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload=host_payload,
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="pick front face",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "matched_ref_ids": ["face:1:F_front"],
+                        "candidate_sets": [
+                            {
+                                "candidate_id": "front_faces",
+                                "label": "Front Faces",
+                                "entity_type": "face",
+                                "preferred_ref_id": "face:1:F_front",
+                                "ref_ids": ["face:1:F_front"],
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    create_sketch_payload = {
+        "success": True,
+        "output_files": ["model.step", "geometry_info.json"],
+        "snapshot": host_payload["snapshot"],
+        "action_history": [
+            {
+                "step": 2,
+                "action_type": "create_sketch",
+                "action_params": {"face_ref": "face:1:F_front"},
+            }
+        ],
+    }
+    run_state.turns.append(
+        TurnRecord(
+            round_no=3,
+            decision_summary="open topology-anchored sketch",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "create_sketch",
+                        "action_params": {"face_ref": "face:1:F_front"},
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload=create_sketch_payload,
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=4,
+            decision_summary="inspect open sketch but it is still empty",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_sketch",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_sketch",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "step": 2,
+                        "sketch_state": {
+                            "plane": "XY",
+                            "profile_refs": [],
+                            "path_refs": [],
+                        },
+                    },
+                )
+            ],
+        )
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=5,
+        max_rounds=5,
+        all_tool_names=[
+            "apply_cad_action",
+            "query_sketch",
+            "query_topology",
+            "query_kernel_state",
+            "query_feature_probes",
+            "validate_requirement",
+            "execute_build123d",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "code_escape_after_open_sketch_window_under_budget"
+    assert policy.mode == "code_first"
+    assert "execute_build123d" in policy.allowed_tool_names
+    assert "apply_cad_action" not in policy.allowed_tool_names
+    assert policy.preferred_tool_names[0] == "execute_build123d"
 
 
 def test_feature_probe_assessment_prefers_query_topology_when_latest_feature_probe_requires_host_selection() -> None:
@@ -6810,6 +7301,522 @@ def test_last_round_local_finish_validation_evidence_gap_keeps_closure_validatio
     assert "finish_run" in policy.allowed_tool_names
     assert "apply_cad_action" not in policy.allowed_tool_names
     assert policy.preferred_tool_names[:2] == ["query_topology", "validate_requirement"]
+
+
+def test_last_round_after_successful_local_finish_semantic_refresh_reopens_repair_lane() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-semantic-refresh-last-round-repair",
+        requirements={
+            "description": (
+                "Create a service bracket with countersunk mounting holes and a front-face local recess."
+            )
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="first whole-part build succeeds",
+            tool_calls=[
+                ToolCallRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 34827.4,
+                                "bbox": [66.0, 42.0, 16.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="validation still reports countersink blockers",
+            tool_calls=[
+                ToolCallRecord(
+                    name="validate_requirement",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="validate_requirement",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "is_complete": False,
+                        "summary": "Requirement validation has 3 blocker(s)",
+                        "blockers": [
+                            "feature_countersink",
+                            "two_mounting_holes_on_the_bottom_face",
+                            "countersinks_on_the_mounting_holes",
+                        ],
+                        "blocker_taxonomy": [
+                            {
+                                "blocker_id": "feature_countersink",
+                                "family_ids": ["explicit_anchor_hole"],
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=3,
+            decision_summary="feature probes still recommend topology-aware finishing",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "probes": [
+                            {
+                                "family": "explicit_anchor_hole",
+                                "success": False,
+                                "recommended_next_tools": [
+                                    "query_topology",
+                                    "apply_cad_action",
+                                ],
+                            },
+                            {
+                                "family": "named_face_local_edit",
+                                "success": True,
+                                "recommended_next_tools": [
+                                    "query_topology",
+                                    "apply_cad_action",
+                                ],
+                            },
+                        ]
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=4,
+            decision_summary="local finish writes countersunk holes onto the mounting face",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "hole",
+                        "action_params": {
+                            "face_ref": "face:1:F_mount",
+                            "hole_type": "countersink",
+                        },
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 33944.6,
+                                "bbox": [66.0, 42.0, 16.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=5,
+            decision_summary="semantic refresh returns fresh topology after the successful local finish",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "matched_ref_ids": ["face:2:F_front"],
+                        "candidate_sets": [
+                            {
+                                "candidate_id": "front_faces",
+                                "ref_ids": ["face:2:F_front"],
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    run_state.latest_write_payload = {
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 1,
+                "volume": 33944.6,
+                "bbox": [66.0, 42.0, 16.0],
+            }
+        },
+    }
+    run_state.latest_validation = {
+        "success": True,
+        "is_complete": False,
+        "summary": "Requirement validation has 3 blocker(s)",
+        "blockers": [
+            "feature_countersink",
+            "two_mounting_holes_on_the_bottom_face",
+            "countersinks_on_the_mounting_holes",
+        ],
+        "blocker_taxonomy": [
+            {
+                "blocker_id": "feature_countersink",
+                "family_ids": ["explicit_anchor_hole"],
+            }
+        ],
+    }
+    run_state.add_agent_event(
+        SimpleNamespace(  # type: ignore[arg-type]
+            kind="validation_result",
+            round_no=2,
+            role="runtime",
+            payload={
+                "summary": "Requirement validation has 3 blocker(s)",
+                "is_complete": False,
+                "blockers": [
+                    "feature_countersink",
+                    "two_mounting_holes_on_the_bottom_face",
+                    "countersinks_on_the_mounting_holes",
+                ],
+            },
+        )
+    )
+    run_state.feature_graph = SimpleNamespace(
+        nodes={
+            "feature.body": SimpleNamespace(
+                node_id="feature.body",
+                kind="feature",
+                status="satisfied",
+            ),
+            "feature.explicit_anchor_hole": SimpleNamespace(
+                node_id="feature.explicit_anchor_hole",
+                kind="feature",
+                status="blocked",
+            ),
+            "feature.named_face_local_edit": SimpleNamespace(
+                node_id="feature.named_face_local_edit",
+                kind="feature",
+                status="blocked",
+            ),
+        },
+        repair_patches={"patch-1": _UnderGroundedPatch()},
+        repair_packets={},
+        feature_instances={
+            "instance.explicit_anchor_hole.feature_countersink": SimpleNamespace(
+                family_id="explicit_anchor_hole",
+                status="blocked",
+            ),
+            "instance.explicit_anchor_hole.two_mounting_holes": SimpleNamespace(
+                family_id="explicit_anchor_hole",
+                status="blocked",
+            ),
+        },
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=6,
+        max_rounds=6,
+        all_tool_names=[
+            "execute_build123d",
+            "apply_cad_action",
+            "validate_requirement",
+            "query_topology",
+            "query_kernel_state",
+            "query_feature_probes",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "repair_after_local_finish_semantic_refresh_under_budget"
+    assert policy.mode == "code_repair"
+    assert policy.allowed_tool_names == ["execute_build123d"]
+    assert policy.preferred_tool_names == ["execute_build123d"]
+
+
+def test_last_round_after_successful_local_finish_semantic_refresh_falls_back_to_code_escape_without_patch() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-semantic-refresh-last-round-code-escape",
+        requirements={
+            "description": (
+                "Create a service bracket with countersunk mounting holes and a front-face local recess."
+            )
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="first whole-part build succeeds",
+            tool_calls=[
+                ToolCallRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 34827.4,
+                                "bbox": [66.0, 42.0, 16.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="feature probes narrow the family",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "probes": [
+                            {
+                                "family": "explicit_anchor_hole",
+                                "success": False,
+                                "recommended_next_tools": [
+                                    "query_topology",
+                                    "apply_cad_action",
+                                ],
+                            }
+                        ]
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=3,
+            decision_summary="validation still reports countersink blockers",
+            tool_calls=[
+                ToolCallRecord(
+                    name="validate_requirement",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="validate_requirement",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "is_complete": False,
+                        "summary": "Requirement validation has 3 blocker(s)",
+                        "blockers": [
+                            "feature_local_anchor_count_alignment",
+                            "two_mounting_holes_on_the_bottom_face",
+                            "countersinks_on_the_mounting_holes",
+                        ],
+                        "blocker_taxonomy": [
+                            {
+                                "blocker_id": "two_mounting_holes_on_the_bottom_face",
+                                "family_ids": ["explicit_anchor_hole"],
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=4,
+            decision_summary="local finish writes the hole feature on the exact host face",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "hole",
+                        "action_params": {
+                            "face_ref": "face:1:F_mount",
+                            "hole_type": "countersink",
+                        },
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 33944.6,
+                                "bbox": [66.0, 42.0, 16.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=5,
+            decision_summary="semantic refresh re-reads geometry and front-face topology",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_geometry",
+                    category=ToolCategory.READ,
+                ),
+                ToolCallRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                ),
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_geometry",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={"success": True},
+                ),
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "matched_ref_ids": ["face:2:F_front"],
+                        "candidate_sets": [
+                            {
+                                "candidate_id": "front_faces",
+                                "ref_ids": ["face:2:F_front"],
+                            }
+                        ],
+                    },
+                ),
+            ],
+        )
+    )
+    run_state.latest_write_payload = {
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 1,
+                "volume": 33944.6,
+                "bbox": [66.0, 42.0, 16.0],
+            }
+        },
+    }
+    run_state.latest_validation = {
+        "success": True,
+        "is_complete": False,
+        "summary": "Requirement validation has 3 blocker(s)",
+        "blockers": [
+            "feature_local_anchor_count_alignment",
+            "two_mounting_holes_on_the_bottom_face",
+            "countersinks_on_the_mounting_holes",
+        ],
+        "blocker_taxonomy": [
+            {
+                "blocker_id": "two_mounting_holes_on_the_bottom_face",
+                "family_ids": ["explicit_anchor_hole"],
+            }
+        ],
+    }
+    run_state.add_agent_event(
+        SimpleNamespace(  # type: ignore[arg-type]
+            kind="validation_result",
+            round_no=3,
+            role="runtime",
+            payload={
+                "summary": "Requirement validation has 3 blocker(s)",
+                "is_complete": False,
+                "blockers": [
+                    "feature_local_anchor_count_alignment",
+                    "two_mounting_holes_on_the_bottom_face",
+                    "countersinks_on_the_mounting_holes",
+                ],
+            },
+        )
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=6,
+        max_rounds=6,
+        all_tool_names=[
+            "execute_build123d",
+            "apply_cad_action",
+            "validate_requirement",
+            "query_topology",
+            "query_geometry",
+            "query_kernel_state",
+            "query_feature_probes",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "code_escape_after_local_finish_semantic_refresh_under_budget"
+    assert policy.mode == "code_repair"
+    assert policy.allowed_tool_names == ["execute_build123d"]
+    assert policy.preferred_tool_names == ["execute_build123d"]
 
 
 def test_followup_local_finish_after_existing_whole_part_solid_does_not_retrigger_first_solid_code_escape() -> None:

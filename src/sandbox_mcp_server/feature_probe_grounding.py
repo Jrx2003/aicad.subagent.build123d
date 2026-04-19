@@ -37,6 +37,11 @@ _FEATURE_PROBE_GROUNDING_RULES: dict[str, FeatureProbeGroundingRule] = {
         family_binding="slots",
         required_evidence_kinds=("geometry", "topology"),
     ),
+    "named_face_local_edit": FeatureProbeGroundingRule(
+        family="named_face_local_edit",
+        family_binding="named_face_local_edit",
+        required_evidence_kinds=("topology",),
+    ),
     "core_geometry": FeatureProbeGroundingRule(
         family="core_geometry",
         family_binding="core_geometry",
@@ -125,6 +130,25 @@ def _build_anchor_summary(*, family: str, signals: dict[str, Any]) -> dict[str, 
                 for item in hinge_face_ids[:3]
                 if str(item).strip()
             ]
+    if family == "named_face_local_edit":
+        requested_face_targets = signals.get("requested_face_targets")
+        if isinstance(requested_face_targets, list) and requested_face_targets:
+            summary["requested_face_targets"] = [
+                str(item).strip()
+                for item in requested_face_targets
+                if str(item).strip()
+            ]
+        requested_side_face_targets = signals.get("requested_side_face_targets")
+        if isinstance(requested_side_face_targets, list) and requested_side_face_targets:
+            summary["requested_side_face_targets"] = [
+                str(item).strip()
+                for item in requested_side_face_targets
+                if str(item).strip()
+            ]
+        if "specific_side_target_grounded" in signals:
+            summary["specific_side_target_grounded"] = bool(
+                signals.get("specific_side_target_grounded")
+            )
     if family != "explicit_anchor_hole":
         return summary
     expected_centers = _as_point_list(signals.get("expected_local_centers"))
@@ -186,6 +210,14 @@ def _build_grounding_blockers(
     if family in {"slots", "nested_hollow_section", "half_shell"}:
         if not _as_float_triplet(signals.get("bbox")):
             _append_unique(deduped, seen, "missing_bbox_geometry")
+    if family == "named_face_local_edit":
+        requested_side_face_targets = signals.get("requested_side_face_targets")
+        if (
+            isinstance(requested_side_face_targets, list)
+            and requested_side_face_targets
+            and not bool(signals.get("specific_side_target_grounded"))
+        ):
+            _append_unique(deduped, seen, "local_host_target_not_grounded")
     if family == "half_shell" and bool(signals.get("hinge_requested")):
         hinge_like_cylinder_count = signals.get("hinge_like_cylinder_count")
         if not isinstance(hinge_like_cylinder_count, (int, float)) or int(

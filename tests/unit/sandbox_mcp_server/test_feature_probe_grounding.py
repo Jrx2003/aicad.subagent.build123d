@@ -55,6 +55,16 @@ def _failed_check(check_id: str) -> RequirementCheck:
     )
 
 
+def _passed_check(check_id: str) -> RequirementCheck:
+    return RequirementCheck(
+        check_id=check_id,
+        label=check_id,
+        status=RequirementCheckStatus.PASS,
+        blocking=True,
+        evidence="present",
+    )
+
+
 def test_nested_hollow_section_probe_carries_bbox_anchor_summary() -> None:
     service = SandboxMCPService(runner=_DummyRunner())
     requirement_text = "Create a hollow enclosure shell with wall thickness 2.4 mm."
@@ -114,3 +124,78 @@ def test_slots_probe_requests_topology_host_ranking_when_blocked() -> None:
     assert "need_topology_host_selection" in probe.grounding_blockers
     assert probe.recommended_next_tools[0] == "query_topology"
     assert "query_feature_probes" in probe.recommended_next_tools
+
+
+def test_named_face_local_edit_probe_requires_side_specific_grounding_for_mixed_face_requirements() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    requirement_text = (
+        "Create two countersunk mounting holes on the bottom face and add a centered rounded "
+        "rectangle recess on the front face."
+    )
+    semantics = analyze_requirement_semantics(
+        {"description": requirement_text},
+        requirement_text,
+    )
+
+    probe = service._build_feature_probe_record(
+        family="named_face_local_edit",
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            bbox=[62.0, 40.0, 14.0],
+            bbox_min=[-31.0, -20.0, -7.0],
+            bbox_max=[31.0, 20.0, 7.0],
+        ),
+        history=[],
+        check_index={
+            "feature_target_face_edit": _passed_check("feature_target_face_edit"),
+            "feature_target_face_subtractive_merge": _passed_check(
+                "feature_target_face_subtractive_merge"
+            ),
+            "feature_fillet": _passed_check("feature_fillet"),
+        },
+        semantics=semantics,
+        requirement_text=requirement_text,
+    )
+
+    assert probe.success is False
+    assert probe.required_evidence_kinds == ["topology"]
+    assert probe.signals["requested_face_targets"] == ["bottom", "front"]
+    assert probe.signals["requested_side_face_targets"] == ["front"]
+    assert probe.signals["specific_side_target_grounded"] is False
+    assert "local_host_target_not_grounded" in probe.grounding_blockers
+    assert "requested side-face host" in probe.summary
+    assert probe.recommended_next_tools[0] == "query_topology"
+
+
+def test_named_face_local_edit_probe_does_not_require_side_grounding_for_top_only_face_edit() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    requirement_text = "Add a shallow rounded pocket on the top face."
+    semantics = analyze_requirement_semantics(
+        {"description": requirement_text},
+        requirement_text,
+    )
+
+    probe = service._build_feature_probe_record(
+        family="named_face_local_edit",
+        snapshot=_snapshot(
+            step=1,
+            solids=1,
+            bbox=[62.0, 40.0, 14.0],
+            bbox_min=[-31.0, -20.0, -7.0],
+            bbox_max=[31.0, 20.0, 7.0],
+        ),
+        history=[],
+        check_index={
+            "feature_target_face_edit": _passed_check("feature_target_face_edit"),
+        },
+        semantics=semantics,
+        requirement_text=requirement_text,
+    )
+
+    assert probe.required_evidence_kinds == ["topology"]
+    assert probe.signals["requested_face_targets"] == ["top"]
+    assert probe.signals["requested_side_face_targets"] == []
+    assert probe.signals["specific_side_target_grounded"] is False
+    assert "local_host_target_not_grounded" not in probe.grounding_blockers
+    assert probe.success is True

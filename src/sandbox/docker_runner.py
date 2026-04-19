@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import docker
-from docker.errors import APIError, ImageNotFound
+from docker.errors import APIError, DockerException, ImageNotFound
 
 from sandbox.interface import SandboxResult
 from common.logging import get_logger
@@ -76,6 +76,21 @@ def _describe_docker_connection_error(
         "Docker daemon appears unavailable. "
         f"Checked candidate sockets: {candidate_text}. "
         f"Original error: {base}"
+    )
+
+
+def _is_docker_unavailable_error(error: Exception) -> bool:
+    if isinstance(error, FileNotFoundError):
+        return True
+    message = str(error).lower()
+    return any(
+        token in message
+        for token in (
+            "error while fetching server api version",
+            "connection aborted",
+            "docker desktop is unable to start",
+            "no such file or directory",
+        )
     )
 
 
@@ -178,11 +193,10 @@ class DockerSandboxRunner:
         self._cpu_quota = cpu_quota
         self._docker_socket = docker_socket
 
-        # Initialize Docker client
-        if docker_socket:
-            self._client = docker.DockerClient(base_url=f"unix://{docker_socket}")
-        else:
-            self._client = docker.from_env()
+        # Defer Docker connection until execution time so the MCP server can
+        # still start and return structured tool-level failures when Docker is
+        # unavailable on the host.
+        self._client = None
 
     async def execute(
         self,
@@ -224,7 +238,7 @@ class DockerSandboxRunner:
             logger.exception("sandbox_execution_error", container_name=container_name)
             error_message = f"Container execution failed: {e}"
             stderr = str(e)
-            if isinstance(e, FileNotFoundError) or "No such file or directory" in str(e):
+            if _is_docker_unavailable_error(e):
                 stderr = _describe_docker_connection_error(
                     e,
                     docker_socket=self._docker_socket,
@@ -259,6 +273,8 @@ class DockerSandboxRunner:
         temp_dir = None
 
         try:
+            client = self._ensure_client()
+
             # Create temp directory for file exchange
             temp_dir = tempfile.mkdtemp(prefix="build123d-sandbox-")
             temp_path = Path(temp_dir)
@@ -272,7 +288,7 @@ class DockerSandboxRunner:
             # Create container (not started yet)
             # Note: read_only=False because we need to copy the runtime script into /app
             # Security is maintained via network_mode="none" and no-new-privileges
-            container = self._client.containers.create(
+            container = client.containers.create(
                 image=self._image,
                 name=container_name,
                 detach=True,
@@ -422,6 +438,15 @@ class DockerSandboxRunner:
                     shutil.rmtree(temp_dir)
                 except Exception:
                     pass
+
+    def _ensure_client(self):
+        if self._client is not None:
+            return self._client
+        if self._docker_socket:
+            self._client = docker.DockerClient(base_url=f"unix://{self._docker_socket}")
+        else:
+            self._client = docker.from_env()
+        return self._client
 
     def _copy_to_container(self, container, src_path: Path, dest_path: str) -> None:
         """Copy file into container using tar archive.

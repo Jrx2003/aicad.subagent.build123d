@@ -545,6 +545,64 @@ def test_apply_cad_action_preflight_rejects_ambiguous_candidate_face_ref_under_l
     assert payload["preferred_face_refs"] == ["face:1:F_top_a", "face:1:F_top_b"]
 
 
+def test_apply_cad_action_preflight_prefers_candidate_set_preferred_face_refs() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-preferred-face-order",
+        requirements={"description": "Apply a topology-aware local face edit on the planar front face."},
+    )
+    run_state.add_turn_tool_policy(
+        TurnToolPolicy(
+            round_no=7,
+            policy_id="apply_local_finish_after_topology_targeting",
+            mode="local_finish",
+            reason="Consume the resolved topology refs with a local finishing step.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        )
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        payload={
+            "matched_ref_ids": [
+                "face:1:F_front_cyl",
+                "face:1:F_front_planar",
+                "face:1:F_bottom_planar",
+            ],
+            "candidate_sets": [
+                {
+                    "candidate_id": "front_faces",
+                    "label": "Front Faces",
+                    "entity_type": "face",
+                    "preferred_ref_id": "face:1:F_front_planar",
+                    "ref_ids": ["face:1:F_front_planar", "face:1:F_front_cyl"],
+                },
+                {
+                    "candidate_id": "bottom_faces",
+                    "label": "Bottom Faces",
+                    "entity_type": "face",
+                    "preferred_ref_id": "face:1:F_bottom_planar",
+                    "ref_ids": ["face:1:F_bottom_planar"],
+                },
+            ],
+        },
+        round_no=6,
+    )
+
+    payload = _preflight_gate_apply_cad_action(
+        action_type="create_sketch",
+        action_params={"plane": "XY"},
+        run_state=run_state,
+    )
+
+    assert payload is not None
+    assert payload["failure_kind"] == "apply_cad_action_contract_failure"
+    assert payload["preferred_face_refs"][:2] == [
+        "face:1:F_front_planar",
+        "face:1:F_bottom_planar",
+    ]
+    assert payload["preferred_face_refs"][0] != "face:1:F_front_cyl"
+
+
 def test_apply_cad_action_preflight_normalizes_exact_target_edges_alias() -> None:
     run_state = RunState(
         session_id="session-local-finish-target-edges-alias",
@@ -1887,6 +1945,29 @@ def test_preflight_lint_rejects_plane_rotated_origin_guess_with_coordinate_expre
     assert payload["repair_recipe"]["recipe_id"] == "build123d_plane_rotation_contract"
 
 
+def test_preflight_lint_rejects_plane_rotate_shape_method_guess() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 66.0\n"
+            "with BuildPart() as part:\n"
+            "    Box(66, 42, 16)\n"
+            "    with BuildSketch(Plane.YZ.offset(width/2).rotate((0, 0, 0), (1, 0, 0), 90)):\n"
+            "        RectangleRounded(12, 6, radius=1.5)\n"
+            "    extrude(amount=-2, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a front-face rounded recess on a service bracket.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.plane_rotate_shape_method_guess" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_plane_rotation_contract"
+
+
 def test_preflight_lint_rejects_plane_located_shape_method_guess() -> None:
     payload = _preflight_lint_execute_build123d(
         code=(
@@ -1907,6 +1988,31 @@ def test_preflight_lint_rejects_plane_located_shape_method_guess() -> None:
     assert payload is not None
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_api.plane_located_shape_method_guess" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_plane_translation_contract"
+
+
+def test_preflight_lint_rejects_plane_moved_shape_method_guess() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "hinge_y = -20\n"
+            "hinge_z = 8\n"
+            "with BuildPart() as part:\n"
+            "    Box(40, 30, 20)\n"
+            "with BuildPart() as hinge:\n"
+            "    with BuildSketch(Plane.YZ.moved(Location((0, hinge_y, hinge_z)))):\n"
+            "        Circle(3)\n"
+            "    extrude(amount=10, both=True)\n"
+            "result = part.part + hinge.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a rounded shell with one detached hinge barrel at the back.",
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_api.plane_moved_shape_method_guess" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "build123d_plane_translation_contract"
 
 

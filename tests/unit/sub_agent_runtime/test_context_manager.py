@@ -189,7 +189,120 @@ def test_prompt_payload_adds_local_finish_contract_when_topology_refs_exist() ->
     assert contract["preferred_face_refs"] == ["face:1:F_bottom_host"]
     assert contract["preferred_edge_refs"] == ["edge:1:E_bottom_outer_1"]
     assert "face_ref" in " ".join(contract["instructions"])
+    assert (
+        "prefer a direct hole/countersink apply_cad_action on that exact face_ref before opening a new sketch window"
+        in " ".join(contract["instructions"])
+    )
+    assert "do not spend apply_cad_action on get_history" in " ".join(contract["instructions"])
     assert contract["candidate_sets"][0]["label"] == "Bottom Faces"
+
+
+def test_local_finish_contract_prefers_candidate_set_preferred_face_refs_over_raw_matched_refs() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-preferred-face-refs",
+        requirements={"description": "Add a face-attached local recess on the front face."},
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        round_no=3,
+        payload={
+            "success": True,
+            "matched_ref_ids": [
+                "face:1:F_front_cyl",
+                "face:1:F_front_planar",
+                "face:1:F_bottom_planar",
+                "edge:1:E_front_edge_1",
+            ],
+            "candidate_sets": [
+                {
+                    "candidate_id": "front_faces",
+                    "label": "Front Faces",
+                    "entity_type": "face",
+                    "preferred_ref_id": "face:1:F_front_planar",
+                    "ref_ids": [
+                        "face:1:F_front_planar",
+                        "face:1:F_front_cyl",
+                    ],
+                },
+                {
+                    "candidate_id": "bottom_faces",
+                    "label": "Bottom Faces",
+                    "entity_type": "face",
+                    "preferred_ref_id": "face:1:F_bottom_planar",
+                    "ref_ids": ["face:1:F_bottom_planar"],
+                },
+            ],
+        },
+    )
+
+    context_manager = V2ContextManager()
+    payload = context_manager.build_prompt_payload(
+        run_state=run_state,
+        turn_tool_policy=TurnToolPolicy(
+            round_no=4,
+            policy_id="apply_local_finish_after_topology_targeting_from_read_stall",
+            mode="local_finish",
+            reason="Consume topology refs with apply_cad_action.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        ),
+    )
+
+    contract = payload.get("local_finish_contract")
+    assert isinstance(contract, dict)
+    assert contract["preferred_face_refs"][:2] == [
+        "face:1:F_front_planar",
+        "face:1:F_bottom_planar",
+    ]
+    assert contract["preferred_face_refs"][0] != "face:1:F_front_cyl"
+    assert payload["topology_targeting_summary"]["candidate_sets"][0]["preferred_ref_id"] == "face:1:F_front_planar"
+
+
+def test_build_messages_surfaces_human_readable_exact_topology_refs_for_local_finish() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-focus-attachment",
+        requirements={"description": "Add a front-face local recess with exact topology refs."},
+    )
+    run_state.evidence.update(
+        tool_name="query_topology",
+        round_no=3,
+        payload={
+            "success": True,
+            "matched_ref_ids": [
+                "face:1:F_front_planar",
+                "face:1:F_front_cyl",
+            ],
+            "candidate_sets": [
+                {
+                    "candidate_id": "front_faces",
+                    "label": "Front Faces",
+                    "entity_type": "face",
+                    "preferred_ref_id": "face:1:F_front_planar",
+                    "ref_ids": [
+                        "face:1:F_front_planar",
+                        "face:1:F_front_cyl",
+                    ],
+                }
+            ],
+        },
+    )
+
+    messages = V2ContextManager().build_messages(
+        run_state=run_state,
+        turn_tool_policy=TurnToolPolicy(
+            round_no=4,
+            policy_id="apply_local_finish_after_topology_targeting_from_read_stall",
+            mode="local_finish",
+            reason="Consume topology refs with apply_cad_action.",
+            allowed_tool_names=["apply_cad_action"],
+            preferred_tool_names=["apply_cad_action"],
+        ),
+    )
+    combined = "\n".join(message.content for message in messages if message.role == "user")
+
+    assert "Exact topology refs to consume now" in combined
+    assert "face:1:F_front_planar" in combined
+    assert "Front Faces" in combined
 
 
 def test_build_messages_system_prompt_surfaces_core_build123d_contracts() -> None:
@@ -210,6 +323,7 @@ def test_build_messages_system_prompt_surfaces_core_build123d_contracts() -> Non
     assert "Do not import `ocp_vscode` or call `show(...)` / `show_object(...)`" in system_prompt
     assert "do not create a primitive and then relocate it with `Pos(...) * solid` or `Rot(...) * solid`" in system_prompt
     assert "do not invent `Box(..., radius=...)`" in system_prompt
+    assert "prefer that rounded footprint directly over a first-pass broad shell-edge fillet" in system_prompt
     assert "use lowercase `scale(shape, by=(sx, sy, sz))`" in system_prompt
     assert "`Rot(...) * part` or `Pos(...) * Rot(...) * part`" in system_prompt
 
@@ -521,6 +635,49 @@ def test_prepare_runtime_skills_payload_keeps_detached_subtractive_builder_repai
 
     assert "multi_part_assembled_pose_bbox_contract" in prepared_ids
     assert "execute_build123d_detached_subtractive_builder_repair" in prepared_ids
+    assert "__truncated_skills__" in {
+        next(iter(item.keys())) for item in prepared if isinstance(item, dict)
+    }
+
+
+def test_prepare_runtime_skills_payload_keeps_code_first_local_finish_tail_contract_when_truncated() -> None:
+    runtime_skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Create a rectangular service bracket sized 66mm x 42mm x 16mm with a shallow top "
+                "pocket and two mounting holes on the bottom face. Add a centered rounded-rectangle "
+                "recess on the front face sized about 12mm x 6mm and 2mm deep, plus small fillets "
+                "around the top opening and countersinks on the mounting holes, so that a "
+                "topology-aware local finishing pass on the front face is useful."
+            )
+        },
+        latest_validation={},
+        latest_write_health={"tool": "execute_build123d"},
+    )
+
+    runtime_skills.extend(
+        [
+            {
+                "skill_id": f"filler_skill_{index}",
+                "when_relevant": "filler",
+                "guidance": ["filler"],
+                "context_priority": 60 + index,
+            }
+            for index in range(8)
+        ]
+    )
+
+    prepared = V2ContextManager()._prepare_runtime_skills_payload(runtime_skills)
+    prepared_ids = [
+        str(item.get("skill_id"))
+        for item in prepared
+        if isinstance(item, dict) and isinstance(item.get("skill_id"), str)
+    ]
+
+    assert "code_first_local_finish_tail_contract" in prepared_ids
+    assert prepared_ids.index("code_first_local_finish_tail_contract") < prepared_ids.index(
+        "local_finish_exact_face_ref_contract"
+    )
     assert "__truncated_skills__" in {
         next(iter(item.keys())) for item in prepared if isinstance(item, dict)
     }

@@ -1650,6 +1650,39 @@ def _determine_turn_tool_policy(
         run_state
     )
     if isinstance(sketch_window_action_type, str) and sketch_window_action_type.strip():
+        if _open_sketch_window_requires_code_escape(
+            run_state=run_state,
+            max_rounds=max_rounds,
+        ):
+            allowed_tool_names = [
+                name for name in all_tool_names if name in _CODE_FIRST_ESCAPE_TOOL_SET
+            ]
+            blocked_tool_names = [
+                name for name in all_tool_names if name not in _CODE_FIRST_ESCAPE_TOOL_SET
+            ]
+            return TurnToolPolicy(
+                round_no=round_no,
+                policy_id="code_escape_after_open_sketch_window_under_budget",
+                mode="code_first",
+                reason=(
+                    "The bounded sketch window cannot be completed within the remaining round "
+                    "budget, so switch to a whole-part code repair instead of extending the "
+                    "local-finish tail."
+                ),
+                allowed_tool_names=allowed_tool_names,
+                blocked_tool_names=blocked_tool_names,
+                preferred_tool_names=[
+                    name
+                    for name in (
+                        "execute_build123d",
+                        "query_feature_probes",
+                        "query_kernel_state",
+                        "execute_build123d_probe",
+                    )
+                    if name in allowed_tool_names
+                ],
+                preferred_probe_families=preferred_probe_families,
+            )
         allowed_tool_names = [
             name for name in all_tool_names if name in {"apply_cad_action", "query_sketch"}
         ]
@@ -1733,6 +1766,67 @@ def _determine_turn_tool_policy(
         )
 
     latest_successful_structured_write_turn = run_state.latest_successful_write_turn
+    if (
+        latest_successful_structured_write_turn is not None
+        and latest_successful_structured_write_turn.write_tool_name == "apply_cad_action"
+        and max(max_rounds - len(run_state.turns), 0) <= 1
+        and not _turn_has_open_sketch_window_after_successful_apply(
+            latest_successful_structured_write_turn
+        )
+        and not _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_successful_structured_write_turn.round_no,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_successful_structured_write_turn.round_no,
+            tool_names={"validate_requirement"},
+        )
+        and _has_successful_semantic_refresh_since_round(
+            run_state,
+            after_round=latest_successful_structured_write_turn.round_no,
+        )
+    ):
+        actionable_kernel_patch = _latest_actionable_kernel_patch(run_state)
+        latest_validation = (
+            run_state.latest_validation if isinstance(run_state.latest_validation, dict) else {}
+        )
+        if bool(latest_validation.get("blockers")):
+            if actionable_kernel_patch is not None:
+                return _turn_policy_from_actionable_kernel_patch(
+                    round_no=round_no,
+                    all_tool_names=all_tool_names,
+                    policy_id="repair_after_local_finish_semantic_refresh_under_budget",
+                    reason=(
+                        "A successful topology-aware local finish already happened, subsequent "
+                        "semantic reads refreshed the geometry/topology evidence, and only one "
+                        "round remains. Reopen the actionable repair lane now instead of spending "
+                        "the final turn on validation-only closure."
+                    ),
+                    patch=actionable_kernel_patch,
+                )
+            allowed_tool_names = [
+                name for name in all_tool_names if name == "execute_build123d"
+            ]
+            blocked_tool_names = [
+                name for name in all_tool_names if name not in set(allowed_tool_names)
+            ]
+            return TurnToolPolicy(
+                round_no=round_no,
+                policy_id="code_escape_after_local_finish_semantic_refresh_under_budget",
+                mode="code_repair",
+                reason=(
+                    "A successful topology-aware local finish already happened, the latest "
+                    "semantic refresh still leaves concrete blockers, and only one round remains. "
+                    "No actionable kernel patch is available, so reopen execute_build123d for a "
+                    "whole-part escape instead of spending the last turn on validation."
+                ),
+                allowed_tool_names=allowed_tool_names,
+                blocked_tool_names=blocked_tool_names,
+                preferred_tool_names=["execute_build123d"],
+                preferred_probe_families=preferred_probe_families,
+            )
+
     if (
         latest_successful_structured_write_turn is not None
         and latest_successful_structured_write_turn.write_tool_name == "apply_cad_action"
@@ -2203,6 +2297,22 @@ def _determine_turn_tool_policy(
                 actionable_kernel_patch,
                 latest_validation,
             ):
+                if _short_budget_after_topology_refresh_requires_actionable_repair(
+                    run_state=run_state,
+                    write_round=latest_code_write_turn.round_no,
+                    max_rounds=max_rounds,
+                ):
+                    return _turn_policy_from_actionable_kernel_patch(
+                        round_no=round_no,
+                        all_tool_names=all_tool_names,
+                        policy_id="repair_after_topology_refresh_under_budget",
+                        reason=(
+                            "A topology refresh already ran after the fresh validation assessment gap, "
+                            "and only a short round budget remains. Exit graph-refresh mode now and "
+                            "reopen the actionable repair lane."
+                        ),
+                        patch=actionable_kernel_patch,
+                    )
                 allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
                     run_state,
                     all_tool_names=all_tool_names,
@@ -2610,6 +2720,20 @@ def _determine_turn_tool_policy(
             tool_names={"query_topology", "apply_cad_action"},
         )
     ):
+        remaining_rounds = max(max_rounds - len(run_state.turns), 0)
+        actionable_kernel_patch = _latest_actionable_kernel_patch(run_state)
+        if remaining_rounds <= 1 and actionable_kernel_patch is not None:
+            return _turn_policy_from_actionable_kernel_patch(
+                round_no=round_no,
+                all_tool_names=all_tool_names,
+                policy_id="repair_last_round_after_feature_probe_assessment",
+                reason=(
+                    "A successful feature-probe assessment already narrowed the repair family, "
+                    "and only one round remains. Skip another topology refresh and spend the "
+                    "final turn on the actionable repair lane."
+                ),
+                patch=actionable_kernel_patch,
+            )
         allowed_tool_names = [
             name
             for name in all_tool_names
@@ -2743,6 +2867,22 @@ def _determine_turn_tool_policy(
                 actionable_kernel_patch,
                 latest_validation,
             ):
+                if _short_budget_after_topology_refresh_requires_actionable_repair(
+                    run_state=run_state,
+                    write_round=latest_code_write_turn.round_no,
+                    max_rounds=max_rounds,
+                ):
+                    return _turn_policy_from_actionable_kernel_patch(
+                        round_no=round_no,
+                        all_tool_names=all_tool_names,
+                        policy_id="repair_after_topology_refresh_under_budget",
+                        reason=(
+                            "A topology refresh already ran after the repeated validation blocker, "
+                            "and only a short round budget remains. Exit graph-refresh mode now and "
+                            "spend the next turn on the actionable repair lane."
+                        ),
+                        patch=actionable_kernel_patch,
+                    )
                 allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
                     run_state,
                     all_tool_names=all_tool_names,
@@ -2872,6 +3012,22 @@ def _determine_turn_tool_policy(
                 actionable_kernel_patch,
                 latest_validation,
             ):
+                if _short_budget_after_topology_refresh_requires_actionable_repair(
+                    run_state=run_state,
+                    write_round=latest_code_write_turn.round_no,
+                    max_rounds=max_rounds,
+                ):
+                    return _turn_policy_from_actionable_kernel_patch(
+                        round_no=round_no,
+                        all_tool_names=all_tool_names,
+                        policy_id="repair_after_topology_refresh_under_budget",
+                        reason=(
+                            "A topology refresh already ran after the fresh validation blocker, "
+                            "and only a short round budget remains. Exit graph-refresh mode now "
+                            "and spend the next turn on the actionable repair lane."
+                        ),
+                        patch=actionable_kernel_patch,
+                    )
                 allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
                     run_state,
                     all_tool_names=all_tool_names,
@@ -5142,6 +5298,22 @@ def _turn_policy_from_actionable_kernel_patch(
     )
 
 
+def _short_budget_after_topology_refresh_requires_actionable_repair(
+    *,
+    run_state: RunState,
+    write_round: int,
+    max_rounds: int,
+) -> bool:
+    remaining_rounds = max(max_rounds - len(run_state.turns), 0)
+    if remaining_rounds > 2:
+        return False
+    return _has_tool_turn_since_round(
+        run_state,
+        after_round=write_round,
+        tool_names={"query_topology"},
+    )
+
+
 def _has_recent_semantic_refresh_before_round(
     run_state: RunState,
     *,
@@ -5749,6 +5921,47 @@ def _latest_successful_apply_action_type_with_open_sketch_window(
     ):
         return None
     return action_type
+
+
+def _open_sketch_window_requires_code_escape(
+    *,
+    run_state: RunState,
+    max_rounds: int,
+) -> bool:
+    latest_action_type = _latest_successful_apply_action_type_with_open_sketch_window(run_state)
+    if latest_action_type is None:
+        return False
+    remaining_rounds = max(max_rounds - len(run_state.turns), 0)
+    if remaining_rounds <= 0:
+        return True
+    query_sketch_payload = run_state.evidence.latest_by_tool.get("query_sketch")
+    sketch_state = (
+        query_sketch_payload.get("sketch_state")
+        if isinstance(query_sketch_payload, dict)
+        else None
+    )
+    profile_refs = (
+        sketch_state.get("profile_refs")
+        if isinstance(sketch_state, dict)
+        and isinstance(sketch_state.get("profile_refs"), list)
+        else []
+    )
+    path_refs = (
+        sketch_state.get("path_refs")
+        if isinstance(sketch_state, dict)
+        and isinstance(sketch_state.get("path_refs"), list)
+        else []
+    )
+    min_write_steps_remaining = 0
+    if latest_action_type == "create_sketch":
+        min_write_steps_remaining = 2
+    elif profile_refs:
+        min_write_steps_remaining = 1
+    elif path_refs:
+        min_write_steps_remaining = 2
+    if min_write_steps_remaining <= 0:
+        return False
+    return remaining_rounds < min_write_steps_remaining
 
 
 def _preferred_sketch_window_tools(

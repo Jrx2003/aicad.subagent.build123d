@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Build123d 4/19 Practice 进展汇报</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div>
+        <p class="kicker">2026-04-19 / Build123d Runtime / Practice Lane</p>
+        <h1 class="title">4/19 Practice 进展汇报</h1>
+      </div>
+      <nav class="nav-links">
+        <a href="#summary">今日结论</a>
+        <a href="#today">今天做了什么</a>
+        <a href="#proof">如何证明有效</a>
+        <a href="#next">后续方向</a>
+        <a href="#appendix">附录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page">
+    <section id="summary" class="hero card">
+      <div>
+        <p class="eyebrow">三问直答</p>
+        <h2 class="hero-title">
+          今天的工作，把 practice lane 从“会跑出很多日志，但 closure 容易在尾段失控”，推进到“真实 Kimi run 已经能完成 front-face topology targeting 与局部修改，剩余问题被收窄到 countersink 几何承认与最后一轮预算收口”。
+        </h2>
+        <p>
+          如果只需要一句汇报：今天不是继续围 benchmark 加 case 规则，而是继续把
+          <code>grounding</code>、
+          <code>policy closure</code>
+          和
+          <code>local targeting</code>
+          做成可复用的 runtime 能力，并且已经在
+          <code>20260419_154837</code>、
+          <code>20260419_155523</code>、
+          <code>20260419_155831</code>、
+          <code>20260419_160521</code>
+          四条真实 run 中留下了逐步收敛的证据。
+        </p>
+      </div>
+
+      <div class="hero-metrics">
+        <article class="metric">
+          <span class="metric-value">做了什么</span>
+          <span class="metric-label">补了 side-specific grounding，补了三条 short-budget closure policy，并把 local-targeting 的成功与 freshness 真正落入 practice analysis。</span>
+        </article>
+        <article class="metric">
+          <span class="metric-value">如何证明</span>
+          <span class="metric-label">单测先锁住，再看真实 run：<code>154837 → 155523 → 155831 → 160521</code>，从 graph-refresh 卡死推进到真实 <code>face_ref → apply_cad_action</code>，再推进到最后一轮真实修复。</span>
+        </article>
+        <article class="metric">
+          <span class="metric-value">下一步</span>
+          <span class="metric-label">继续压 <code>explicit_anchor_hole</code> 的 countersink 几何承认链，并验证最后一轮 repair / code escape closure 是否已稳定进入 live rerun。</span>
+        </article>
+      </div>
+    </section>
+
+    <section id="today" class="section">
+      <div class="section-head">
+        <p class="section-no">01</p>
+        <div>
+          <h2>今天做了什么</h2>
+          <p>今天的改动是一条主线，不是几处零散补丁：让 local-face grounding 更具体，让短预算下的 closure 更稳，让 practice 分析能真实说明 ref 有没有被消费。</p>
+        </div>
+      </div>
+
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3>Side-Specific Grounding</h3>
+          <p>把 <code>named_face_local_edit</code> 从“知道有面需求”推进到“知道是不是明确落在 front/side face 上”。</p>
+          <ul>
+            <li><code>requested_face_targets</code></li>
+            <li><code>requested_side_face_targets</code></li>
+            <li><code>specific_side_target_grounded</code></li>
+            <li><code>local_host_target_not_grounded</code></li>
+          </ul>
+          <p class="links">
+            <a href="../src/sandbox_mcp_server/feature_probe_grounding.py">feature_probe_grounding.py</a>
+            <a href="../src/sandbox_mcp_server/service.py">service.py</a>
+            <a href="../tests/unit/sandbox_mcp_server/test_feature_probe_grounding.py">对应单测</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>Short-Budget Closure</h3>
+          <p>新增两条通用 policy，避免最后两轮继续耗在 graph refresh 或 validation-only closure 上。</p>
+          <ul>
+            <li><code>repair_after_topology_refresh_under_budget</code></li>
+            <li><code>repair_after_local_finish_semantic_refresh_under_budget</code></li>
+            <li><code>code_escape_after_local_finish_semantic_refresh_under_budget</code></li>
+          </ul>
+          <p class="links">
+            <a href="../src/sub_agent_runtime/agent_loop_v2.py">agent_loop_v2.py</a>
+            <a href="../tests/unit/sub_agent_runtime/test_agent_loop_v2_policy.py">对应单测</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>Practice 里的 Ref 质量统计</h3>
+          <p>现在不只看有没有 <code>query_topology</code>，还看 ref 是否 fresh、是否具体、是否真的被局部动作消费。</p>
+          <ul>
+            <li><code>local_targeting_action_count</code></li>
+            <li><code>fresh_targeting_action_count</code></li>
+            <li><code>stale_ref_action_count</code></li>
+            <li><code>exact_ref_consumption_rate</code></li>
+          </ul>
+          <p class="links">
+            <a href="../src/sub_agent_runtime/practice_runner.py">practice_runner.py</a>
+            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/practice_analysis.md">最新真实产物</a>
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section id="proof" class="section">
+      <div class="section-head">
+        <p class="section-no">02</p>
+        <div>
+          <h2>如何证明有效</h2>
+          <p>最值得讲的是三条真实 run 的递进关系，因为它们把“问题到底被压到了哪一层”讲得最清楚。</p>
+        </div>
+      </div>
+
+      <div class="proof-grid">
+        <article class="card">
+          <h3><code>20260419_154837</code>：把旧卡点定位清楚</h3>
+          <p>这条 run 证明 front-face grounding 在 probe 里已经存在，但 runtime 还会困在 <code>semantic_refresh_before_under_grounded_kernel_patch_for_local_feature_gap</code>，最后停在 <code>max_rounds_reached</code>。</p>
+          <ul>
+            <li>说明当时主问题是 closure，不是“根本找不到 front face”</li>
+            <li>也是今天补 short-budget repair policy 的直接起点</li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_154837/brief_report.md">brief_report.md</a>
+            <a href="../practice_runs/20260419_154837/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_06_query_feature_probes.json">round_06_query_feature_probes.json</a>
+            <a href="../practice_runs/20260419_154837/front_face_sketch_recess_focus_v00_194ed1dd/trace/events.jsonl">events.jsonl</a>
+          </p>
+        </article>
+
+        <article class="card">
+          <h3><code>20260419_155523</code>：第一条 budget closure 已进入 live lane</h3>
+          <p>这条 run 已经不再困在 graph refresh，而是在 round 4 重新打开了 <code>execute_build123d</code> repair。</p>
+          <ul>
+            <li><code>hallucination_events = 1</code></li>
+            <li>round 4 已真实执行 code repair</li>
+            <li>说明 <code>repair_after_topology_refresh_under_budget</code> 已经影响真实 Kimi run</li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_155523/brief_report.md">brief_report.md</a>
+            <a href="../practice_runs/20260419_155523/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_04_execute_build123d.json">round_04_execute_build123d.json</a>
+            <a href="../practice_runs/20260419_155523/front_face_sketch_recess_focus_v00_194ed1dd/trace/events.jsonl">events.jsonl</a>
+          </p>
+        </article>
+
+        <article class="card">
+          <h3><code>20260419_155831</code>：第一次真正落到 exact face ref 的局部修改</h3>
+          <p>这条 run 的价值不在于“已经完成”，而在于它第一次真正走到了 <code>query_topology → apply_cad_action(face_ref=...)</code>。</p>
+          <ul>
+            <li><code>local_targeting_action_count = 1</code></li>
+            <li><code>fresh_targeting_action_count = 1</code></li>
+            <li><code>exact_ref_consumption_rate = 1.0</code></li>
+            <li>前表面精确 ref：<code>face:2:F_d510e00ff44d</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_155831/brief_report.md">brief_report.md</a>
+            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/practice_analysis.md">practice_analysis.md</a>
+            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_05_query_topology.json">round_05_query_topology.json</a>
+            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_04_apply_cad_action.json">round_04_apply_cad_action.json</a>
+          </p>
+        </article>
+
+        <article class="card">
+          <h3>当前剩余瓶颈已经被收窄</h3>
+          <p>最新 run 的剩余失败不再是“读不到前表面”，而是 <code>explicit_anchor_hole</code> 的 countersink 几何没有被 validator 承认。</p>
+          <ul>
+            <li><code>feature_countersink</code></li>
+            <li><code>two_mounting_holes_on_the_bottom_face</code></li>
+            <li><code>countersinks_on_the_mounting_holes</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_06_validate_requirement.json">round_06_validate_requirement.json</a>
+            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/trace/failure_bundle.json">failure_bundle.json</a>
+          </p>
+        </article>
+
+        <article class="card">
+          <h3><code>20260419_160521</code>：最后一轮已切回真实修复</h3>
+          <p>最新 rerun 继续证明尾段 closure 正在变健康。最后一轮不再停在 <code>validate_requirement</code>，而是实际执行了 <code>execute_build123d</code>。</p>
+          <ul>
+            <li>round 5：<code>apply_cad_action(create_sketch, face_ref='face:1:F_0c4e17d39333')</code></li>
+            <li>round 6：<code>execute_build123d</code> whole-part escape</li>
+            <li><code>failure_bundle.last_good_write.round = 6</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_160521/brief_report.md">brief_report.md</a>
+            <a href="../practice_runs/20260419_160521/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_05_apply_cad_action.json">round_05_apply_cad_action.json</a>
+            <a href="../practice_runs/20260419_160521/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_06_execute_build123d.json">round_06_execute_build123d.json</a>
+          </p>
+        </article>
+
+        <article class="card">
+          <h3>新增红绿测：最后一轮没有 patch 时也不再空耗</h3>
+          <p>今天把尾段 closure 正式拆成两种共享情况：有 actionable patch 时走 repair；没有 actionable patch 但 blocker 还在时，直接放行 <code>execute_build123d</code> 做 whole-part escape。</p>
+          <ul>
+            <li><code>repair_after_local_finish_semantic_refresh_under_budget</code></li>
+            <li><code>code_escape_after_local_finish_semantic_refresh_under_budget</code></li>
+            <li>两条策略都已被单测锁成回归行为</li>
+          </ul>
+          <p class="links">
+            <a href="../tests/unit/sub_agent_runtime/test_agent_loop_v2_policy.py">test_agent_loop_v2_policy.py</a>
+            <a href="../src/sub_agent_runtime/agent_loop_v2.py">agent_loop_v2.py</a>
+          </p>
+        </article>
+      </div>
+
+      <div class="card compare-card">
+        <h2>这三条 Run 最重要的变化</h2>
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>最重要的进步</th>
+              <th>还卡在哪里</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>154837</code></td>
+              <td>front-face grounding 已存在，但 closure 仍卡在 graph refresh</td>
+              <td>没有把剩余预算打回 repair lane</td>
+            </tr>
+            <tr>
+              <td><code>155523</code></td>
+              <td>round 4 已真实重开 <code>execute_build123d</code> repair</td>
+              <td>feature-probe 后最后一轮仍可能继续 refresh</td>
+            </tr>
+            <tr>
+              <td><code>155831</code></td>
+              <td>真实完成 <code>face_ref → apply_cad_action</code> 局部修改</td>
+              <td>countersink 几何承认 + 最后一轮 validation-only closure</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="next" class="section">
+      <div class="section-head">
+        <p class="section-no">03</p>
+        <div>
+          <h2>后续方向</h2>
+          <p>下一步继续压共享 family，不回到单 case 拟合。</p>
+        </div>
+      </div>
+
+      <div class="next-grid">
+        <article class="card">
+          <h3>1. 压 <code>explicit_anchor_hole</code> 的 countersink 几何承认链</h3>
+          <p>当前最明确的剩余失败就是：动作层已经尝试做 countersink，但 geometry / validator 还没有稳定认定“沉头孔已满足”。</p>
+        </article>
+        <article class="card">
+          <h3>2. 继续验证最后一轮 repair lane 重开</h3>
+          <p>今天已经把 <code>repair_after_local_finish_semantic_refresh_under_budget</code> 收进 policy。<code>20260419_160521</code> 已经证明最后一轮能切回真实修复，下一步继续看 whole-part escape 能否保住前面拿到的 local anchors。</p>
+        </article>
+        <article class="card">
+          <h3>3. 继续收窄 validator 的 broad aggregation</h3>
+          <p><code>feature_target_face_edit</code> 这类高层 check 还偏宽，后续继续推进 evidence-first grounding，避免“模糊通过”。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="appendix" class="section">
+      <div class="section-head">
+        <p class="section-no">04</p>
+        <div>
+          <h2>附录：工件链路</h2>
+          <p>如果需要现场下钻，推荐按下面顺序开文件。</p>
+        </div>
+      </div>
+
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3>推荐打开顺序</h3>
+          <ol>
+            <li><code>practice_runs/20260419_154837/brief_report.md</code></li>
+            <li><code>practice_runs/20260419_155523/.../actions/round_04_execute_build123d.json</code></li>
+            <li><code>practice_runs/20260419_155831/.../queries/round_05_query_topology.json</code></li>
+            <li><code>practice_runs/20260419_155831/.../actions/round_04_apply_cad_action.json</code></li>
+            <li><code>practice_runs/20260419_155831/.../queries/round_06_validate_requirement.json</code></li>
+          </ol>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>完整 run 目录</h3>
+          <p class="links">
+            <a href="../practice_runs/20260419_154837/">20260419_154837</a>
+            <a href="../practice_runs/20260419_155523/">20260419_155523</a>
+            <a href="../practice_runs/20260419_155831/">20260419_155831</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>参考图片</h3>
+          <div class="preview-grid">
+            <figure>
+              <img src="../practice_runs/20260419_143759/hinged_pillbox_magnet_medium_v00_e34c3c99/evaluation/generated_preview_iso.png" alt="ISO 视图">
+              <figcaption>ISO 视图</figcaption>
+            </figure>
+            <figure>
+              <img src="../practice_runs/20260419_143759/hinged_pillbox_magnet_medium_v00_e34c3c99/evaluation/generated_preview_front.png" alt="Front 视图">
+              <figcaption>Front 视图</figcaption>
+            </figure>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="./main.js"></script>
+</body>
+</html>

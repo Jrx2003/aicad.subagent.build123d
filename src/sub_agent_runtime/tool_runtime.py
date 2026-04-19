@@ -1233,6 +1233,48 @@ def _preflight_lint_execute_build123d(
                     ),
                 }
             )
+        for plane_moved_hit in _find_plane_moved_call_hits(parsed_tree):
+            line_no = int(plane_moved_hit.get("line_no") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_api.plane_moved_shape_method_guess",
+                    "message": (
+                        "Build123d Plane objects do not support a shape-style `.moved(...)` "
+                        "method for repositioning workplanes."
+                    ),
+                    "repair_hint": (
+                        "Translate or re-anchor the workplane with `Plane.offset(...)`, "
+                        "`Plane.move(Location(...))`, or `Plane.shift_origin(...)`; only call "
+                        "`.moved(...)` on actual shapes when you need to reposition geometry. "
+                        + (
+                            f"Repair the Plane placement call at line {line_no}."
+                            if line_no > 0
+                            else "Repair the Plane placement call."
+                        )
+                    ),
+                }
+            )
+        for plane_rotate_hit in _find_plane_rotate_method_hits(parsed_tree):
+            line_no = int(plane_rotate_hit.get("line_no") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_api.plane_rotate_shape_method_guess",
+                    "message": (
+                        "Build123d Plane objects do not support a shape-style `.rotate(...)` "
+                        "method for orienting workplanes."
+                    ),
+                    "repair_hint": (
+                        "Orient the workplane with `Plane.rotated((rx, ry, rz), ordering=...)` "
+                        "or keep the named plane when it already matches the target normal; "
+                        "use `Plane.offset(...)` only for plane-normal translation. "
+                        + (
+                            f"Repair the Plane rotation call at line {line_no}."
+                            if line_no > 0
+                            else "Repair the Plane rotation call."
+                        )
+                    ),
+                }
+            )
         for shift_origin_hit in _find_face_plane_shift_origin_global_coordinate_hits(
             parsed_tree
         ):
@@ -4030,6 +4072,30 @@ def _find_plane_located_call_hits(tree: ast.AST) -> list[dict[str, Any]]:
     return hits
 
 
+def _find_plane_moved_call_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    plane_binding_names = _collect_module_plane_binding_names(tree)
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and str(func.attr or "").strip() == "moved"
+            and _ast_expr_is_plane_like(func.value, plane_binding_names)
+        ):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        hits.append({"line_no": line_no})
+    return hits
+
+
 def _find_face_plane_shift_origin_global_coordinate_hits(
     tree: ast.AST,
 ) -> list[dict[str, Any]]:
@@ -4276,6 +4342,27 @@ def _find_plane_rotated_origin_guess_hits(tree: ast.AST) -> list[dict[str, Any]]
                 continue
             seen.add(key)
             hits.append({"line_no": line_no})
+    return hits
+
+
+def _find_plane_rotate_method_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "rotate"
+            and _looks_like_plane_expr(node.func.value)
+        ):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        hits.append({"line_no": line_no})
     return hits
 
 
@@ -6768,7 +6855,10 @@ def _build_preflight_repair_recipe(
                 ],
             },
         }
-    if "invalid_build123d_api.plane_rotated_origin_guess" in lint_ids:
+    if (
+        "invalid_build123d_api.plane_rotated_origin_guess" in lint_ids
+        or "invalid_build123d_api.plane_rotate_shape_method_guess" in lint_ids
+    ):
         return {
             "recipe_id": "build123d_plane_rotation_contract",
             "recipe_summary": (
@@ -6782,17 +6872,21 @@ def _build_preflight_repair_recipe(
                     "keep the named workplane when it already has the requested normal, for example use `Plane.XZ` directly for Y-direction drilling",
                     "store in-plane coordinates in the sketch or `Locations(...)` data instead of trying to encode them with a rotated-plane origin guess",
                     "if translation is needed, use `Plane.offset(...)` only along the plane normal or place the cutter/feature with `Pos(...)`",
+                    "do not call `.rotate(...)` on Plane objects; use `Plane.rotated((rx, ry, rz), ordering=...)` when orientation must change",
                     "only call `Plane.rotated((rx, ry, rz), ordering=...)` when you truly need a different orientation, and do not pass a second `(x, y, z)` tuple",
                 ],
             },
         }
-    if "invalid_build123d_api.plane_located_shape_method_guess" in lint_ids:
+    if (
+        "invalid_build123d_api.plane_located_shape_method_guess" in lint_ids
+        or "invalid_build123d_api.plane_moved_shape_method_guess" in lint_ids
+    ):
         return {
             "recipe_id": "build123d_plane_translation_contract",
             "recipe_summary": (
                 "When repositioning a Build123d workplane, use the Plane translation "
                 "APIs (`offset`, `move`, `shift_origin`) instead of guessing a "
-                "shape-style `.located(...)` method."
+                "shape-style `.located(...)` or `.moved(...)` method."
             ),
             "recipe_skeleton": {
                 "mode": "local_edit_via_execute_build123d",
@@ -6800,7 +6894,7 @@ def _build_preflight_repair_recipe(
                     "keep the named workplane when its orientation is already correct",
                     "translate the workplane with `Plane.offset(amount)` along the plane normal when only a datum shift is needed",
                     "use `Plane.move(Location(...))` or `Plane.shift_origin(...)` when the workplane origin itself must move in a more explicit way",
-                    "only call `.located(...)` on actual solids/shapes, not on Plane objects",
+                    "only call `.located(...)` or `.moved(...)` on actual solids/shapes, not on Plane objects",
                 ],
             },
         }
@@ -6941,6 +7035,7 @@ def _build_preflight_repair_recipe(
                 "mode": "whole_part_rebuild_via_execute_build123d",
                 "steps": [
                     "build the enclosure/lid/base shell hosts and host-owned local cuts first, keeping the shell host authoritative",
+                    "if the intended enclosure silhouette is rounded-rect or pillbox-like, build that rounded footprint directly with `RectangleRounded(...)` in `BuildSketch(...)` instead of using a fresh-host broad edge fillet to create the overall shape",
                     "validate that the part count, assembled pose, hinge/local cuts, and requested bbox are already stable before adding broad shell-edge fillets",
                     "if a fillet is still needed in the rebuild lane, fillet only a verified outer-edge subset instead of `builder.edges().filter_by(Axis.Z)` across the whole host",
                     "if only the finishing fillet remains after the host is valid, prefer query_topology plus a local finishing step over another broad whole-part fillet pass",
@@ -7230,14 +7325,13 @@ def _preflight_gate_apply_cad_action(
         preferred_face_refs: list[str] = []
         candidate_face_labels: list[str] = []
         candidate_face_ref_map: dict[str, list[str]] = {}
+        candidate_set_face_refs: list[str] = []
+
+        def _append_unique_face_ref(ref_id: str) -> None:
+            if ref_id and ref_id not in preferred_face_refs:
+                preferred_face_refs.append(ref_id)
+
         if isinstance(topology_payload, dict):
-            for ref_id in topology_payload.get("matched_ref_ids") or []:
-                if (
-                    isinstance(ref_id, str)
-                    and ref_id.startswith("face:")
-                    and ref_id not in preferred_face_refs
-                ):
-                    preferred_face_refs.append(ref_id)
             for item in topology_payload.get("candidate_sets") or []:
                 if not isinstance(item, dict):
                     continue
@@ -7262,9 +7356,17 @@ def _preflight_gate_apply_cad_action(
                     candidate_face_ref_map[candidate_label_token] = list(ref_ids)
                 if label and label not in candidate_face_labels:
                     candidate_face_labels.append(label)
+                preferred_ref_id = str(item.get("preferred_ref_id") or "").strip()
+                if preferred_ref_id.startswith("face:"):
+                    _append_unique_face_ref(preferred_ref_id)
                 for ref_id in ref_ids:
-                    if ref_id not in preferred_face_refs:
-                        preferred_face_refs.append(ref_id)
+                    candidate_set_face_refs.append(ref_id)
+            for ref_id in candidate_set_face_refs:
+                if isinstance(ref_id, str) and ref_id.startswith("face:"):
+                    _append_unique_face_ref(ref_id)
+            for ref_id in topology_payload.get("matched_ref_ids") or []:
+                if isinstance(ref_id, str) and ref_id.startswith("face:"):
+                    _append_unique_face_ref(ref_id)
         face_ref = str(action_params.get("face_ref") or "").strip()
         if not face_ref:
             face_reference = str(action_params.get("face_reference") or "").strip()

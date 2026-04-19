@@ -332,12 +332,20 @@ def test_attach_clause_grounding_surface_marks_explicit_anchor_clause_as_geometr
     clause = updated.clause_interpretations[0]
     assert clause.grounding_sources == ["geometry"]
     assert clause.required_evidence_kinds == ["geometry", "topology"]
+    assert clause.grounding_gap_reasons == [
+        "missing_topology_evidence",
+        "precise_grounding_required",
+    ]
     assert clause.overclaim_guard == "geometry_grounding_required"
     assert clause.family_binding == "explicit_anchor_hole"
     assert "query_topology" in clause.repair_hints
     assert "query_feature_probes" in clause.repair_hints
     assert grounding_surface["family_bindings"] == ["explicit_anchor_hole"]
     assert grounding_surface["required_evidence_kinds"] == ["geometry", "topology"]
+    assert grounding_surface["grounding_gap_reasons"] == [
+        "missing_topology_evidence",
+        "precise_grounding_required",
+    ]
     assert grounding_surface["overclaim_guard"] == "geometry_grounding_required"
 
 
@@ -364,10 +372,46 @@ def test_attach_clause_grounding_surface_keeps_centered_front_recess_on_named_fa
     clause = updated.clause_interpretations[0]
     assert clause.family_binding == "named_face_local_edit"
     assert clause.required_evidence_kinds == ["topology"]
+    assert clause.grounding_gap_reasons == []
     assert clause.overclaim_guard is None
     assert "query_topology" in clause.repair_hints
     assert grounding_surface["family_bindings"] == ["named_face_local_edit"]
     assert "explicit_anchor_hole" not in grounding_surface["family_bindings"]
+
+
+def test_attach_clause_grounding_surface_marks_named_face_local_edit_without_topology_as_under_grounded() -> None:
+    interpretation = RequirementInterpretationSummary(
+        clause_interpretations=[
+            RequirementClauseInterpretation(
+                clause_id="front_recess_clause",
+                clause_text="Add a centered rounded rectangle recess on the front face.",
+                status=RequirementClauseStatus.INSUFFICIENT_EVIDENCE,
+                evidence="bbox depth observed from geometry snapshot",
+                observation_tags=["geometry"],
+                decision_hints=["query_feature_probes"],
+            )
+        ],
+        coverage_confidence=0.0,
+        insufficient_evidence=["front_recess_clause"],
+        observation_tags=["geometry"],
+        decision_hints=["query_feature_probes"],
+    )
+
+    updated, grounding_surface = attach_clause_grounding_surface(interpretation)
+
+    clause = updated.clause_interpretations[0]
+    assert clause.family_binding == "named_face_local_edit"
+    assert clause.required_evidence_kinds == ["topology"]
+    assert clause.grounding_gap_reasons == [
+        "missing_topology_evidence",
+        "local_host_target_not_grounded",
+    ]
+    assert clause.overclaim_guard is None
+    assert "query_topology" in clause.repair_hints
+    assert grounding_surface["grounding_gap_reasons"] == [
+        "local_host_target_not_grounded",
+        "missing_topology_evidence",
+    ]
 
 
 def test_build_validation_blocker_taxonomy_prefers_local_finish_when_clause_grounding_requests_topology_targeting() -> None:

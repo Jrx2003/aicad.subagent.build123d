@@ -25,6 +25,8 @@ report-*/
 !report-20260414-build123d-vs-cadquery-benchmark/**
 !report-20260415-build123d-two-day-progress/
 !report-20260415-build123d-two-day-progress/**
+!report-20260419-build123d-practice-progress/
+!report-20260419-build123d-practice-progress/**
 scripts/describe/
 
 # Always track project work logs and checkpoint notes.

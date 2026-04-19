@@ -154,7 +154,7 @@ class V2ContextManager:
             "Do not write `with Rot(...):` or `with Pos(...):`; they are transforms, not builder context managers. "
             "Do not import `ocp_vscode` or call `show(...)` / `show_object(...)`; sandbox execution must return geometry through `result = ...` only. "
             "Inside an active BuildPart, do not create a primitive and then relocate it with `Pos(...) * solid` or `Rot(...) * solid`; use `Locations(...)` at creation time, or close the builder first and transform the detached solid afterward. "
-            "For rounded rectangular shells or bodies, do not invent `Box(..., radius=...)`; use `RectangleRounded(...)` plus BuildSketch/extrude or add explicit fillets after a plain box. "
+            "For rounded rectangular shells or bodies, do not invent `Box(..., radius=...)`; use `RectangleRounded(...)` plus BuildSketch/extrude or add explicit fillets after a plain box. For rounded pillbox or enclosure shells, prefer that rounded footprint directly over a first-pass broad shell-edge fillet across `edges().filter_by(Axis.Z)`. "
             "If a detached helper, cavity proxy, or cutter needs anisotropic scaling, use lowercase `scale(shape, by=(sx, sy, sz))`; do not invent `Scale(...)` or `Scale.by(...)`. "
             "For detached hinge barrels, hinge pins, or other rotated helper solids, build them positively first, close that builder, then orient the closed solid with `Rot(...) * part` or `Pos(...) * Rot(...) * part`. "
             "Treat stale read evidence from before the latest successful write as expired, especially old probe or validation results. "
@@ -498,6 +498,9 @@ class V2ContextManager:
         evidence_attachment = self._build_evidence_attachment(payload)
         if evidence_attachment is not None:
             messages.append(evidence_attachment)
+        local_finish_focus_attachment = self._build_local_finish_focus_attachment(payload)
+        if local_finish_focus_attachment is not None:
+            messages.append(local_finish_focus_attachment)
         recent_turns_attachment = self._build_recent_turns_attachment(payload)
         if recent_turns_attachment is not None:
             messages.append(recent_turns_attachment)
@@ -577,6 +580,41 @@ class V2ContextManager:
                 f"{json.dumps(compacted, ensure_ascii=False, indent=2)}"
             ),
         )
+
+    def _build_local_finish_focus_attachment(self, payload: dict[str, Any]) -> LLMMessage | None:
+        contract = payload.get("local_finish_contract")
+        if not isinstance(contract, dict) or not contract:
+            return None
+        preferred_face_refs = [
+            str(ref_id).strip()
+            for ref_id in (contract.get("preferred_face_refs") or [])
+            if str(ref_id).strip()
+        ]
+        preferred_edge_refs = [
+            str(ref_id).strip()
+            for ref_id in (contract.get("preferred_edge_refs") or [])
+            if str(ref_id).strip()
+        ]
+        candidate_lines: list[str] = []
+        for item in contract.get("candidate_sets") or []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or item.get("candidate_id") or "").strip()
+            preferred_ref_id = str(item.get("preferred_ref_id") or "").strip()
+            if label and preferred_ref_id:
+                candidate_lines.append(f"- {label}: {preferred_ref_id}")
+        lines = ["Exact topology refs to consume now:"]
+        if preferred_face_refs:
+            lines.append(f"- preferred_face_refs: {', '.join(preferred_face_refs[:4])}")
+        if preferred_edge_refs:
+            lines.append(f"- preferred_edge_refs: {', '.join(preferred_edge_refs[:6])}")
+        if candidate_lines:
+            lines.append("- candidate set preferred refs:")
+            lines.extend(candidate_lines[:4])
+        lines.append(
+            "- Use one preferred exact ref directly in the next apply_cad_action instead of selecting a different ref from the broader matched list."
+        )
+        return LLMMessage(role="user", content="\n".join(lines))
 
     def _prepare_runtime_skills_payload(
         self,
@@ -1078,6 +1116,9 @@ class V2ContextManager:
                 value = item.get(key)
                 if isinstance(value, str) and value.strip():
                     candidate_summary[key] = value.strip()
+            preferred_ref_id = str(item.get("preferred_ref_id") or "").strip()
+            if preferred_ref_id:
+                candidate_summary["preferred_ref_id"] = preferred_ref_id
             if semantic_host_roles:
                 candidate_summary["semantic_host_roles"] = semantic_host_roles[:4]
             if candidate_ref_ids:
@@ -1122,31 +1163,64 @@ class V2ContextManager:
             for item in (topology_targeting_summary.get("matched_ref_ids") or [])
             if str(item).strip()
         ]
-        face_refs = [ref_id for ref_id in matched_ref_ids if ref_id.startswith("face:")]
-        edge_refs = [ref_id for ref_id in matched_ref_ids if ref_id.startswith("edge:")]
         candidate_sets = (
             topology_targeting_summary.get("candidate_sets")
             if isinstance(topology_targeting_summary.get("candidate_sets"), list)
             else []
         )
+        preferred_face_refs: list[str] = []
+        preferred_edge_refs: list[str] = []
+
+        def _append_unique(refs: list[str], ref_id: str) -> None:
+            if ref_id and ref_id not in refs:
+                refs.append(ref_id)
+
+        candidate_set_ref_ids: list[str] = []
+        for item in candidate_sets:
+            if not isinstance(item, dict):
+                continue
+            preferred_ref_id = str(item.get("preferred_ref_id") or "").strip()
+            ref_ids = [
+                str(ref_id).strip()
+                for ref_id in (item.get("ref_ids") or [])
+                if str(ref_id).strip()
+            ]
+            if preferred_ref_id.startswith("face:"):
+                _append_unique(preferred_face_refs, preferred_ref_id)
+            elif preferred_ref_id.startswith("edge:"):
+                _append_unique(preferred_edge_refs, preferred_ref_id)
+            for ref_id in ref_ids:
+                if ref_id:
+                    candidate_set_ref_ids.append(ref_id)
+        for ref_id in candidate_set_ref_ids:
+            if ref_id.startswith("face:"):
+                _append_unique(preferred_face_refs, ref_id)
+            elif ref_id.startswith("edge:"):
+                _append_unique(preferred_edge_refs, ref_id)
+        for ref_id in matched_ref_ids:
+            if ref_id.startswith("face:"):
+                _append_unique(preferred_face_refs, ref_id)
+            elif ref_id.startswith("edge:"):
+                _append_unique(preferred_edge_refs, ref_id)
         preserved_layout = self._build_local_finish_preserved_layout(domain_kernel_digest)
         instructions = [
             "Consume the freshest query_topology refs directly in apply_cad_action; do not replace them with broad aliases like face='top' or face='bottom'.",
-            "For hole, countersink, or sketch-on-face edits on an existing solid, pass face_ref from query_topology or open create_sketch(face_ref=...) first.",
+            "For hole, countersink, or sketch-on-face edits on an existing solid, pass face_ref from query_topology. When the next edit is directly expressible as a hole or countersink on that host face, prefer a direct hole/countersink apply_cad_action on that exact face_ref before opening a new sketch window.",
             "Keep centers in the local face frame after attaching to the host face instead of mixing them with guessed world-space coordinates.",
+            "During a local_finish turn, do not spend apply_cad_action on get_history or any other session-control escape action; the next apply_cad_action should be a real geometry mutation that consumes one of the preferred face/edge refs when they already exist.",
         ]
         if preserved_layout is not None:
             instructions.append(
                 "When semantic evidence already exposes a valid local center layout, reuse that exact center set for the remaining host-face-local detail instead of inventing new positions."
             )
-        if edge_refs:
+        if preferred_edge_refs:
             instructions.append(
                 "For fillet or chamfer local finishes, pass explicit edge_refs from query_topology instead of retrying selector guesses."
             )
         contract = {
             "must_consume_exact_topology_refs": True,
-            "preferred_face_refs": face_refs[:4],
-            "preferred_edge_refs": edge_refs[:8],
+            "preferred_face_refs": preferred_face_refs[:4],
+            "preferred_edge_refs": preferred_edge_refs[:8],
             "candidate_sets": compact_jsonish(
                 candidate_sets[:4],
                 max_depth=3,

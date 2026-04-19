@@ -96,6 +96,7 @@ def attach_clause_grounding_surface(
     updated_clauses: list[RequirementClauseInterpretation] = []
     aggregate_sources: set[str] = set()
     aggregate_required: set[str] = set()
+    aggregate_gap_reasons: set[str] = set()
     aggregate_repair_hints: list[str] = []
     aggregate_family_bindings: set[str] = set()
     overclaim_guard: str | None = None
@@ -108,6 +109,7 @@ def attach_clause_grounding_surface(
 
         aggregate_sources.update(clause_surface["grounding_sources"])
         aggregate_required.update(clause_surface["required_evidence_kinds"])
+        aggregate_gap_reasons.update(clause_surface["grounding_gap_reasons"])
         aggregate_repair_hints.extend(clause_surface["repair_hints"])
         family_binding = clause_surface["family_binding"]
         if family_binding:
@@ -126,6 +128,7 @@ def attach_clause_grounding_surface(
         "grounding_sources": sorted(aggregate_sources),
         "grounding_strength": strongest,
         "required_evidence_kinds": sorted(aggregate_required),
+        "grounding_gap_reasons": sorted(aggregate_gap_reasons),
         "overclaim_guard": overclaim_guard,
         "repair_hints": list(dict.fromkeys(aggregate_repair_hints))[:8],
         "family_bindings": sorted(aggregate_family_bindings),
@@ -178,15 +181,20 @@ def _derive_clause_grounding_surface(
         matched_rules=matched_rules,
     )
     precise_grounding_required = any(rule.precise_grounding_required for rule in matched_rules)
+    grounding_gap_reasons = _build_grounding_gap_reasons(
+        grounding_sources=grounding_sources,
+        required_evidence_kinds=required_evidence_kinds,
+        family_binding=family_binding,
+        precise_grounding_required=precise_grounding_required,
+    )
     overclaim_guard = None
-    if precise_grounding_required and (
-        clause.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
-        or (
-            clause.status == RequirementClauseStatus.VERIFIED
-            and len(grounding_sources) < 2
-        )
-    ):
+    if precise_grounding_required and grounding_gap_reasons:
         overclaim_guard = "geometry_grounding_required"
+    elif clause.status in {
+        RequirementClauseStatus.VERIFIED,
+        RequirementClauseStatus.CONTRADICTED,
+    } and grounding_gap_reasons:
+        overclaim_guard = "required_evidence_missing"
 
     if clause.status == RequirementClauseStatus.VERIFIED and len(grounding_sources) >= 2:
         grounding_strength = "strong"
@@ -201,10 +209,33 @@ def _derive_clause_grounding_surface(
         "grounding_sources": grounding_sources,
         "grounding_strength": grounding_strength,
         "required_evidence_kinds": required_evidence_kinds,
+        "grounding_gap_reasons": grounding_gap_reasons,
         "overclaim_guard": overclaim_guard,
         "repair_hints": repair_hints,
         "family_binding": family_binding,
     }
+
+
+def _build_grounding_gap_reasons(
+    *,
+    grounding_sources: list[str],
+    required_evidence_kinds: list[str],
+    family_binding: str | None,
+    precise_grounding_required: bool,
+) -> list[str]:
+    gap_reasons: list[str] = []
+    grounding_source_set = {str(item).strip() for item in grounding_sources if str(item).strip()}
+    for evidence_kind in required_evidence_kinds:
+        normalized_kind = str(evidence_kind).strip()
+        if normalized_kind and normalized_kind not in grounding_source_set:
+            gap_reasons.append(f"missing_{normalized_kind}_evidence")
+    if family_binding == "named_face_local_edit" and "topology" not in grounding_source_set:
+        gap_reasons.append("local_host_target_not_grounded")
+    if family_binding == "half_shell" and "topology" not in grounding_source_set:
+        gap_reasons.append("shell_relationship_not_grounded")
+    if precise_grounding_required and gap_reasons:
+        gap_reasons.append("precise_grounding_required")
+    return _dedupe(gap_reasons)
 
 
 def _normalize_observation_tags(tags: Iterable[str]) -> list[str]:

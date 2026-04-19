@@ -1662,6 +1662,7 @@ class SandboxMCPService:
             grounding_sources=grounding_surface.get("grounding_sources") or [],
             grounding_strength=str(grounding_surface.get("grounding_strength") or "none"),
             required_evidence_kinds=grounding_surface.get("required_evidence_kinds") or [],
+            grounding_gap_reasons=grounding_surface.get("grounding_gap_reasons") or [],
             overclaim_guard=grounding_surface.get("overclaim_guard"),
             repair_hints=grounding_surface.get("repair_hints") or [],
             family_bindings=grounding_surface.get("family_bindings") or [],
@@ -2265,6 +2266,44 @@ class SandboxMCPService:
                 snapshot,
                 face_targets=semantics.face_targets,
             )
+        elif family == "named_face_local_edit":
+            requested_face_targets = [
+                target
+                for target in semantics.face_targets
+                if target in {"top", "bottom", "front", "back", "left", "right", "side"}
+            ]
+            requested_side_face_targets = [
+                target
+                for target in semantics.face_targets
+                if target in {"front", "back", "left", "right"}
+            ]
+            expects_subtractive = semantics.mentions_subtractive_edit and not (
+                semantics.mentions_additive_face_feature
+            )
+            expects_additive = semantics.mentions_additive_face_feature and not (
+                semantics.mentions_subtractive_edit
+            )
+            side_target_grounded = False
+            if requested_side_face_targets:
+                first_solid_index = self._find_first_solid_index(history)
+                side_target_grounded = self._history_has_post_solid_face_feature(
+                    history=history,
+                    first_solid_index=first_solid_index,
+                    face_targets=tuple(requested_side_face_targets),
+                    expect_subtractive=expects_subtractive,
+                    expect_additive=expects_additive,
+                )
+                if not side_target_grounded:
+                    side_target_grounded = self._snapshot_has_target_face_feature(
+                        snapshot=snapshot,
+                        face_targets=tuple(requested_side_face_targets),
+                        expect_subtractive=expects_subtractive,
+                        expect_additive=expects_additive,
+                        include_aligned_host_faces=expects_additive,
+                    )
+            signals["requested_face_targets"] = requested_face_targets
+            signals["requested_side_face_targets"] = requested_side_face_targets
+            signals["specific_side_target_grounded"] = side_target_grounded
         elif family == "orthogonal_union":
             signals["mentions_multi_plane_additive_union"] = bool(
                 semantics.mentions_multi_plane_additive_union
@@ -2360,6 +2399,17 @@ class SandboxMCPService:
             signals=signals,
             blockers=blockers,
         )
+        if (
+            family == "named_face_local_edit"
+            and success
+            and "local_host_target_not_grounded" in probe_grounding["grounding_blockers"]
+        ):
+            success = False
+            confidence = min(confidence, 0.45)
+            summary = (
+                f"{family}: local edit checks pass, but the requested side-face host is "
+                "not yet grounded by topology-aware evidence"
+            )
         recommended_next_tools = recommended_next_tools_for_feature_probe_grounding(
             base_tools=recommended_probe_tools_for_family(family),
             required_evidence_kinds=probe_grounding["required_evidence_kinds"],
@@ -14408,7 +14458,11 @@ class SandboxMCPService:
         if "image not found" in combined:
             return SandboxErrorCode.IMAGE_NOT_FOUND
 
-        if "docker api error" in combined:
+        if (
+            "docker api error" in combined
+            or "docker daemon appears unavailable" in combined
+            or "error while fetching server api version" in combined
+        ):
             return SandboxErrorCode.DOCKER_API_ERROR
 
         return SandboxErrorCode.EXECUTION_ERROR
@@ -19493,12 +19547,24 @@ class SandboxMCPService:
             tuple[str, str, list[str], list[str], str, dict[str, Any]],
         ] = {}
 
-        top_faces = [face for face in faces if _face_is_top(face)]
-        bottom_faces = [face for face in faces if _face_is_bottom(face)]
-        front_faces = [face for face in faces if _face_is_front(face)]
-        back_faces = [face for face in faces if _face_is_back(face)]
-        left_faces = [face for face in faces if _face_is_left(face)]
-        right_faces = [face for face in faces if _face_is_right(face)]
+        def _sort_directional_faces(
+            face_items: list[TopologyFaceEntity],
+        ) -> list[TopologyFaceEntity]:
+            return sorted(
+                face_items,
+                key=lambda face: (
+                    0 if str(face.geom_type).strip().upper() == "PLANE" else 1,
+                    -float(face.area),
+                    face.face_ref,
+                ),
+            )
+
+        top_faces = _sort_directional_faces([face for face in faces if _face_is_top(face)])
+        bottom_faces = _sort_directional_faces([face for face in faces if _face_is_bottom(face)])
+        front_faces = _sort_directional_faces([face for face in faces if _face_is_front(face)])
+        back_faces = _sort_directional_faces([face for face in faces if _face_is_back(face)])
+        left_faces = _sort_directional_faces([face for face in faces if _face_is_left(face)])
+        right_faces = _sort_directional_faces([face for face in faces if _face_is_right(face)])
         upward_planar_faces = [
             face
             for face in faces
@@ -20503,6 +20569,13 @@ class SandboxMCPService:
                     )
                 if any(role in host_roles for role in semantic_host_roles):
                     candidate_score = max(candidate_score, 45)
+                hint_boost = self._family_specific_topology_hint_boost(
+                    family_id=family_id,
+                    candidate_id=candidate.candidate_id,
+                    selection_hints=selection_hints,
+                )
+                if hint_boost > 0:
+                    candidate_score = max(candidate_score, 200 + hint_boost)
                 if candidate_score > 0:
                     candidate_family_scores.append((family_id, candidate_score))
             candidate_family_scores.sort(key=lambda item: (-item[1], item[0]))
@@ -20528,6 +20601,78 @@ class SandboxMCPService:
 
         ranked_candidates.sort(key=lambda item: (item[0], item[1], item[2].candidate_id))
         return [candidate for _, _, candidate in ranked_candidates]
+
+    def _family_specific_topology_hint_boost(
+        self,
+        *,
+        family_id: str,
+        candidate_id: str,
+        selection_hints: list[str],
+    ) -> int:
+        normalized_hints = [
+            str(hint).strip()
+            for hint in selection_hints
+            if str(hint).strip()
+        ]
+        if not normalized_hints:
+            return 0
+
+        boosted_candidate_ids: list[str] = []
+
+        def _append_unique(candidate_name: str) -> None:
+            if candidate_name not in boosted_candidate_ids:
+                boosted_candidate_ids.append(candidate_name)
+
+        if family_id == "explicit_anchor_hole":
+            directional_hint_present = any(
+                hint in {"bottom_faces", "downward_planar_faces", "top_faces", "upward_planar_faces"}
+                for hint in normalized_hints
+            )
+            expansion_map: dict[str, tuple[str, ...]] = {
+                "bottom_faces": (
+                    "bottom_faces",
+                    "downward_planar_faces",
+                    "bottom_inner_planar_faces",
+                ),
+                "downward_planar_faces": (
+                    "downward_planar_faces",
+                    "bottom_faces",
+                    "bottom_inner_planar_faces",
+                ),
+                "top_faces": (
+                    "top_faces",
+                    "upward_planar_faces",
+                    "top_inner_planar_faces",
+                ),
+                "upward_planar_faces": (
+                    "upward_planar_faces",
+                    "top_faces",
+                    "top_inner_planar_faces",
+                ),
+                "mating_faces": ("mating_faces",),
+            }
+            for hint in normalized_hints:
+                for expanded_candidate_id in expansion_map.get(hint, ()):
+                    if expanded_candidate_id == "mating_faces" and directional_hint_present:
+                        continue
+                    _append_unique(expanded_candidate_id)
+        elif family_id == "named_face_local_edit":
+            expansion_map = {
+                "front_faces": ("front_faces", "front_inner_edges"),
+                "back_faces": ("back_faces", "back_inner_edges"),
+                "left_faces": ("left_faces", "left_inner_edges"),
+                "right_faces": ("right_faces", "right_inner_edges"),
+                "top_faces": ("top_faces",),
+                "bottom_faces": ("bottom_faces",),
+                "opening_rim_edges": ("opening_rim_edges",),
+            }
+            for hint in normalized_hints:
+                for expanded_candidate_id in expansion_map.get(hint, ()):
+                    _append_unique(expanded_candidate_id)
+
+        if candidate_id not in boosted_candidate_ids:
+            return 0
+        return max(1, 40 - boosted_candidate_ids.index(candidate_id))
 
     def _sort_topology_faces_by_candidate_priority(
         self,

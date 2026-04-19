@@ -16,6 +16,7 @@ class SandboxType(str, Enum):
     DOCKER_LOCAL = "docker-local"
     DOCKER_HTTP = "docker-http"
     MCP = "mcp"
+    LOCAL_PROCESS = "local-process"
 
 
 def _discover_env_file(start_dir: Path | str | None = None) -> str | None:

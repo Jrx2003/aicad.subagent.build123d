@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import asyncio
 import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -21,6 +24,24 @@ _DEFAULT_MANIFEST_PATH = Path("practice") / "seed_manifest.json"
 _DEFAULT_RUNS_ROOT = Path("practice_runs")
 _BENCHMARK_HELPERS = None
 _STEP_SIMILARITY = None
+_ROUND_FILE_RE = re.compile(r"round_(?P<round>[0-9]+)_")
+_TOPOLOGY_REF_RE = re.compile(r"^(?:face|edge):(?P<step>[0-9]+):[A-Z]_[A-Za-z0-9_]+$")
+
+
+@contextmanager
+def _temporary_env_overrides(overrides: dict[str, str]) -> Any:
+    previous_values: dict[str, str | None] = {}
+    for key, value in overrides.items():
+        previous_values[key] = os.environ.get(key)
+        os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, previous_value in previous_values.items():
+            if previous_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous_value
 
 
 @dataclass(slots=True)
@@ -233,11 +254,12 @@ async def run_practice_suite(
             one_action_per_round=one_action_per_round,
             force_post_convergence_round=force_post_convergence_round,
         )
-        await run_from_env(
-            request=request,
-            runs_root=run_root,
-            run_dir=case_dir,
-        )
+        with _temporary_env_overrides({"SANDBOX_TYPE": "local-process"}):
+            await run_from_env(
+                request=request,
+                runs_root=run_root,
+                run_dir=case_dir,
+            )
         summary_payload = _read_json(case_dir / "summary.json")
         runtime_summary = (
             summary_payload.get("summary") if isinstance(summary_payload.get("summary"), dict) else {}
@@ -328,6 +350,11 @@ def _build_dry_run_analysis(variant: PracticeVariant) -> dict[str, Any]:
             "query_counts": {},
             "topology_examples": [],
             "topology_targeting_observed": False,
+            "fresh_targeting_action_count": 0,
+            "stale_ref_action_count": 0,
+            "nonconcrete_ref_action_count": 0,
+            "candidate_label_ref_action_count": 0,
+            "exact_ref_consumption_rate": 0.0,
         },
     }
 
@@ -393,6 +420,7 @@ def _summarize_read_model_usage(
     candidate_family_ids: set[str] = set()
     matched_ref_id_count = 0
     candidate_set_count = 0
+    topology_windows: list[dict[str, Any]] = []
     queries_dir = case_dir / "queries"
     if queries_dir.exists():
         for path in sorted(queries_dir.glob("*.json")):
@@ -456,6 +484,25 @@ def _summarize_read_model_usage(
                             "ref_ids": list(item.get("ref_ids") or [])[:8],
                         }
                     )
+                topology_ref_ids: list[str] = list(matched_ref_ids)
+                for item in candidate_sets_raw:
+                    if not isinstance(item, dict):
+                        continue
+                    for ref_id in item.get("ref_ids") or []:
+                        if isinstance(ref_id, str) and ref_id.strip():
+                            topology_ref_ids.append(ref_id.strip())
+                topology_windows.append(
+                    {
+                        "round_no": _extract_round_no_from_artifact_name(name),
+                        "ref_ids": set(topology_ref_ids),
+                        "ref_steps": {
+                            parsed_step
+                            for ref_id in topology_ref_ids
+                            for parsed_step in [_parse_topology_ref_step(ref_id)]
+                            if parsed_step is not None
+                        },
+                    }
+                )
                 topology_examples.append(
                     {
                         "file": str(path.relative_to(case_dir)),
@@ -478,6 +525,11 @@ def _summarize_read_model_usage(
     local_targeting_action_count = 0
     face_ref_action_count = 0
     edge_ref_action_count = 0
+    fresh_targeting_action_count = 0
+    stale_ref_action_count = 0
+    nonconcrete_ref_action_count = 0
+    candidate_label_ref_action_count = 0
+    targeting_without_topology_query_count = 0
     local_targeting_examples: list[dict[str, Any]] = []
     actions_dir = case_dir / "actions"
     if actions_dir.exists():
@@ -512,18 +564,81 @@ def _summarize_read_model_usage(
                     face_ref_action_count += 1
                 if edge_refs:
                     edge_ref_action_count += 1
+                action_round = _extract_round_no_from_artifact_name(path.name)
+                latest_topology_window = _latest_topology_window_before_round(
+                    topology_windows=topology_windows,
+                    round_no=action_round,
+                )
+                latest_ref_ids = (
+                    latest_topology_window.get("ref_ids")
+                    if isinstance(latest_topology_window, dict)
+                    else set()
+                )
+                latest_ref_steps = (
+                    latest_topology_window.get("ref_steps")
+                    if isinstance(latest_topology_window, dict)
+                    else set()
+                )
+                latest_ref_step = max(latest_ref_steps) if latest_ref_steps else None
+                referenced_items = [face_ref] if face_ref else []
+                referenced_items.extend(edge_refs)
+                parsed_ref_steps = [_parse_topology_ref_step(ref_id) for ref_id in referenced_items]
+                has_candidate_label = any(
+                    isinstance(ref_id, str) and ref_id.strip().startswith("candidate:")
+                    for ref_id in referenced_items
+                )
+                has_nonconcrete_ref = any(step is None for step in parsed_ref_steps)
+                has_stale_ref = bool(
+                    latest_ref_step is not None
+                    and any(
+                        step is not None and step < latest_ref_step
+                        for step in parsed_ref_steps
+                    )
+                )
+                is_fresh_targeting = bool(
+                    latest_ref_ids
+                    and not has_nonconcrete_ref
+                    and all(
+                        isinstance(ref_id, str) and ref_id in latest_ref_ids
+                        for ref_id in referenced_items
+                    )
+                )
+                if latest_topology_window is None:
+                    targeting_without_topology_query_count += 1
+                if has_candidate_label:
+                    candidate_label_ref_action_count += 1
+                if has_nonconcrete_ref:
+                    nonconcrete_ref_action_count += 1
+                if has_stale_ref:
+                    stale_ref_action_count += 1
+                if is_fresh_targeting:
+                    fresh_targeting_action_count += 1
                 local_targeting_examples.append(
                     {
                         "file": str(path.relative_to(case_dir)),
                         "action_type": action_type,
                         "face_ref": face_ref or None,
                         "edge_refs": edge_refs[:8],
+                        "latest_topology_query_round": (
+                            latest_topology_window.get("round_no")
+                            if isinstance(latest_topology_window, dict)
+                            else None
+                        ),
+                        "fresh_targeting": is_fresh_targeting,
+                        "stale_ref_detected": has_stale_ref,
+                        "nonconcrete_ref_detected": has_nonconcrete_ref,
+                        "candidate_label_ref_detected": has_candidate_label,
                     }
                 )
     kernel_summary = (
         round_digest.get("domain_kernel_summary")
         if isinstance(round_digest.get("domain_kernel_summary"), dict)
         else {}
+    )
+    exact_ref_consumption_rate = (
+        round(float(fresh_targeting_action_count) / float(local_targeting_action_count), 4)
+        if local_targeting_action_count > 0
+        else 0.0
     )
     return {
         "query_counts": dict(query_counts),
@@ -535,6 +650,12 @@ def _summarize_read_model_usage(
         "candidate_host_roles": sorted(candidate_host_roles),
         "candidate_family_ids": sorted(candidate_family_ids),
         "local_targeting_action_count": local_targeting_action_count,
+        "fresh_targeting_action_count": fresh_targeting_action_count,
+        "stale_ref_action_count": stale_ref_action_count,
+        "nonconcrete_ref_action_count": nonconcrete_ref_action_count,
+        "candidate_label_ref_action_count": candidate_label_ref_action_count,
+        "targeting_without_topology_query_count": targeting_without_topology_query_count,
+        "exact_ref_consumption_rate": exact_ref_consumption_rate,
         "face_ref_action_count": face_ref_action_count,
         "edge_ref_action_count": edge_ref_action_count,
         "local_targeting_examples": local_targeting_examples[:4],
@@ -619,6 +740,17 @@ def _build_practice_run_summary(
             for analysis in analyses
         ),
         "hallucination_primary_layer_counts": dict(hallucination_layers),
+        "fresh_targeting_action_count": sum(
+            int(
+                (
+                    analysis.get("topology_read_model_usage")
+                    if isinstance(analysis.get("topology_read_model_usage"), dict)
+                    else {}
+                ).get("fresh_targeting_action_count", 0)
+                or 0
+            )
+            for analysis in analyses
+        ),
         "cases": case_payloads,
     }
 
@@ -663,6 +795,15 @@ def _write_practice_brief_report(*, run_root: Path, case_payloads: list[dict[str
                 "local_targeting_action_count": int(
                     read_usage.get("local_targeting_action_count", 0) or 0
                 ),
+                "fresh_targeting_action_count": int(
+                    read_usage.get("fresh_targeting_action_count", 0) or 0
+                ),
+                "stale_ref_action_count": int(
+                    read_usage.get("stale_ref_action_count", 0) or 0
+                ),
+                "nonconcrete_ref_action_count": int(
+                    read_usage.get("nonconcrete_ref_action_count", 0) or 0
+                ),
                 "host_role_targeting_observed": bool(
                     read_usage.get("host_role_targeting_observed")
                 ),
@@ -675,11 +816,11 @@ def _write_practice_brief_report(*, run_root: Path, case_payloads: list[dict[str
             }
         )
     tsv_lines = [
-        "case_id\tstatus\tvalidation_complete\trounds\twrites\tfirst_write_tool\tfeature_probe_count\tquery_topology_count\tquery_geometry_count\tquery_kernel_state_count\tvalidate_requirement_count\tlocal_targeting_action_count\thost_role_targeting_observed\thallucination_events\thallucination_weighted_score\thallucination_primary_layer\tissue"
+        "case_id\tstatus\tvalidation_complete\trounds\twrites\tfirst_write_tool\tfeature_probe_count\tquery_topology_count\tquery_geometry_count\tquery_kernel_state_count\tvalidate_requirement_count\tlocal_targeting_action_count\tfresh_targeting_action_count\tstale_ref_action_count\tnonconcrete_ref_action_count\thost_role_targeting_observed\thallucination_events\thallucination_weighted_score\thallucination_primary_layer\tissue"
     ]
     for row in rows:
         tsv_lines.append(
-            f"{row['case_id']}\t{row['status']}\t{int(row['validation_complete'])}\t{row['rounds']}\t{row['writes']}\t{row['first_write_tool']}\t{row['feature_probe_count']}\t{row['query_topology_count']}\t{row['query_geometry_count']}\t{row['query_kernel_state_count']}\t{row['validate_requirement_count']}\t{row['local_targeting_action_count']}\t{int(row['host_role_targeting_observed'])}\t{row['hallucination_events']}\t{row['hallucination_weighted_score']}\t{row['hallucination_primary_layer']}\t{row['issue']}"
+            f"{row['case_id']}\t{row['status']}\t{int(row['validation_complete'])}\t{row['rounds']}\t{row['writes']}\t{row['first_write_tool']}\t{row['feature_probe_count']}\t{row['query_topology_count']}\t{row['query_geometry_count']}\t{row['query_kernel_state_count']}\t{row['validate_requirement_count']}\t{row['local_targeting_action_count']}\t{row['fresh_targeting_action_count']}\t{row['stale_ref_action_count']}\t{row['nonconcrete_ref_action_count']}\t{int(row['host_role_targeting_observed'])}\t{row['hallucination_events']}\t{row['hallucination_weighted_score']}\t{row['hallucination_primary_layer']}\t{row['issue']}"
         )
     (run_root / "brief_report.tsv").write_text("\n".join(tsv_lines) + "\n", encoding="utf-8")
 
@@ -691,12 +832,12 @@ def _write_practice_brief_report(*, run_root: Path, case_payloads: list[dict[str
         f"- topology_query_cases: {sum(1 for row in rows if row['query_topology_count'] > 0)}",
         f"- hallucination_events: {sum(row['hallucination_events'] for row in rows)}",
         "",
-        "| case_id | status | validation | rounds | writes | first_write_tool | query_topology | query_geometry | query_kernel | validate | local_targeting | host_role | hallucination_events | hallucination_layer | issue |",
-        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |",
+        "| case_id | status | validation | rounds | writes | first_write_tool | query_topology | query_geometry | query_kernel | validate | local_targeting | fresh_targeting | stale_ref | nonconcrete_ref | host_role | hallucination_events | hallucination_layer | issue |",
+        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |",
     ]
     for row in rows:
         md_lines.append(
-            f"| {row['case_id']} | {row['status']} | {int(row['validation_complete'])} | {row['rounds']} | {row['writes']} | {row['first_write_tool'] or '-'} | {row['query_topology_count']} | {row['query_geometry_count']} | {row['query_kernel_state_count']} | {row['validate_requirement_count']} | {row['local_targeting_action_count']} | {int(row['host_role_targeting_observed'])} | {row['hallucination_events']} | {row['hallucination_primary_layer'] or '-'} | {row['issue'].replace('|', '/')} |"
+            f"| {row['case_id']} | {row['status']} | {int(row['validation_complete'])} | {row['rounds']} | {row['writes']} | {row['first_write_tool'] or '-'} | {row['query_topology_count']} | {row['query_geometry_count']} | {row['query_kernel_state_count']} | {row['validate_requirement_count']} | {row['local_targeting_action_count']} | {row['fresh_targeting_action_count']} | {row['stale_ref_action_count']} | {row['nonconcrete_ref_action_count']} | {int(row['host_role_targeting_observed'])} | {row['hallucination_events']} | {row['hallucination_primary_layer'] or '-'} | {row['issue'].replace('|', '/')} |"
         )
     (run_root / "brief_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
@@ -752,6 +893,19 @@ def _write_practice_run_diagnostics(*, run_root: Path, case_payloads: list[dict[
             )
             > 0
         ],
+        "stale_targeting_cases": [
+            analysis.get("case_id")
+            for analysis in analyses
+            if int(
+                (
+                    analysis.get("topology_read_model_usage")
+                    if isinstance(analysis.get("topology_read_model_usage"), dict)
+                    else {}
+                ).get("stale_ref_action_count", 0)
+                or 0
+            )
+            > 0
+        ],
         "host_role_targeting_cases": [
             analysis.get("case_id")
             for analysis in analyses
@@ -773,6 +927,7 @@ def _write_practice_run_diagnostics(*, run_root: Path, case_payloads: list[dict[
         f"- complete_cases: {payload['complete_cases']}",
         f"- topology_query_cases: {payload['topology_query_cases']}",
         f"- local_targeting_cases: {payload['local_targeting_cases']}",
+        f"- stale_targeting_cases: {payload['stale_targeting_cases']}",
         f"- host_role_targeting_cases: {payload['host_role_targeting_cases']}",
         "",
         "## Top Hallucination Cases",
@@ -818,11 +973,57 @@ def _practice_analysis_markdown(payload: dict[str, Any]) -> str:
         f"- host_role_targeting_observed: {read_usage.get('host_role_targeting_observed')}",
         f"- candidate_host_roles: {read_usage.get('candidate_host_roles')}",
         f"- local_targeting_action_count: {read_usage.get('local_targeting_action_count')}",
+        f"- fresh_targeting_action_count: {read_usage.get('fresh_targeting_action_count')}",
+        f"- stale_ref_action_count: {read_usage.get('stale_ref_action_count')}",
+        f"- nonconcrete_ref_action_count: {read_usage.get('nonconcrete_ref_action_count')}",
+        f"- exact_ref_consumption_rate: {read_usage.get('exact_ref_consumption_rate')}",
         f"- local_targeting_examples: {read_usage.get('local_targeting_examples')}",
         f"- topology_examples: {read_usage.get('topology_examples')}",
         "",
     ]
     return "\n".join(lines)
+
+
+def _extract_round_no_from_artifact_name(name: str) -> int | None:
+    match = _ROUND_FILE_RE.search(str(name))
+    if match is None:
+        return None
+    try:
+        return int(match.group("round"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_topology_ref_step(ref_id: str) -> int | None:
+    if not isinstance(ref_id, str):
+        return None
+    match = _TOPOLOGY_REF_RE.fullmatch(ref_id.strip())
+    if match is None:
+        return None
+    try:
+        return int(match.group("step"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_topology_window_before_round(
+    *,
+    topology_windows: list[dict[str, Any]],
+    round_no: int | None,
+) -> dict[str, Any] | None:
+    eligible = [
+        item
+        for item in topology_windows
+        if isinstance(item, dict)
+        and (
+            round_no is None
+            or item.get("round_no") is None
+            or int(item.get("round_no")) <= round_no
+        )
+    ]
+    if not eligible:
+        return None
+    return eligible[-1]
 
 
 def _load_round_digest(case_dir: Path) -> dict[str, Any]:

@@ -354,13 +354,16 @@ def test_build_runtime_skill_pack_frontloads_buildsketch_and_transform_hygiene()
         for item in skills
         if item["skill_id"] == "execute_build123d_minimal_script_hygiene"
     )
-    first_guidance = hygiene_skill["guidance"][:6]
+    first_guidance = hygiene_skill["guidance"][:7]
     joined = "\n".join(first_guidance)
 
     assert "Sketch primitives such as `Circle(...)`, `Ellipse(...)`, `Rectangle(...)`, and `RegularPolygon(...)` belong inside `BuildSketch`" in joined
-    assert "Do not write `with Rot(...):` or `with Pos(...):`, and do not invent `Loc(...)`" in joined
+    assert "Do not write `with Rot(...):` or `with Pos(...):`" in joined
+    assert "do not invent `Loc(...)`" in joined
+    assert "do not guess `Plane(...).moved(...)`" in joined
     assert "Do not import `ocp_vscode` or call `show(...)` / `show_object(...)`" in joined
     assert "Do not invent `Box(..., radius=...)`" in joined
+    assert "rounded pillbox or rounded enclosure shells" in joined
     assert "lowercase `scale(shape, by=(sx, sy, sz))`" in joined
 
 
@@ -385,7 +388,42 @@ def test_build_runtime_skill_pack_frontloads_fresh_shell_fillet_caution_for_encl
     joined = "\n".join(first_guidance)
 
     assert "filter_by_position(Axis.Z, ...)" in joined
+    assert "RectangleRounded(...)" in joined
     assert "max_fillet(...)" in joined
+
+
+def test_build_runtime_skill_pack_frontloads_code_first_local_finish_tail_contract() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Create a rectangular service bracket sized 66mm x 42mm x 16mm with a shallow top "
+                "pocket and two mounting holes on the bottom face. Add a centered rounded-rectangle "
+                "recess on the front face sized about 12mm x 6mm and 2mm deep, plus small fillets "
+                "around the top opening and countersinks on the mounting holes, so that a "
+                "topology-aware local finishing pass on the front face is useful."
+            )
+        },
+        latest_validation={},
+        latest_write_health={"tool": "execute_build123d"},
+    )
+
+    skill_ids = [item["skill_id"] for item in skills[:4]]
+
+    assert skill_ids[:2] == [
+        "execute_build123d_minimal_script_hygiene",
+        "code_first_local_finish_tail_contract",
+    ]
+    tail_skill = next(
+        item
+        for item in skills
+        if item["skill_id"] == "code_first_local_finish_tail_contract"
+    )
+    guidance = "\n".join(tail_skill["guidance"])
+
+    assert "CounterSinkHole(...)" in guidance
+    assert "do not approximate countersinks with manual `Cylinder(...)` cutters" in guidance
+    assert "postpone it to a later topology-guided local finish" in guidance
+    assert "do not call `shift_origin((0, 0, 0))`" in guidance
 
 
 def test_build_runtime_skill_pack_clamshell_guidance_mentions_two_shell_envelope_stabilization() -> None:
@@ -998,7 +1036,8 @@ def test_build_runtime_skill_pack_adds_enclosure_local_feature_placement_contrac
     guidance = "\n".join(placement_skill["guidance"])
 
     assert "Stabilize the lid/base shell first" in guidance
-    assert "Do not immediately fillet every broad `edges().filter_by(Axis.Z)` selection" in guidance
+    assert "Do not immediately fillet every broad top/bottom shell edge set" in guidance
+    assert "`edges().filter_by(Axis.Z)`" in guidance
     assert "Do not open a detached `BuildPart` whose first real operation is subtractive" in guidance
     assert "For repeated magnet recesses, thumb notches, plug pockets, posts" in guidance
     assert "`Locations(...)` plus `mode=Mode.SUBTRACT/ADD`" in guidance
@@ -1056,7 +1095,7 @@ def test_build_runtime_skill_pack_discourages_nested_buildpart_cutters_for_hole_
     assert "do not expect `peg = Pos(...) * peg` or `peg = Rot(...) * peg`" in hygiene_guidance
     assert "Do not assign back into `part.part` while that `BuildPart` is still open" in hygiene_guidance
     assert "Do not write `Plane.XY * (x, y, z)`" in hygiene_guidance
-    assert "Do not invent `Loc(...)`" in hygiene_guidance
+    assert "do not invent `Loc(...)`" in hygiene_guidance
     assert "Do not move one part aside merely for visibility" in hygiene_guidance
     assert "For explicit countersink arrays on a planar host face, prefer one `CounterSinkHole(...)` pass on the first attempt" in hygiene_guidance
     assert "same active `BuildPart`" in hole_guidance

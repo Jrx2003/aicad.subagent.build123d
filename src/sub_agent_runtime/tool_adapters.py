@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from sub_agent_runtime.feature_graph import (
+    DomainKernelState,
     FamilyRepairPacket,
     PatchFeatureGraphInput,
     apply_domain_kernel_patch,
@@ -141,6 +142,20 @@ _SUPPORTED_RUNTIME_REPAIR_PACKET_RECIPES = frozenset(
 )
 
 
+def _recipe_contract_payload(recipe_spec: RepairPacketRecipeSpec | None) -> dict[str, Any] | None:
+    if recipe_spec is None:
+        return None
+    return {
+        "recipe_id": recipe_spec.recipe_id,
+        "supported_family_ids": list(recipe_spec.supported_family_ids),
+        "required_anchor_keys": list(recipe_spec.required_anchor_keys),
+        "required_parameters": list(recipe_spec.required_parameters),
+        "compiler_kind": recipe_spec.compiler_kind,
+        "can_execute_deterministically": recipe_spec.can_execute_deterministically,
+        "fallback_lane": recipe_spec.fallback_lane,
+    }
+
+
 def supports_runtime_repair_packet(packet: dict[str, Any] | None) -> bool:
     if not isinstance(packet, dict):
         return False
@@ -172,19 +187,15 @@ def compile_runtime_repair_packet_execution(
     packet_payload = packet.to_dict()
     recipe_id = str(packet.recipe_id or "").strip()
     recipe_spec = _RUNTIME_REPAIR_PACKET_RECIPES.get(recipe_id)
-    recipe_contract = (
-        {
-            "recipe_id": recipe_spec.recipe_id,
-            "supported_family_ids": list(recipe_spec.supported_family_ids),
-            "required_anchor_keys": list(recipe_spec.required_anchor_keys),
-            "required_parameters": list(recipe_spec.required_parameters),
-            "compiler_kind": recipe_spec.compiler_kind,
-            "can_execute_deterministically": recipe_spec.can_execute_deterministically,
-            "fallback_lane": recipe_spec.fallback_lane,
-        }
-        if recipe_spec is not None
-        else None
+    recipe_contract = _recipe_contract_payload(recipe_spec)
+    contract_failure = _validate_runtime_repair_packet_contract(
+        graph=graph,
+        packet=packet,
+        recipe_spec=recipe_spec,
+        recipe_contract=recipe_contract,
     )
+    if contract_failure is not None:
+        return contract_failure
     if recipe_id == "spherical_recess_host_face_center_set":
         compiled = _compile_spherical_recess_repair_packet(
             run_state=run_state,
@@ -233,6 +244,74 @@ def _select_runtime_repair_packet(
         if not bool(getattr(packet, "stale", False)):
             return packet
     return None
+
+
+def _validate_runtime_repair_packet_contract(
+    *,
+    graph: DomainKernelState,
+    packet: FamilyRepairPacket,
+    recipe_spec: RepairPacketRecipeSpec | None,
+    recipe_contract: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if recipe_spec is None:
+        return None
+    feature_instance = graph.feature_instances.get(packet.feature_instance_id)
+    if feature_instance is None:
+        return None
+    contract_sources = {}
+    if isinstance(packet.target_anchor_summary, dict):
+        contract_sources.update(packet.target_anchor_summary)
+    if isinstance(packet.realized_anchor_summary, dict):
+        contract_sources.update(packet.realized_anchor_summary)
+    parameter_bindings = (
+        feature_instance.parameter_bindings
+        if isinstance(feature_instance.parameter_bindings, dict)
+        else {}
+    )
+    missing_anchor_keys = [
+        key
+        for key in recipe_spec.required_anchor_keys
+        if not _contract_value_present(contract_sources.get(key))
+    ]
+    missing_parameters = [
+        key
+        for key in recipe_spec.required_parameters
+        if not _contract_value_present(parameter_bindings.get(key))
+    ]
+    if (
+        packet.family_id not in recipe_spec.supported_family_ids
+        or missing_anchor_keys
+        or missing_parameters
+    ):
+        return {
+            "ok": False,
+            "error": "repair_packet_contract_miss",
+            "contract_error": (
+                "unsupported_packet_family"
+                if packet.family_id not in recipe_spec.supported_family_ids
+                else "missing_required_packet_contract_inputs"
+            ),
+            "packet": packet.to_dict(),
+            "packet_id": packet.packet_id,
+            "family_id": packet.family_id,
+            "repair_mode": packet.repair_mode,
+            "recipe_id": packet.recipe_id,
+            "recipe_contract": recipe_contract,
+            "missing_anchor_keys": missing_anchor_keys,
+            "missing_parameters": missing_parameters,
+            "domain_kernel_digest": build_domain_kernel_digest(graph),
+        }
+    return None
+
+
+def _contract_value_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
 
 
 def _compile_spherical_recess_repair_packet(
