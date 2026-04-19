@@ -20,7 +20,7 @@ There is no legacy planner/runtime path in the canonical protocol.
 4. `apply_cad_action` is only for bounded local finishing after a stable code-backed host already exists.
 5. `validate_requirement` is a judge, not a per-turn mandatory action.
 6. `execute_build123d` may be rejected before sandbox execution by deterministic preflight lint when the code already contains known-invalid legacy API or argument usage.
-7. Known-invalid Build123d helper guesses such as bare `subtract(...)`, bare `rotate(...)`, bare `shell(...)`, wrong countersink helper names such as `CountersinkHole(...)`, nonexistent semi-profile helpers such as `Semicircle(...)`, unsupported primitive/workplane keywords such as `Cylinder(..., axis=...)`, `Box(..., depth=...)`, `Circle(..., arc_size=...)`, `Plane.rotated(..., (0, 0, 0))`, or `countersink_radius=...`, and `CounterSinkHole(...)` misused inside `BuildSketch(...)`, should be handled as preflight repair surfaces rather than spent as full sandbox retries.
+7. Known-invalid Build123d helper guesses such as bare `subtract(...)`, bare `rotate(...)`, bare `shell(...)`, wrong countersink helper names such as `CountersinkHole(...)`, nonexistent semi-profile helpers such as `Semicircle(...)`, unsupported primitive/workplane keywords such as `Cylinder(..., axis=...)`, `Box(..., depth=...)`, `Circle(..., arc_size=...)`, `CenterArc(..., end_angle=...)`, `Plane.rotated(..., (0, 0, 0))`, or `countersink_radius=...`, and `CounterSinkHole(...)` misused inside `BuildSketch(...)`, should be handled as preflight repair surfaces rather than spent as full sandbox retries.
 8. Invalid Python syntax or indentation inside `execute_build123d` should also be converted into a preflight repair surface so repeated failures stay on direct code repair instead of falling into probe-only semantic refresh loops.
 9. Nested `BuildPart()` cutter arithmetic inside an active host builder, for example `part.part -= cutter.part` after building the cutter in a nested builder block, should also be treated as a preflight repair surface because repeated subtractive placements can collapse to the wrong location even when the script executes successfully.
 
@@ -66,12 +66,20 @@ Runtime should stop when one of these is true:
 2. model explicitly calls `finish_run` and runtime sees no stronger contrary evidence
 3. no further useful progress is possible and failure artifacts are ready
 
+When a `validate_requirement` result in the current round already returns `is_complete=true`, the runtime should stop in that same round. It must not schedule one more planner turn just to rediscover completion.
+
 Runtime should continue when:
 
 1. fresh blockers exist after a write
 2. fresh geometry evidence contradicts older diagnostics
 3. a kernel refresh is required after repeated read-only or repeated failed repair turns
 4. fresh validation is still incomplete because evidence is insufficient or the validator explicitly hints `inspect_more_evidence`
+
+Inside an active post-solid sketch window used for `local_finish`, the default closure bias is:
+
+1. after `create_sketch(face_ref=...)`, prefer the next `apply_cad_action` to add the first profile or direct feature mutation
+2. after a fresh profile/path add, prefer `apply_cad_action` again to materialize the cut/extrude/hole before `query_sketch`
+3. do not spend `apply_cad_action` on `get_history`, rollback, or other session-control escapes while the turn is still constrained to `local_finish`
 
 ## Kernel Sync
 
@@ -107,6 +115,8 @@ For direct spherical-recess geometry where Build123d exposes spherical face surf
 For explicit cylindrical-slot / cutting-cylinder requirements that name a host outer face such as the top surface, validator/probe fallback should recover the slot centerline on the host-normal axis from the host outer-face bound and the cutter radius. Raw cylindrical `axis_origin` or cylindrical surface centroids must not be treated as authoritative slot-center evidence when the realized half-cylinder wall is truncated by the host solid.
 
 When a write fails before sandbox execution because preflight lint catches a known-invalid API surface, runtime should expose the lint hits and any family-specific recipe hint as the next-turn repair surface instead of collapsing that failure into a generic syntax/runtime retry.
+
+When that compacted failure surface is serialized back into the next prompt, repeated lint hits with the same `rule_id` should be deduplicated and annotated with `occurrence_count` so prompt budget stays available for distinct failures and repair recipes.
 
 Repeated artifactless `execute_build123d` failures that are already classified as concrete API/lint/syntax/boolean-shape mistakes should remain on the code-repair lane for the next turn. They should not be forced into a probe-first semantic refresh loop unless the failure stops being concretely classifiable.
 

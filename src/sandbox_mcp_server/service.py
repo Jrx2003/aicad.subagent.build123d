@@ -115,6 +115,18 @@ DEFAULT_RENDER_VIEW_FILENAME = "render_view.png"
 GEOMETRY_OBJECT_CAPTURE_LIMIT = 120
 _VALIDATION_LLM_MAX_ELIGIBLE_UNRESOLVED_CLAUSES = 3
 _VALIDATION_LLM_MAX_ESTIMATED_PROMPT_CHARS = 7000
+_SOLID_MUTATING_ACTION_TYPES = {
+    CADActionType.EXTRUDE,
+    CADActionType.CUT_EXTRUDE,
+    CADActionType.TRIM_SOLID,
+    CADActionType.REVOLVE,
+    CADActionType.LOFT,
+    CADActionType.SWEEP,
+    CADActionType.FILLET,
+    CADActionType.CHAMFER,
+    CADActionType.HOLE,
+    CADActionType.SPHERE_RECESS,
+}
 SKETCH_REF_PATTERN = re.compile(
     r"^(?P<kind>path|profile):(?P<step>[0-9]+):(?P<entity_id>[A-Z]_[A-Za-z0-9_]+)$"
 )
@@ -1012,6 +1024,62 @@ class SandboxMCPService:
             current_step,
         )
 
+        # Build artifacts
+        filenames = list(
+            dict.fromkeys([*result.output_files, *result.output_file_contents.keys()])
+        )
+        artifacts: list[SandboxArtifact] = []
+
+        for filename in filenames:
+            content = result.output_file_contents.get(filename)
+            artifact = SandboxArtifact(
+                filename=filename,
+                uri=f"sandbox://artifacts/{filename}",
+                mime_type=self._resolve_mime_type(filename),
+                size_bytes=len(content) if content is not None else 0,
+                content_base64=(
+                    base64.b64encode(content).decode("ascii")
+                    if content is not None and request.include_artifact_content
+                    else None
+                ),
+            )
+            artifacts.append(artifact)
+
+        previous_snapshot = action_history[-1].result_snapshot if action_history else None
+        if (
+            result.success
+            and request.action_type in _SOLID_MUTATING_ACTION_TYPES
+            and not self._snapshot_has_material_geometry_delta(previous_snapshot, snapshot)
+        ):
+            suggestions = self._build_no_effect_action_suggestions(
+                action_type=request.action_type,
+                action_params=normalized_action_params,
+                action_history=action_history,
+            )
+            completeness = self._generate_completeness(snapshot, action_history)
+            error_message = (
+                f"{request.action_type.value} produced no geometry change on the current solid; "
+                "inspect the active sketch/profile or refresh the local target before retrying."
+            )
+            return CADActionOutput(
+                success=False,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                error_code=SandboxErrorCode.EXECUTION_ERROR,
+                error_message=error_message,
+                snapshot=snapshot,
+                executed_action={
+                    "type": request.action_type.value,
+                    "params": normalized_action_params,
+                },
+                step_file=next((f for f in filenames if f.endswith(".step")), None),
+                output_files=filenames,
+                artifacts=artifacts,
+                action_history=action_history,
+                suggestions=suggestions,
+                completeness=completeness,
+            )
+
         # Build action history entry
         history_entry = ActionHistoryEntry(
             step=current_step,
@@ -1035,27 +1103,6 @@ class SandboxMCPService:
 
         # Generate completeness diagnostics
         completeness = self._generate_completeness(snapshot, action_history)
-
-        # Build artifacts
-        filenames = list(
-            dict.fromkeys([*result.output_files, *result.output_file_contents.keys()])
-        )
-        artifacts: list[SandboxArtifact] = []
-
-        for filename in filenames:
-            content = result.output_file_contents.get(filename)
-            artifact = SandboxArtifact(
-                filename=filename,
-                uri=f"sandbox://artifacts/{filename}",
-                mime_type=self._resolve_mime_type(filename),
-                size_bytes=len(content) if content is not None else 0,
-                content_base64=(
-                    base64.b64encode(content).decode("ascii")
-                    if content is not None and request.include_artifact_content
-                    else None
-                ),
-            )
-            artifacts.append(artifact)
 
         error_code = (
             SandboxErrorCode.NONE
@@ -1081,6 +1128,93 @@ class SandboxMCPService:
             suggestions=suggestions,
             completeness=completeness,
         )
+
+    def _snapshot_has_material_geometry_delta(
+        self,
+        previous_snapshot: CADStateSnapshot | None,
+        current_snapshot: CADStateSnapshot | None,
+    ) -> bool:
+        if previous_snapshot is None or current_snapshot is None:
+            return True
+        previous = previous_snapshot.geometry
+        current = current_snapshot.geometry
+        if previous is None or current is None:
+            return True
+        if (
+            int(previous.solids) != int(current.solids)
+            or int(previous.faces) != int(current.faces)
+            or int(previous.edges) != int(current.edges)
+        ):
+            return True
+        tol = max(
+            abs(float(previous.volume)),
+            abs(float(current.volume)),
+            max((abs(float(value)) for value in (previous.bbox or []) + (current.bbox or [])), default=1.0),
+            1.0,
+        ) * 1e-6
+        scalar_pairs = [
+            (previous.volume, current.volume),
+            (previous.surface_area, current.surface_area),
+        ]
+        for lhs, rhs in scalar_pairs:
+            if abs(float(lhs) - float(rhs)) > tol:
+                return True
+        vector_pairs = [
+            (previous.bbox, current.bbox),
+            (previous.bbox_min, current.bbox_min),
+            (previous.bbox_max, current.bbox_max),
+            (previous.center_of_mass, current.center_of_mass),
+        ]
+        for lhs_values, rhs_values in vector_pairs:
+            lhs = list(lhs_values or [])
+            rhs = list(rhs_values or [])
+            if len(lhs) != len(rhs):
+                return True
+            for lhs_value, rhs_value in zip(lhs, rhs):
+                if abs(float(lhs_value) - float(rhs_value)) > tol:
+                    return True
+        return False
+
+    def _build_no_effect_action_suggestions(
+        self,
+        *,
+        action_type: CADActionType,
+        action_params: dict[str, CADParamValue],
+        action_history: list[ActionHistoryEntry],
+    ) -> list[str]:
+        suggestions = [
+            (
+                f"{action_type.value} left the solid unchanged. Inspect the active local profile "
+                "or target selection before retrying the solid edit."
+            )
+        ]
+        if action_type in {
+            CADActionType.CUT_EXTRUDE,
+            CADActionType.EXTRUDE,
+            CADActionType.HOLE,
+            CADActionType.SPHERE_RECESS,
+        }:
+            suggestions.append(
+                "Use query_sketch to confirm the active profile/centers are non-empty and lie in the target face's local 2D frame before retrying."
+            )
+        if action_type in {
+            CADActionType.CUT_EXTRUDE,
+            CADActionType.HOLE,
+            CADActionType.FILLET,
+            CADActionType.CHAMFER,
+        }:
+            suggestions.append(
+                "If the local host may be wrong, run query_topology again and reopen create_sketch(face_ref=...) or refresh edge_refs before retrying."
+            )
+        if (
+            action_type == CADActionType.CUT_EXTRUDE
+            and self._history_has_face_attached_sketch(action_history)
+            and "face_ref" not in action_params
+        ):
+            suggestions.append(
+                "For face-attached sketch edits, keep add_circle/add_rectangle centers in sketch-local coordinates instead of reusing world-space face coordinates."
+            )
+        return suggestions
 
     async def query_snapshot(self, request: QuerySnapshotInput) -> QuerySnapshotOutput:
         """Query a snapshot by session and optional step."""
@@ -7371,6 +7505,26 @@ class SandboxMCPService:
                     )
                 )
 
+        hole_count_requirement_text = (
+            self._extract_family_specific_requirement_text(
+                requirement_text,
+                family="explicit_anchor_hole",
+            )
+            if (
+                semantics.mentions_hole
+                or semantics.mentions_pattern
+                or getattr(semantics, "mentions_spherical_recess", False)
+            )
+            else requirement_text
+        )
+        hole_face_targets = self._extract_family_specific_face_targets(
+            requirement_text,
+            family="explicit_anchor_hole",
+        )
+        if not hole_face_targets:
+            hole_face_targets = semantics.face_targets
+        explicit_hole_centers: list[list[float]] = []
+
         if semantics.mentions_hole:
             allow_spherical_recess_as_hole = bool(
                 getattr(semantics, "mentions_spherical_recess", False)
@@ -7494,7 +7648,7 @@ class SandboxMCPService:
                 ):
                     realized_hole_centers = self._snapshot_collect_subtractive_feature_centers(
                         snapshot=history[-1].result_snapshot,
-                        face_targets=semantics.face_targets,
+                        face_targets=hole_face_targets,
                     )
                 realized_hole_centers = self._filter_extra_center_feature_for_requirement(
                     requirement_text,
@@ -7528,7 +7682,7 @@ class SandboxMCPService:
                 ):
                     actual_snapshot_hole_centers = self._snapshot_collect_subtractive_feature_centers(
                         snapshot=history[-1].result_snapshot,
-                        face_targets=semantics.face_targets,
+                        face_targets=hole_face_targets,
                     )
                     actual_snapshot_hole_centers = (
                         self._filter_extra_center_feature_for_requirement(
@@ -7559,22 +7713,31 @@ class SandboxMCPService:
                             )
                         )
 
+        family_expected_local_feature_count = self._infer_expected_local_feature_count(
+            hole_count_requirement_text,
+            family="explicit_anchor_hole"
+            if (
+                semantics.mentions_hole
+                or semantics.mentions_pattern
+                or getattr(semantics, "mentions_spherical_recess", False)
+            )
+            else None,
+        )
         expected_local_feature_centers = self._infer_expected_local_feature_centers(
             requirement_text
         )
+        if (
+            expected_local_feature_centers
+            and not explicit_hole_centers
+            and isinstance(family_expected_local_feature_count, int)
+            and family_expected_local_feature_count > 0
+            and len(expected_local_feature_centers) < family_expected_local_feature_count
+        ):
+            expected_local_feature_centers = []
         expected_local_feature_count = (
             len(expected_local_feature_centers)
             if expected_local_feature_centers
-            else self._infer_expected_local_feature_count(
-                requirement_text,
-                family="explicit_anchor_hole"
-                if (
-                    semantics.mentions_hole
-                    or semantics.mentions_pattern
-                    or getattr(semantics, "mentions_spherical_recess", False)
-                )
-                else None,
-            )
+            else family_expected_local_feature_count
         )
         if (expected_local_feature_centers or expected_local_feature_count is not None) and (
             semantics.mentions_hole
@@ -7588,7 +7751,7 @@ class SandboxMCPService:
             ):
                 realized_feature_centers = self._snapshot_collect_subtractive_feature_centers(
                     snapshot=history[-1].result_snapshot,
-                    face_targets=semantics.face_targets,
+                    face_targets=hole_face_targets,
                 )
             if (
                 not realized_feature_centers
@@ -7609,7 +7772,9 @@ class SandboxMCPService:
                     expected_local_feature_centers,
                 )
                 allow_centered_translation = (
-                    self._requirement_uses_centered_pattern_local_coordinates(requirement_text)
+                    self._requirement_uses_centered_pattern_local_coordinates(
+                        requirement_text
+                    )
                 )
                 local_anchor_alignment = self._center_sets_match_with_requirement_coordinate_modes(
                     realized_feature_centers,
@@ -7661,7 +7826,7 @@ class SandboxMCPService:
         ):
             opening_centers = self._snapshot_collect_host_plane_circle_edge_centers(
                 snapshot=history[-1].result_snapshot,
-                face_targets=semantics.face_targets,
+                face_targets=hole_face_targets,
             )
             allow_centered_translation = (
                 self._requirement_uses_centered_pattern_local_coordinates(
@@ -8231,6 +8396,23 @@ class SandboxMCPService:
             }:
                 return None
         return None
+
+    def _history_has_face_attached_sketch(
+        self,
+        history: list[ActionHistoryEntry],
+    ) -> bool:
+        sketch_index = self._find_preceding_sketch_index(history, len(history))
+        if sketch_index is None:
+            return False
+        sketch_entry = history[sketch_index]
+        sketch_params = normalize_action_params(
+            CADActionType.CREATE_SKETCH,
+            sketch_entry.action_params,
+        )
+        return bool(
+            str(sketch_params.get("face_ref") or "").strip()
+            or str(sketch_params.get("_face_candidate_hint") or "").strip()
+        )
 
     def _history_window_has_profile_actions(
         self,
@@ -13033,14 +13215,22 @@ class SandboxMCPService:
         else:
             noun_patterns = (r"features?",)
         counts: list[int] = []
+        count_pattern = re.compile(
+            r"\b(\d+|a|an|single|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b",
+            re.IGNORECASE,
+        )
         for noun_pattern in noun_patterns:
-            for match in re.finditer(
-                rf"\b(?P<count>\d+|a|an|single|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b"
-                rf"[^.;,\n]{{0,40}}\b(?:{noun_pattern})\b",
+            for noun_match in re.finditer(
+                rf"\b(?:{noun_pattern})\b",
                 text,
                 re.IGNORECASE,
             ):
-                raw = str(match.group("count")).lower()
+                window_start = max(0, noun_match.start() - 40)
+                prefix_window = text[window_start : noun_match.start()]
+                count_tokens = list(count_pattern.finditer(prefix_window))
+                if not count_tokens:
+                    continue
+                raw = str(count_tokens[-1].group(1)).lower()
                 count = word_to_count.get(raw)
                 if count is None:
                     try:
@@ -13056,6 +13246,78 @@ class SandboxMCPService:
             ):
                 counts.append(2)
         return max(counts) if counts else None
+
+    def _extract_family_specific_requirement_text(
+        self,
+        requirement_text: str | None,
+        *,
+        family: str | None = None,
+    ) -> str:
+        text = str(requirement_text or "").strip()
+        if not text:
+            return ""
+        family_name = str(family or "").strip().lower()
+        if family_name != "explicit_anchor_hole":
+            return text
+        clauses = [
+            clause.strip(" \t\r\n.;")
+            for clause in re.split(r"(?:[.;]\s+|\n+)", text)
+            if str(clause).strip(" \t\r\n.;")
+        ]
+        if not clauses:
+            return text
+        hole_clause_pattern = re.compile(
+            r"\b(?:mounting|countersunk?|counterbored|clearance|pilot|fastener|anchor|through|threaded)?\s*holes?\b"
+            r"|\bcountersinks?\b"
+            r"|\bcounterbores?\b",
+            re.IGNORECASE,
+        )
+        selected = [clause for clause in clauses if hole_clause_pattern.search(clause)]
+        if not selected:
+            return text
+        return ". ".join(selected)
+
+    def _extract_family_specific_face_targets(
+        self,
+        requirement_text: str | None,
+        *,
+        family: str | None = None,
+    ) -> tuple[str, ...]:
+        text = str(requirement_text or "").strip().lower()
+        if not text:
+            return ()
+        family_name = str(family or "").strip().lower()
+        targets: list[str] = []
+        if family_name == "explicit_anchor_hole":
+            family_pattern = re.compile(
+                r"\b(?:mounting|countersunk?|counterbored|clearance|pilot|fastener|anchor|through|threaded)?\s*holes?\b"
+                r"|\bcountersinks?\b"
+                r"|\bcounterbores?\b",
+                re.IGNORECASE,
+            )
+            face_pattern = re.compile(
+                r"\b(top|bottom|front|back|left|right|side)\s+(?:surface|face)\b",
+                re.IGNORECASE,
+            )
+            for family_match in family_pattern.finditer(text):
+                window_start = max(0, family_match.start() - 24)
+                window_end = min(len(text), family_match.end() + 32)
+                local_window = text[window_start:window_end]
+                for face_match in face_pattern.finditer(local_window):
+                    target = str(face_match.group(1)).lower()
+                    if target not in targets:
+                        targets.append(target)
+            if targets:
+                return tuple(targets)
+        for match in re.finditer(
+            r"\b(top|bottom|front|back|left|right|side)\s+(?:surface|face)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            target = str(match.group(1)).lower()
+            if target not in targets:
+                targets.append(target)
+        return tuple(targets)
 
     def _extract_explicit_point_centers_from_requirement(
         self,

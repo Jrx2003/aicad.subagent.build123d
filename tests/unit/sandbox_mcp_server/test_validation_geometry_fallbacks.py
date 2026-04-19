@@ -607,6 +607,33 @@ def _build_centered_plate_countersink_topology(
     )
 
 
+def test_explicit_anchor_hole_family_text_prefers_hole_clause_and_bottom_face_target() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    requirement_text = (
+        "Create a rectangular service bracket with two mounting holes on the bottom face. "
+        "Add a centered rounded rectangle recess on the front face."
+    )
+
+    family_text = service._extract_family_specific_requirement_text(
+        requirement_text,
+        family="explicit_anchor_hole",
+    )
+
+    assert "two mounting holes on the bottom face" in family_text.lower()
+    assert "front face" not in family_text.lower()
+    assert service._extract_family_specific_face_targets(
+        requirement_text,
+        family="explicit_anchor_hole",
+    ) == ("bottom",)
+    assert (
+        service._infer_expected_local_feature_count(
+            family_text,
+            family="explicit_anchor_hole",
+        )
+        == 2
+    )
+
+
 def test_interpretation_verifies_slot_cover_length_from_slot_alignment_check() -> None:
     requirement_text = "length set to 110.0 to cover the entire length"
     bundle = RequirementEvidenceBuilder.build(
@@ -3488,6 +3515,210 @@ async def test_validate_requirement_accepts_hole_history_with_countersink_radius
     assert result.success is True
     assert "feature_hole" not in result.blockers
     assert "feature_countersink" not in result.blockers
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_uses_hole_clause_face_targets_for_local_anchor_count_on_mixed_face_requirement() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-hole-clause-face-targets"
+    service._session_manager.clear_session(session_id)
+
+    top_face = _topology_face(
+        step=1,
+        face_id="F_top",
+        center=[0.0, 0.0, 8.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-33.0, 33.0, -21.0, 21.0, 8.0, 8.0),
+        area=2772.0,
+    )
+    bottom_face = _topology_face(
+        step=1,
+        face_id="F_bottom",
+        center=[0.0, 0.0, -8.0],
+        normal=[0.0, 0.0, -1.0],
+        bbox=_bbox(-33.0, 33.0, -21.0, 21.0, -8.0, -8.0),
+        area=2772.0,
+    )
+    front_face = _topology_face(
+        step=1,
+        face_id="F_front",
+        center=[0.0, 21.0, 0.0],
+        normal=[0.0, 1.0, 0.0],
+        bbox=_bbox(-33.0, 33.0, 21.0, 21.0, -8.0, 8.0),
+        area=1056.0,
+    )
+
+    hole_faces: list[TopologyFaceEntity] = []
+    for index, x in enumerate((-20.0, 20.0), start=1):
+        hole_faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_bottom_hole_{index}",
+                center=[x, 0.0, 0.0],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(x - 3.0, x + 3.0, -3.0, 3.0, -8.0, 8.0),
+                geom_type="CYLINDER",
+                radius=3.0,
+                axis_origin=[x, 0.0, -8.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=300.0,
+            )
+        )
+
+    topology_index = TopologyObjectIndex(
+        faces=[top_face, bottom_face, front_face, *hole_faces],
+        edges=[],
+        faces_total=3 + len(hole_faces),
+        edges_total=0,
+        max_items_per_type=32,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=3 + len(hole_faces),
+                edges=36,
+                volume=36000.0,
+                bbox=[66.0, 42.0, 16.0],
+                bbox_min=[-33.0, -21.0, -8.0],
+                bbox_max=[33.0, 21.0, 8.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a rectangular service bracket with two mounting holes on the bottom face. "
+        "Add a centered rounded rectangle recess on the front face."
+    )
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    check = next(
+        item
+        for item in result.checks
+        if item.check_id == "feature_local_anchor_count_alignment"
+    )
+    assert check.status == RequirementCheckStatus.PASS
+    assert "required_center_count=2" in str(check.evidence)
+    assert "realized_center_count=2" in str(check.evidence)
+
+
+@pytest.mark.asyncio
+async def test_validate_requirement_prefers_hole_count_over_centered_front_recess_count_for_explicit_anchor_hole() -> None:
+    service = SandboxMCPService(runner=_DummyRunner())
+    session_id = "session-validate-hole-count-over-front-recess-count"
+    service._session_manager.clear_session(session_id)
+
+    top_face = _topology_face(
+        step=1,
+        face_id="F_top",
+        center=[0.0, 0.0, 8.0],
+        normal=[0.0, 0.0, 1.0],
+        bbox=_bbox(-33.0, 33.0, -21.0, 21.0, 8.0, 8.0),
+        area=2772.0,
+    )
+    bottom_face = _topology_face(
+        step=1,
+        face_id="F_bottom",
+        center=[0.0, 0.0, -8.0],
+        normal=[0.0, 0.0, -1.0],
+        bbox=_bbox(-33.0, 33.0, -21.0, 21.0, -8.0, -8.0),
+        area=2772.0,
+    )
+    front_face = _topology_face(
+        step=1,
+        face_id="F_front",
+        center=[0.0, 21.0, 0.0],
+        normal=[0.0, 1.0, 0.0],
+        bbox=_bbox(-33.0, 33.0, 21.0, 21.0, -8.0, 8.0),
+        area=1056.0,
+    )
+
+    hole_faces: list[TopologyFaceEntity] = []
+    for index, x in enumerate((-25.0, 25.0), start=1):
+        hole_faces.append(
+            _topology_face(
+                step=1,
+                face_id=f"F_bottom_hole_{index}",
+                center=[x, 0.0, 0.0],
+                normal=[1.0, 0.0, 0.0],
+                bbox=_bbox(x - 3.0, x + 3.0, -3.0, 3.0, -8.0, 8.0),
+                geom_type="CYLINDER",
+                radius=3.0,
+                axis_origin=[x, 0.0, -8.0],
+                axis_direction=[0.0, 0.0, 1.0],
+                area=300.0,
+            )
+        )
+
+    topology_index = TopologyObjectIndex(
+        faces=[top_face, bottom_face, front_face, *hole_faces],
+        edges=[],
+        faces_total=3 + len(hole_faces),
+        edges_total=0,
+        max_items_per_type=32,
+    )
+
+    service._session_manager.append_action(
+        session_id,
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.SNAPSHOT,
+            action_params={"source": "execute_build123d"},
+            result_snapshot=_snapshot(
+                step=1,
+                solids=1,
+                faces=3 + len(hole_faces),
+                edges=36,
+                volume=33323.28356347061,
+                bbox=[66.0, 42.0, 16.0],
+                bbox_min=[-33.0, -21.0, -8.0],
+                bbox_max=[33.0, 21.0, 8.0],
+                topology_index=topology_index,
+            ),
+            success=True,
+            error=None,
+        ),
+    )
+
+    requirement_text = (
+        "Create a rectangular service bracket sized 66mm x 42mm x 16mm with a shallow top pocket "
+        "and two mounting holes on the bottom face. Add a centered rounded-rectangle recess on the "
+        "front face sized about 12mm x 6mm and 2mm deep, plus small fillets around the top opening "
+        "and countersinks on the mounting holes, so that a topology-aware local finishing pass on "
+        "the front face is useful."
+    )
+    result = await service.validate_requirement(
+        ValidateRequirementInput(
+            session_id=session_id,
+            requirement_text=requirement_text,
+            requirements={"description": requirement_text},
+        )
+    )
+
+    assert result.success is True
+    check = next(
+        item
+        for item in result.checks
+        if item.check_id == "feature_local_anchor_count_alignment"
+    )
+    assert "required_center_count=2" in str(check.evidence)
+    assert "realized_center_count=2" in str(check.evidence)
 
 
 @pytest.mark.asyncio

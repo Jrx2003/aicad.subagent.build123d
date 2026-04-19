@@ -7,7 +7,7 @@ from functools import lru_cache
 import io
 import re
 import tokenize
-from typing import Any
+from typing import Any, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -1490,6 +1490,43 @@ def _preflight_lint_execute_build123d(
                     ),
                 }
             )
+        if (
+            ("pin hinge" in requirement_lower or "mechanical hinge" in requirement_lower)
+            and (
+                "clamshell" in requirement_lower
+                or ("lid" in requirement_lower and "base" in requirement_lower)
+                or "top lid" in requirement_lower
+                or "bottom base" in requirement_lower
+            )
+        ):
+            for hinge_axis_hit in _find_clamshell_unrotated_default_hinge_cylinder_hits(
+                parsed_tree,
+                code_for_lint=code,
+            ):
+                line_no = int(hinge_axis_hit.get("line_no") or 0)
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_contract.clamshell_hinge_unrotated_default_cylinder",
+                        "message": (
+                            "For a clamshell back-edge pin/mechanical hinge, dropping an "
+                            "unrotated default `Cylinder(...)` onto the hinge seam leaves the "
+                            "cylinder axis on Z instead of the requested hinge axis, usually X/width."
+                        ),
+                        "repair_hint": (
+                            "Keep the seam Y coordinate literal, but choose a supported "
+                            "orientation lane for the hinge cylinder. If the hinge geometry is "
+                            "host-owned, build it with an axis-correct host-native pattern. If "
+                            "detached hinge hardware is truly required, build the cylinder "
+                            "positively first, close that builder, then orient the closed solid "
+                            "with `Rot(...)` before assembly. "
+                            + (
+                                f"Repair the unrotated hinge cylinder at line {line_no}."
+                                if line_no > 0
+                                else "Repair the unrotated hinge cylinder."
+                            )
+                        ),
+                    }
+                )
         for host_part_hit in _find_active_buildpart_host_part_mutation_hits(parsed_tree):
             line_no = int(host_part_hit.get("line_no") or 0)
             host_alias = str(host_part_hit.get("host_alias") or "part").strip() or "part"
@@ -1697,6 +1734,65 @@ def _preflight_lint_execute_build123d(
                             f"Repair the workplane offset at line {line_no}."
                             if line_no > 0
                             else "Repair the workplane offset."
+                        )
+                    ),
+                }
+            )
+        for plane_family_hit in _find_named_face_plane_family_mismatch_hits(
+            parsed_tree,
+            requirement_lower=requirement_lower,
+        ):
+            line_no = int(plane_family_hit.get("line_no") or 0)
+            plane_name = str(plane_family_hit.get("plane_name") or "").strip() or "unknown"
+            expected_planes = ", ".join(
+                str(item).strip() for item in plane_family_hit.get("expected_planes", []) if str(item).strip()
+            ) or "XY/XZ/YZ"
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.named_face_plane_family_mismatch",
+                    "message": (
+                        "Named-face local edits must use the plane family whose normal matches the "
+                        f"requested host face. `Plane.{plane_name}` does not match the named-face "
+                        f"orientation implied here; expected plane family/families: {expected_planes}."
+                    ),
+                    "repair_hint": (
+                        "Map named host faces to plane families by normal axis before sketching or "
+                        "placing cutters: `top/bottom -> Plane.XY`, `front/back -> Plane.XZ`, "
+                        "`left/right -> Plane.YZ`. If the host face has already been selected from "
+                        "topology, prefer `Plane(face)` or an explicit `Plane(origin=..., z_dir=...)` "
+                        "built from that face instead of guessing a mismatched named plane. "
+                        + (
+                            f"Repair the named-face workplane at line {line_no}."
+                            if line_no > 0
+                            else "Repair the named-face workplane."
+                        )
+                    ),
+                }
+            )
+        for plane_offset_hit in _find_centered_box_face_plane_offset_span_mismatch_hits(
+            parsed_tree,
+            requirement_lower=requirement_lower,
+        ):
+            line_no = int(plane_offset_hit.get("line_no") or 0)
+            plane_name = str(plane_offset_hit.get("plane_name") or "").strip() or "XY"
+            span_expr = str(plane_offset_hit.get("span_expr") or "").strip() or "dimension"
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.centered_box_face_plane_full_span_offset",
+                    "message": (
+                        "A default centered `Box(...)` spans equally about the origin, so "
+                        f"`Plane.{plane_name}.offset({span_expr})` overshoots the actual host "
+                        "face by using the full span instead of the half-span datum."
+                    ),
+                    "repair_hint": (
+                        "When a feature belongs on a named face of a centered host, place the "
+                        "workplane on the real face datum: use the half-span (`height/2`, "
+                        "`width/2`, `length/2`) or bind to an actual face reference/topology "
+                        "query instead of offsetting by the full box dimension. "
+                        + (
+                            f"Repair the centered-host face offset at line {line_no}."
+                            if line_no > 0
+                            else "Repair the centered-host face offset."
                         )
                     ),
                 }
@@ -2023,19 +2119,34 @@ def _preflight_lint_execute_build123d(
             )
         for alias_hit in _find_center_arc_keyword_alias_hits(parsed_tree):
             line_no = int(alias_hit.get("line_no") or 0)
+            alias_name = str(alias_hit.get("alias_name") or "").strip()
+            if alias_name == "end_angle":
+                rule_id = "invalid_build123d_keyword.center_arc_end_angle_alias"
+                message = (
+                    "`CenterArc(...)` uses `arc_size=...` for the sweep span, not "
+                    "`end_angle=...`."
+                )
+                repair_hint = (
+                    "Keep `start_angle=...` for the start direction and replace "
+                    "`end_angle=` with `arc_size=` when calling `CenterArc(...)`."
+                )
+            else:
+                rule_id = "invalid_build123d_keyword.center_arc_arc_angle_alias"
+                message = (
+                    "`CenterArc(...)` uses `arc_size=...`, not `arc_angle=...`."
+                )
+                repair_hint = (
+                    "Rename `arc_angle=` to `arc_size=` when calling `CenterArc(...)`."
+                )
             hits.append(
                 {
-                    "rule_id": "invalid_build123d_keyword.center_arc_arc_angle_alias",
-                    "message": (
-                        "`CenterArc(...)` uses `arc_size=...`, not `arc_angle=...`."
-                    ),
-                    "repair_hint": (
-                        "Rename `arc_angle=` to `arc_size=` when calling `CenterArc(...)`."
-                        + (
-                            f" Repair the CenterArc keyword at line {line_no}."
-                            if line_no > 0
-                            else ""
-                        )
+                    "rule_id": rule_id,
+                    "message": message,
+                    "repair_hint": repair_hint
+                    + (
+                        f" Repair the CenterArc keyword at line {line_no}."
+                        if line_no > 0
+                        else ""
                     ),
                 }
             )
@@ -2393,6 +2504,32 @@ def _preflight_lint_execute_build123d(
                     ),
                 }
             )
+        if _requirement_mentions_local_finish_fillet_tail(requirement_lower):
+            for fillet_hit in _find_broad_local_finish_tail_fillet_hits(parsed_tree):
+                line_no = int(fillet_hit.get("line_no") or 0)
+                builder_label = str(fillet_hit.get("builder_label") or "part").strip()
+                hits.append(
+                    {
+                        "rule_id": "invalid_build123d_contract.broad_local_finish_tail_fillet_on_first_write",
+                        "message": (
+                            "Do not spend the first whole-part write on a broad fillet selector "
+                            "when the requirement already frames that fillet as a later local-"
+                            "finish detail. Broad `edges().filter_by(...)` or "
+                            "`filter_by_position(...)` selectors are too unstable before exact "
+                            "topology refs exist."
+                        ),
+                        "repair_hint": (
+                            f"Postpone the broad fillet on `{builder_label}` until the host "
+                            "geometry is stable and query_topology can provide exact edge refs, "
+                            "or narrow the selector to a verified edge subset before filleting."
+                            + (
+                                f" Repair the broad local-finish tail fillet at line {line_no}."
+                                if line_no > 0
+                                else " Repair the broad local-finish tail fillet."
+                            )
+                        ),
+                    }
+                )
         if (
             {"half_shell", "nested_hollow_section"} & candidate_family_id_set
             or any(
@@ -2467,6 +2604,33 @@ def _preflight_lint_execute_build123d(
                     ),
                 }
             )
+        for radius_hit in _find_rectanglerounded_radius_bounds_hits(parsed_tree):
+            line_no = int(radius_hit.get("line_no") or 0)
+            width_value = radius_hit.get("width")
+            height_value = radius_hit.get("height")
+            radius_value = radius_hit.get("radius")
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.rectanglerounded_radius_bounds",
+                    "message": (
+                        "`RectangleRounded(width, height, radius)` requires both profile spans "
+                        "to stay strictly greater than `2 * radius`. The current rounded "
+                        "rectangle will fail at runtime before a solid is created."
+                    ),
+                    "repair_hint": (
+                        "Reduce the rounded-rectangle radius so it is smaller than half of the "
+                        "smaller profile span, or enlarge the sketch width/height before calling "
+                        "`RectangleRounded(...)`."
+                        + (
+                            f" Current values evaluate to width={width_value}, height={height_value}, "
+                            f"radius={radius_value}. Repair the RectangleRounded radius contract "
+                            f"at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
         for transform_hit in _find_transform_context_manager_hits(parsed_tree):
             line_no = int(transform_hit.get("line_no") or 0)
             helper_name = str(transform_hit.get("helper_name") or "Transform").strip()
@@ -2502,6 +2666,31 @@ def _preflight_lint_execute_build123d(
                         "`make_face()` in the same `BuildSketch` before extruding or revolving."
                         + (
                             f" Repair the missing face conversion at line {line_no}."
+                            if line_no > 0
+                            else ""
+                        )
+                    ),
+                }
+            )
+        for mixed_profile_hit in _find_circle_make_face_trim_profile_hits(parsed_tree):
+            line_no = int(mixed_profile_hit.get("line_no") or 0)
+            hits.append(
+                {
+                    "rule_id": "invalid_build123d_contract.circle_make_face_trim_profile",
+                    "message": (
+                        "`Circle(...)` already creates a full circular sketch region in "
+                        "Build123d. Mixing it with `BuildLine` plus `make_face()` in the "
+                        "same `BuildSketch` to fake a semicircle or rounded notch/profile "
+                        "usually produces the wrong face or a non-planar profile."
+                    ),
+                    "repair_hint": (
+                        "Do not trim a full `Circle(...)` with helper lines and then call "
+                        "`make_face()` in the same sketch. Build the half-round or arc "
+                        "profile entirely inside `BuildLine` with `CenterArc(...)` or "
+                        "`RadiusArc(...)`, close it with explicit `Line(...)` segments, "
+                        "then call `make_face()` before extruding."
+                        + (
+                            f" Repair the mixed circle/trim profile at line {line_no}."
                             if line_no > 0
                             else ""
                         )
@@ -2876,6 +3065,20 @@ def _preflight_lint_execute_build123d(
                 ),
                 "repair_hint": (
                     "Rename the keyword to `arc_size=` when calling `CenterArc(...)`."
+                ),
+            }
+        )
+    if re.search(r"\bCenterArc\s*\([^)]*\bend_angle\s*=", code_for_lint, flags=re.DOTALL):
+        hits.append(
+            {
+                "rule_id": "invalid_build123d_keyword.center_arc_end_angle_alias",
+                "message": (
+                    "`CenterArc(...)` uses `arc_size=...` for the sweep span, not "
+                    "`end_angle=...`."
+                ),
+                "repair_hint": (
+                    "Keep `start_angle=...` for the start direction and replace "
+                    "`end_angle=` with `arc_size=` when calling `CenterArc(...)`."
                 ),
             }
         )
@@ -3304,6 +3507,7 @@ def _preflight_lint_execute_build123d(
     repair_recipe = _build_preflight_repair_recipe(
         family_ids=family_ids,
         lint_hits=hits,
+        requirement_text=requirement_text,
     )
     hits = [
         _attach_api_governance_metadata(
@@ -3624,6 +3828,60 @@ def _find_detached_subtractive_builder_without_host_hits(
     return hits
 
 
+def _find_clamshell_unrotated_default_hinge_cylinder_hits(
+    tree: ast.AST,
+    *,
+    code_for_lint: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+
+    def _expr_text(node: ast.AST | None) -> str:
+        if node is None:
+            return ""
+        try:
+            return ast.unparse(node).replace(" ", "").lower()
+        except Exception:  # pragma: no cover - defensive fallback
+            return ""
+
+    def _locations_target_back_hinge_seam(node: ast.With) -> bool:
+        for item in node.items:
+            context_expr = item.context_expr
+            if not isinstance(context_expr, ast.Call):
+                continue
+            func = context_expr.func
+            if not isinstance(func, ast.Name) or func.id != "Locations":
+                continue
+            for arg in context_expr.args:
+                if not isinstance(arg, ast.Tuple) or len(arg.elts) < 2:
+                    continue
+                y_text = _expr_text(arg.elts[1])
+                if "hinge_y" in y_text or "-depth/2" in y_text:
+                    return True
+        return False
+
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With) or not _locations_target_back_hinge_seam(node):
+            continue
+        for statement in node.body:
+            statement_source = ast.get_source_segment(code_for_lint, statement) or ""
+            normalized = statement_source.replace(" ", "")
+            if "Cylinder(" not in statement_source:
+                continue
+            if any(token in statement_source for token in ("Rot(", ".rotate(", "rotation=")):
+                continue
+            if "mode=Mode.SUBTRACT" in normalized:
+                continue
+            line_no = int(getattr(statement, "lineno", 0) or 0)
+            if line_no in seen_lines:
+                continue
+            seen_lines.add(line_no)
+            hits.append({"line_no": line_no})
+    return hits
+
+
 def _find_active_buildpart_temporary_primitive_arithmetic_hits(
     tree: ast.AST,
 ) -> list[dict[str, Any]]:
@@ -3800,6 +4058,14 @@ def _find_active_buildpart_temporary_primitive_transform_hits(
                     if _expression_references_name(transform_expr, variable_name)
                 )
             )
+            if (
+                not referenced_vars
+                and isinstance(child, ast.Assign)
+                and len(child.targets) == 1
+                and isinstance(child.targets[0], ast.Name)
+                and child.targets[0].id in primitive_assignments
+            ):
+                referenced_vars = (child.targets[0].id,)
             if not referenced_vars:
                 continue
             key = (host_alias, referenced_vars, tuple(sorted(transform_kinds)), line_no)
@@ -4393,6 +4659,478 @@ def _find_directional_drill_plane_offset_coordinate_hits(
     return hits
 
 
+def _find_centered_box_face_plane_offset_span_mismatch_hits(
+    tree: ast.AST,
+    *,
+    requirement_lower: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    if not any(
+        token in requirement_lower
+        for token in (
+            "top face",
+            "bottom face",
+            "front face",
+            "back face",
+            "side face",
+            "left face",
+            "right face",
+        )
+    ):
+        return []
+
+    centered_box_spans: list[dict[str, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _ast_name_matches(node.func, "Box")):
+            continue
+        if any(str(getattr(keyword, "arg", "") or "").strip() == "align" for keyword in node.keywords):
+            continue
+        spans = _extract_centered_box_span_exprs(node)
+        if spans:
+            centered_box_spans.append(spans)
+    if not centered_box_spans:
+        return []
+
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    plane_to_span_key = {"XY": "z_span", "XZ": "y_span", "YZ": "x_span"}
+    for node in ast.walk(tree):
+        offset_arg = _plane_offset_argument(node)
+        if offset_arg is None:
+            continue
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "offset"
+            and isinstance(node.func.value, ast.Attribute)
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "Plane"
+        ):
+            continue
+        plane_name = str(node.func.value.attr or "").strip()
+        span_key = plane_to_span_key.get(plane_name)
+        if span_key is None:
+            continue
+        offset_text = _ast_expr_text(offset_arg)
+        if not offset_text:
+            continue
+        for spans in centered_box_spans:
+            span_expr = str(spans.get(span_key) or "").strip()
+            if not span_expr or span_expr != offset_text:
+                continue
+            line_no = int(getattr(node, "lineno", 0) or 0)
+            if line_no in seen_lines:
+                continue
+            seen_lines.add(line_no)
+            hits.append(
+                {
+                    "line_no": line_no,
+                    "plane_name": plane_name,
+                    "span_expr": span_expr,
+                }
+            )
+    return hits
+
+
+def _find_named_face_plane_family_mismatch_hits(
+    tree: ast.AST,
+    *,
+    requirement_lower: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    mentioned_groups = _named_face_requirement_plane_groups(requirement_lower)
+    if not mentioned_groups:
+        return []
+    allowed_planes = {_plane_name_for_named_face_group(group) for group in mentioned_groups}
+    plane_aliases = _collect_named_plane_aliases(tree)
+    parent_map = _build_parent_map(tree)
+    buildpart_host_span_cache: dict[int, set[str]] = {}
+
+    allowed_plane_seen = False
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and (
+                _ast_name_matches(node.func, "BuildSketch")
+                or _ast_name_matches(node.func, "Locations")
+            )
+            and node.args
+        ):
+            continue
+        plane_name = _named_plane_root_name(node.args[0], plane_aliases=plane_aliases)
+        if plane_name in allowed_planes:
+            allowed_plane_seen = True
+            break
+
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and (
+                _ast_name_matches(node.func, "BuildSketch")
+                or _ast_name_matches(node.func, "Locations")
+            )
+            and node.args
+        ):
+            continue
+        plane_name = _named_plane_root_name(node.args[0], plane_aliases=plane_aliases)
+        if not plane_name or plane_name in allowed_planes:
+            continue
+        if allowed_plane_seen and _is_plain_named_plane_expr(
+            node.args[0],
+            plane_aliases=plane_aliases,
+        ):
+            continue
+        if _buildsketch_candidate_is_host_profile(
+            node,
+            parent_map=parent_map,
+            buildpart_host_span_cache=buildpart_host_span_cache,
+        ):
+            continue
+        if _buildsketch_candidate_is_inert_placeholder_builder(
+            node,
+            parent_map=parent_map,
+        ):
+            continue
+        if _buildsketch_candidate_is_detached_axisymmetric_positive_helper(
+            node,
+            parent_map=parent_map,
+            buildpart_host_span_cache=buildpart_host_span_cache,
+        ):
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        hits.append(
+            {
+                "line_no": line_no,
+                "plane_name": plane_name,
+                "expected_planes": sorted(allowed_planes),
+            }
+        )
+    return hits
+
+
+def _build_parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    parent_map: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parent_map[child] = parent
+    return parent_map
+
+
+def _buildsketch_candidate_is_host_profile(
+    node: ast.AST,
+    *,
+    parent_map: dict[ast.AST, ast.AST],
+    buildpart_host_span_cache: dict[int, set[str]],
+) -> bool:
+    if not (isinstance(node, ast.Call) and _ast_name_matches(node.func, "BuildSketch")):
+        return False
+    sketch_with = _enclosing_with_for_context_call(node, parent_map=parent_map)
+    if sketch_with is None:
+        return False
+    buildpart_with = _enclosing_buildpart_with(sketch_with, parent_map=parent_map)
+    if buildpart_with is None:
+        return False
+    cache_key = id(buildpart_with)
+    host_span_ids = buildpart_host_span_cache.get(cache_key)
+    if host_span_ids is None:
+        host_span_ids = _collect_buildpart_host_span_ids(buildpart_with)
+        buildpart_host_span_cache[cache_key] = host_span_ids
+    if len(host_span_ids) < 2:
+        return False
+    host_profile_alias_ids = _collect_buildpart_host_profile_alias_ids(
+        buildpart_with,
+        seed_ids=host_span_ids,
+    )
+    sketch_ids = _strip_host_profile_modifier_ids(_collect_sketch_size_identifier_names(sketch_with.body))
+    host_profile_ids = host_span_ids | host_profile_alias_ids
+    return len(sketch_ids) >= 2 and sketch_ids.issubset(host_profile_ids)
+
+
+def _buildsketch_candidate_is_inert_placeholder_builder(
+    node: ast.AST,
+    *,
+    parent_map: dict[ast.AST, ast.AST],
+) -> bool:
+    if not (isinstance(node, ast.Call) and _ast_name_matches(node.func, "BuildSketch")):
+        return False
+    sketch_with = _enclosing_with_for_context_call(node, parent_map=parent_map)
+    if sketch_with is None:
+        return False
+    buildpart_with = _enclosing_buildpart_with(sketch_with, parent_map=parent_map)
+    if buildpart_with is None:
+        return False
+    return not _buildpart_contains_materializing_ops(buildpart_with.body)
+
+
+_AXISYMMETRIC_SKETCH_PRIMITIVE_NAMES = {
+    "Circle",
+    "Ellipse",
+}
+
+_DETACHED_POSITIVE_BUILDER_SUBTRACTIVE_HELPERS = {
+    "Hole",
+    "CounterBoreHole",
+    "CounterSinkHole",
+}
+
+
+def _buildsketch_candidate_is_detached_axisymmetric_positive_helper(
+    node: ast.AST,
+    *,
+    parent_map: dict[ast.AST, ast.AST],
+    buildpart_host_span_cache: dict[int, set[str]],
+) -> bool:
+    if not (isinstance(node, ast.Call) and _ast_name_matches(node.func, "BuildSketch")):
+        return False
+    sketch_with = _enclosing_with_for_context_call(node, parent_map=parent_map)
+    if sketch_with is None:
+        return False
+    buildpart_with = _enclosing_buildpart_with(sketch_with, parent_map=parent_map)
+    if buildpart_with is None:
+        return False
+    cache_key = id(buildpart_with)
+    host_span_ids = buildpart_host_span_cache.get(cache_key)
+    if host_span_ids is None:
+        host_span_ids = _collect_buildpart_host_span_ids(buildpart_with)
+        buildpart_host_span_cache[cache_key] = host_span_ids
+    if len(host_span_ids) >= 2:
+        return False
+    primitive_names = _collect_sketch_primitive_helper_names(sketch_with.body)
+    if not primitive_names or not primitive_names.issubset(_AXISYMMETRIC_SKETCH_PRIMITIVE_NAMES):
+        return False
+    return not _buildpart_contains_subtractive_ops(buildpart_with.body)
+
+
+_HOST_PROFILE_MODIFIER_IDS = {
+    "wall",
+    "thickness",
+    "offset",
+    "clearance",
+    "gap",
+    "radius",
+    "corner_radius",
+    "fillet",
+    "draft",
+    "lip",
+    "shell",
+}
+
+_HOST_PROFILE_MODIFIER_TOKENS = _HOST_PROFILE_MODIFIER_IDS | {
+    "thick",
+}
+
+_HOST_PROFILE_IGNORED_TOKENS = {
+    "mm",
+}
+
+
+def _identifier_tokens(name: str) -> list[str]:
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name or "").lower()
+    return [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
+
+
+def _is_host_profile_modifier_id(name: str | None) -> bool:
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    if lowered in _HOST_PROFILE_MODIFIER_IDS:
+        return True
+    tokens = [
+        token for token in _identifier_tokens(cleaned) if token not in _HOST_PROFILE_IGNORED_TOKENS
+    ]
+    return bool(tokens) and all(token in _HOST_PROFILE_MODIFIER_TOKENS for token in tokens)
+
+
+def _strip_host_profile_modifier_ids(names: set[str]) -> set[str]:
+    return {name for name in names if not _is_host_profile_modifier_id(name)}
+
+
+def _enclosing_with_for_context_call(
+    node: ast.AST,
+    *,
+    parent_map: dict[ast.AST, ast.AST],
+) -> ast.With | ast.AsyncWith | None:
+    current = parent_map.get(node)
+    while current is not None:
+        if isinstance(current, ast.withitem):
+            parent = parent_map.get(current)
+            if isinstance(parent, (ast.With, ast.AsyncWith)):
+                return parent
+        current = parent_map.get(current)
+    return None
+
+
+def _enclosing_buildpart_with(
+    node: ast.AST,
+    *,
+    parent_map: dict[ast.AST, ast.AST],
+) -> ast.With | ast.AsyncWith | None:
+    current = node
+    while current is not None:
+        if isinstance(current, (ast.With, ast.AsyncWith)) and any(
+            _with_context_builder_name(item.context_expr) == "BuildPart"
+            for item in current.items
+        ):
+            return current
+        current = parent_map.get(current)
+    return None
+
+
+def _collect_buildpart_host_span_ids(node: ast.With | ast.AsyncWith) -> set[str]:
+    for stmt in node.body:
+        ids = _extract_host_span_ids_from_stmt(stmt)
+        if len(ids) >= 2:
+            return ids
+    return set()
+
+
+def _collect_sketch_size_identifier_names(body: list[ast.stmt]) -> set[str]:
+    ids: set[str] = set()
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if not isinstance(node, ast.Call):
+                continue
+            if not any(
+                _ast_name_matches(node.func, shape_name)
+                for shape_name in ("Rectangle", "RectangleRounded", "SlotOverall", "SlotCenterToCenter")
+            ):
+                continue
+            ids |= _collect_identifier_names_from_exprs(node.args[:2])
+    return ids
+
+
+def _collect_sketch_primitive_helper_names(body: list[ast.stmt]) -> set[str]:
+    names: set[str] = set()
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if not isinstance(node, ast.Call):
+                continue
+            for helper_name in _AXISYMMETRIC_SKETCH_PRIMITIVE_NAMES:
+                if _ast_name_matches(node.func, helper_name):
+                    names.add(helper_name)
+    return names
+
+
+def _buildpart_contains_subtractive_ops(body: list[ast.stmt]) -> bool:
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if not isinstance(node, ast.Call):
+                continue
+            if any(_ast_name_matches(node.func, helper) for helper in _DETACHED_POSITIVE_BUILDER_SUBTRACTIVE_HELPERS):
+                return True
+            for keyword in node.keywords or []:
+                if str(keyword.arg or "").strip() != "mode":
+                    continue
+                if _ast_dotted_name(keyword.value) == "Mode.SUBTRACT":
+                    return True
+    return False
+
+
+def _buildpart_contains_materializing_ops(body: list[ast.stmt]) -> bool:
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if not isinstance(node, ast.Call):
+                continue
+            if _call_materializes_additive_host(node):
+                return True
+            if _call_subtractive_without_host_operation_name(node) is not None:
+                return True
+    return False
+
+
+def _ast_dotted_name(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    if isinstance(node, ast.Name):
+        return str(node.id or "").strip() or None
+    if isinstance(node, ast.Attribute):
+        parent = _ast_dotted_name(node.value)
+        attr = str(node.attr or "").strip()
+        if parent and attr:
+            return f"{parent}.{attr}"
+        if attr:
+            return attr
+    return None
+
+
+def _collect_buildpart_host_profile_alias_ids(
+    node: ast.With | ast.AsyncWith,
+    *,
+    seed_ids: set[str],
+) -> set[str]:
+    known_ids = set(seed_ids)
+    alias_ids: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for stmt in node.body:
+            for target_name, value_ids in _iter_assignment_name_dependencies(stmt):
+                if not target_name:
+                    continue
+                if target_name in known_ids or _is_host_profile_modifier_id(target_name):
+                    continue
+                cleaned_value_ids = _strip_host_profile_modifier_ids({item for item in value_ids if item})
+                if not cleaned_value_ids:
+                    continue
+                if not cleaned_value_ids.issubset(known_ids):
+                    continue
+                known_ids.add(target_name)
+                alias_ids.add(target_name)
+                changed = True
+    return alias_ids
+
+
+def _iter_assignment_name_dependencies(stmt: ast.stmt) -> Iterable[tuple[str, set[str]]]:
+    for node in ast.walk(stmt):
+        if isinstance(node, ast.Assign):
+            value_ids = _collect_identifier_names_from_exprs([node.value])
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    target_name = str(target.id or "").strip()
+                    if target_name:
+                        yield target_name, value_ids
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target_name = str(node.target.id or "").strip()
+            if target_name:
+                value_ids = _collect_identifier_names_from_exprs([node.value]) if node.value else set()
+                yield target_name, value_ids
+
+
+def _extract_host_span_ids_from_stmt(stmt: ast.stmt) -> set[str]:
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and _ast_name_matches(
+        stmt.value.func, "Box"
+    ):
+        return _strip_host_profile_modifier_ids(_collect_identifier_names_from_exprs(stmt.value.args[:3]))
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        if any(_with_context_builder_name(item.context_expr) == "BuildSketch" for item in stmt.items):
+            return _strip_host_profile_modifier_ids(_collect_sketch_size_identifier_names(stmt.body))
+        if any(_with_context_is_locations(item.context_expr) for item in stmt.items):
+            for inner_stmt in stmt.body:
+                ids = _extract_host_span_ids_from_stmt(inner_stmt)
+                if len(ids) >= 2:
+                    return ids
+    return set()
+
+
+def _collect_identifier_names_from_exprs(exprs: Sequence[ast.AST]) -> set[str]:
+    ids: set[str] = set()
+    for expr in exprs:
+        for node in ast.walk(expr):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                name = str(node.id or "").strip()
+                if name:
+                    ids.add(name)
+    return ids
+
+
 def _find_buildsketch_countersink_context_hits(tree: ast.AST) -> list[dict[str, Any]]:
     if not isinstance(tree, ast.Module):
         return []
@@ -4594,6 +5332,154 @@ def _find_buildpart_sketch_primitive_context_hits(tree: ast.AST) -> list[dict[st
     return visitor.hits
 
 
+def _find_rectanglerounded_radius_bounds_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    numeric_env = _collect_numeric_assignment_env(tree)
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _ast_name_matches(node.func, "RectangleRounded")):
+            continue
+        width_expr, height_expr, radius_expr = _rectanglerounded_dimension_args(node)
+        width_value = _eval_numeric_expr(width_expr, numeric_env)
+        height_value = _eval_numeric_expr(height_expr, numeric_env)
+        radius_value = _eval_numeric_expr(radius_expr, numeric_env)
+        if width_value is None or height_value is None or radius_value is None:
+            continue
+        min_span = min(float(width_value), float(height_value))
+        if min_span <= 0:
+            continue
+        if 2.0 * float(radius_value) < min_span:
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        hits.append(
+            {
+                "line_no": line_no,
+                "width": float(width_value),
+                "height": float(height_value),
+                "radius": float(radius_value),
+            }
+        )
+    return hits
+
+
+def _rectanglerounded_dimension_args(node: ast.Call) -> tuple[ast.AST | None, ast.AST | None, ast.AST | None]:
+    positional = list(node.args[:3])
+    keyword_map = {
+        str(getattr(keyword, "arg", "") or "").strip(): keyword.value
+        for keyword in node.keywords
+        if str(getattr(keyword, "arg", "") or "").strip()
+    }
+    width_expr = positional[0] if len(positional) >= 1 else keyword_map.get("width")
+    height_expr = positional[1] if len(positional) >= 2 else keyword_map.get("height")
+    radius_expr = positional[2] if len(positional) >= 3 else keyword_map.get("radius")
+    return width_expr, height_expr, radius_expr
+
+
+def _collect_numeric_assignment_env(tree: ast.AST) -> dict[str, float]:
+    ordered_bindings = _collect_ordered_numeric_assignment_bindings(tree)
+    env: dict[str, float] = {}
+    if not ordered_bindings:
+        return env
+
+    # Resolve simple numeric aliases with source-order precedence while keeping the
+    # pass count bounded so repeated reassignments cannot oscillate forever.
+    max_passes = max(len(ordered_bindings) + 1, 2)
+    for _ in range(max_passes):
+        next_env = dict(env)
+        for name, value_expr in ordered_bindings:
+            value = _eval_numeric_expr(value_expr, next_env)
+            if value is None:
+                continue
+            next_env[name] = value
+        if next_env == env:
+            return next_env
+        env = next_env
+    return env
+
+
+def _collect_ordered_numeric_assignment_bindings(
+    tree: ast.AST,
+) -> list[tuple[str, ast.AST]]:
+    if not isinstance(tree, ast.Module):
+        return []
+
+    bindings: list[tuple[str, ast.AST]] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+            for target in node.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                name = str(target.id or "").strip()
+                if name:
+                    bindings.append((name, node.value))
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+            if isinstance(node.target, ast.Name) and node.value is not None:
+                name = str(node.target.id or "").strip()
+                if name:
+                    bindings.append((name, node.value))
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    return bindings
+
+
+def _eval_numeric_expr(node: ast.AST | None, env: dict[str, float]) -> float | None:
+    if node is None:
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    if isinstance(node, ast.Name):
+        return env.get(str(node.id or "").strip())
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        operand = _eval_numeric_expr(node.operand, env)
+        if operand is None:
+            return None
+        return operand if isinstance(node.op, ast.UAdd) else -operand
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op,
+        (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow),
+    ):
+        left = _eval_numeric_expr(node.left, env)
+        right = _eval_numeric_expr(node.right, env)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            return left / right if right != 0 else None
+        if isinstance(node.op, ast.FloorDiv):
+            return left // right if right != 0 else None
+        if isinstance(node.op, ast.Mod):
+            return left % right if right != 0 else None
+        if isinstance(node.op, ast.Pow):
+            return left**right
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        func_name = str(node.func.id or "").strip()
+        arg_values = [_eval_numeric_expr(arg, env) for arg in node.args]
+        if any(value is None for value in arg_values):
+            return None
+        numeric_args = [float(value) for value in arg_values if value is not None]
+        if func_name == "max" and numeric_args:
+            return max(numeric_args)
+        if func_name == "min" and numeric_args:
+            return min(numeric_args)
+        if func_name == "abs" and len(numeric_args) == 1:
+            return abs(numeric_args[0])
+    return None
+
+
 def _find_transform_context_manager_hits(tree: ast.AST) -> list[dict[str, Any]]:
     if not isinstance(tree, ast.Module):
         return []
@@ -4653,6 +5539,49 @@ def _find_buildsketch_wire_profile_missing_make_face_hits(tree: ast.AST) -> list
             for child in ast.walk(body_module)
         )
         if not has_nested_buildline:
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        hits.append({"line_no": line_no})
+    return hits
+
+
+def _find_circle_make_face_trim_profile_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        if not any(
+            _with_context_builder_name(item.context_expr) == "BuildSketch" for item in node.items
+        ):
+            continue
+        body_module = ast.Module(body=node.body, type_ignores=[])
+        has_circle = any(
+            isinstance(child, ast.Call) and _ast_name_matches(child.func, "Circle")
+            for child in ast.walk(body_module)
+        )
+        has_make_face = any(
+            isinstance(child, ast.Call) and _ast_name_matches(child.func, "make_face")
+            for child in ast.walk(body_module)
+        )
+        has_nested_buildline = any(
+            isinstance(child, ast.With)
+            and any(
+                _with_context_builder_name(item.context_expr) == "BuildLine"
+                for item in child.items
+            )
+            for child in ast.walk(body_module)
+        )
+        has_line = any(
+            isinstance(child, ast.Call) and _ast_name_matches(child.func, "Line")
+            for child in ast.walk(body_module)
+        )
+        if not (has_circle and has_make_face and has_nested_buildline and has_line):
             continue
         line_no = int(getattr(node, "lineno", 0) or 0)
         if line_no in seen_lines:
@@ -4869,6 +5798,29 @@ def _extract_broad_shell_axis_selector_builder(node: ast.AST) -> str | None:
     return builder_label or "part"
 
 
+def _extract_broad_edge_selector_builder(node: ast.AST) -> str | None:
+    current = node
+    saw_selector = False
+    while (
+        isinstance(current, ast.Call)
+        and isinstance(current.func, ast.Attribute)
+        and current.func.attr in {"filter_by", "filter_by_position"}
+    ):
+        saw_selector = True
+        current = current.func.value
+    if not saw_selector:
+        return None
+    if not (
+        isinstance(current, ast.Call)
+        and isinstance(current.func, ast.Attribute)
+        and current.func.attr == "edges"
+    ):
+        return None
+    builder_expr = current.func.value
+    builder_label = _ast_expr_text(builder_expr).strip()
+    return builder_label or "part"
+
+
 def _find_broad_shell_axis_fillet_hits(tree: ast.AST) -> list[dict[str, Any]]:
     if not isinstance(tree, ast.Module):
         return []
@@ -4911,6 +5863,82 @@ def _find_broad_shell_axis_fillet_hits(tree: ast.AST) -> list[dict[str, Any]]:
         seen_lines.add(line_no)
         hits.append({"line_no": line_no, "builder_label": builder_label})
     return hits
+
+
+def _find_broad_local_finish_tail_fillet_hits(tree: ast.AST) -> list[dict[str, Any]]:
+    if not isinstance(tree, ast.Module):
+        return []
+    selector_bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        target_name: str | None = None
+        value: ast.AST | None = None
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            target_name = node.targets[0].id
+            value = node.value
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            target_name = node.target.id
+            value = node.value
+        if not target_name or value is None:
+            continue
+        builder_label = _extract_broad_edge_selector_builder(value)
+        if builder_label:
+            selector_bindings[target_name] = builder_label
+
+    hits: list[dict[str, Any]] = []
+    seen_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and _ast_name_matches(node.func, "fillet")
+            and node.args
+        ):
+            continue
+        first_arg = node.args[0]
+        builder_label: str | None = None
+        if isinstance(first_arg, ast.Name):
+            builder_label = selector_bindings.get(first_arg.id)
+        if builder_label is None:
+            builder_label = _extract_broad_edge_selector_builder(first_arg)
+        if builder_label is None:
+            continue
+        line_no = int(getattr(node, "lineno", 0) or 0)
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        hits.append({"line_no": line_no, "builder_label": builder_label})
+    return hits
+
+
+def _requirement_mentions_local_finish_fillet_tail(requirement_lower: str) -> bool:
+    lowered = str(requirement_lower or "").lower()
+    local_finish_tokens = (
+        "local finish",
+        "local finishing",
+        "topology-aware",
+        "topology aware",
+        "later local finish",
+        "later topology-aware",
+        "opening rim",
+        "rim edges",
+        "target edge",
+    )
+    feature_tokens = (
+        "fillet",
+        "edge fillet",
+        "chamfer",
+        "edge chamfer",
+    )
+    return any(token in lowered for token in local_finish_tokens) and any(
+        token in lowered for token in feature_tokens
+    )
 
 
 def _find_regular_polygon_keyword_alias_hits(tree: ast.AST) -> list[dict[str, Any]]:
@@ -5151,7 +6179,7 @@ def _find_center_arc_keyword_alias_hits(tree: ast.AST) -> list[dict[str, Any]]:
         line_no = int(getattr(node, "lineno", 0) or 0)
         for keyword in node.keywords:
             alias_name = str(getattr(keyword, "arg", "") or "").strip()
-            if alias_name != "arc_angle":
+            if alias_name not in {"arc_angle", "end_angle"}:
                 continue
             cache_key = (line_no, alias_name)
             if cache_key in seen:
@@ -5789,6 +6817,121 @@ def _is_zero_literal(node: ast.AST) -> bool:
     return False
 
 
+def _extract_centered_box_span_exprs(node: ast.Call) -> dict[str, str]:
+    if not (isinstance(node, ast.Call) and _ast_name_matches(node.func, "Box")):
+        return {}
+    positional = list(node.args[:3])
+    keyword_map = {
+        str(getattr(keyword, "arg", "") or "").strip(): keyword.value
+        for keyword in node.keywords
+        if str(getattr(keyword, "arg", "") or "").strip()
+    }
+    x_arg = positional[0] if len(positional) >= 1 else keyword_map.get("length")
+    y_arg = positional[1] if len(positional) >= 2 else keyword_map.get("width")
+    z_arg = positional[2] if len(positional) >= 3 else keyword_map.get("height")
+    x_span = _ast_expr_text(x_arg) if x_arg is not None else ""
+    y_span = _ast_expr_text(y_arg) if y_arg is not None else ""
+    z_span = _ast_expr_text(z_arg) if z_arg is not None else ""
+    if not (x_span and y_span and z_span):
+        return {}
+    return {"x_span": x_span, "y_span": y_span, "z_span": z_span}
+
+
+def _named_face_requirement_plane_groups(requirement_lower: str) -> set[str]:
+    lowered = str(requirement_lower or "").lower()
+    groups: set[str] = set()
+    if any(
+        token in lowered
+        for token in (
+            "top face",
+            "top-face",
+            "bottom face",
+            "bottom-face",
+            "mating face",
+            "mating faces",
+            "mating surface",
+            "mating surfaces",
+        )
+    ):
+        groups.add("top_bottom")
+    if any(token in lowered for token in ("front face", "front-face", "back face", "back-face")):
+        groups.add("front_back")
+    if any(token in lowered for token in ("left face", "left-face", "right face", "right-face")):
+        groups.add("left_right")
+    return groups
+
+
+def _plane_name_for_named_face_group(group: str) -> str:
+    return {
+        "top_bottom": "XY",
+        "front_back": "XZ",
+        "left_right": "YZ",
+    }.get(group, "")
+
+
+def _collect_named_plane_aliases(tree: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    if not isinstance(tree, ast.Module):
+        return aliases
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            plane_name = _named_plane_root_name(node.value, plane_aliases=aliases)
+            if not plane_name:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    aliases[str(target.id or "").strip()] = plane_name
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            plane_name = _named_plane_root_name(node.value, plane_aliases=aliases)
+            if plane_name:
+                aliases[str(node.target.id or "").strip()] = plane_name
+    return aliases
+
+
+def _named_plane_root_name(
+    expr: ast.AST | None,
+    *,
+    plane_aliases: dict[str, str] | None = None,
+) -> str | None:
+    if expr is None:
+        return None
+    if isinstance(expr, ast.Name):
+        key = str(expr.id or "").strip()
+        if not key:
+            return None
+        return (plane_aliases or {}).get(key)
+    if (
+        isinstance(expr, ast.Attribute)
+        and isinstance(expr.value, ast.Name)
+        and expr.value.id == "Plane"
+        and expr.attr in {"XY", "XZ", "YZ"}
+    ):
+        return str(expr.attr)
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+        method_name = str(expr.func.attr or "").strip()
+        if method_name in {"offset", "move", "shift_origin", "rotated", "rotate", "moved", "located"}:
+            return _named_plane_root_name(expr.func.value, plane_aliases=plane_aliases)
+    return None
+
+
+def _is_plain_named_plane_expr(
+    expr: ast.AST | None,
+    *,
+    plane_aliases: dict[str, str] | None = None,
+) -> bool:
+    if expr is None:
+        return False
+    if isinstance(expr, ast.Name):
+        key = str(expr.id or "").strip()
+        return bool(key and key in (plane_aliases or {}))
+    return (
+        isinstance(expr, ast.Attribute)
+        and isinstance(expr.value, ast.Name)
+        and expr.value.id == "Plane"
+        and expr.attr in {"XY", "XZ", "YZ"}
+    )
+
+
 def _directional_drill_workplane_with_in_plane_anchor(
     requirement_lower: str,
 ) -> str | None:
@@ -5828,6 +6971,12 @@ def _directional_drill_workplane_with_in_plane_anchor(
 
 
 def _primitive_constructor_name(node: ast.AST) -> str | None:
+    if (
+        isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Mult)
+        and _transform_like_binop_kinds(node)
+    ):
+        return _primitive_constructor_name(node.left) or _primitive_constructor_name(node.right)
     if not isinstance(node, ast.Call):
         return None
     if _call_uses_mode_private(node):
@@ -6168,7 +7317,40 @@ def _build_preflight_repair_recipe(
     *,
     family_ids: list[str],
     lint_hits: list[dict[str, Any]],
+    requirement_text: str = "",
 ) -> dict[str, Any]:
+    requirement_lower = requirement_text.lower()
+    living_hinge_requested = (
+        "living hinge" in requirement_lower or "living-hinge" in requirement_lower
+    )
+    plain_pin_or_mechanical_hinge_requested = any(
+        token in requirement_lower
+        for token in (
+            "pin hinge",
+            "mechanical hinge",
+        )
+    )
+    detached_hinge_requested = any(
+        token in requirement_lower
+        for token in (
+            "removable pin",
+            "removable hinge pin",
+            "detachable pin",
+            "exposed hinge",
+            "exposed hinge assembly",
+            "external hinge assembly",
+            "hinge assembly",
+            "hinge barrel",
+            "hinge barrels",
+            "hinge pin",
+            "hinge pins",
+            "detached hinge",
+            "detached hinge hardware",
+            "separate hinge part",
+            "separate hinge parts",
+        )
+    )
+
     def _explicit_cylindrical_slot_boolean_safe_recipe() -> dict[str, Any]:
         return {
             "recipe_id": "explicit_cylindrical_slot_boolean_safe_recipe",
@@ -6216,21 +7398,55 @@ def _build_preflight_repair_recipe(
         }
 
     def _clamshell_host_local_cut_recipe() -> dict[str, Any]:
+        hinge_summary = (
+            "keep the hinge host-owned as an integrated living hinge instead of detached hardware."
+            if living_hinge_requested and not detached_hinge_requested
+            else (
+                "only realize detached hinge hardware when the requirement explicitly asks for a removable pin, separate hinge parts, or an exposed hinge assembly."
+                if detached_hinge_requested
+                else "treat a plain pin/mechanical hinge as host-owned lid/base geometry unless the prompt explicitly asks for detachable hinge hardware."
+            )
+        )
         return {
             "recipe_id": "clamshell_host_local_cut_contract",
             "recipe_summary": (
                 "For clamshell lid/base shells, keep each shell host authoritative, "
-                "finish host-owned local cuts before that shell closes, and keep hinge "
-                "hardware as detached positive solids in the assembled pose."
+                "finish host-owned local cuts before that shell closes, and "
+                f"{hinge_summary}"
             ),
             "recipe_skeleton": {
                 "mode": "whole_part_rebuild_via_execute_build123d",
                 "steps": [
                     "realize the base and lid in one authoritative `BuildPart` per shell host, keeping both parts in the closed assembled envelope instead of reopening the same alias later",
                     "finish host-owned local cuts such as magnet recesses, thumb notches, slots, and pockets inside that shell builder before that shell builder closes",
+                    (
+                        "if the requirement says `living hinge`, keep that hinge as an integrated host-owned thin back-edge strip or flexure between lid and base and preserve the default two physical parts; do not create detached `hinge_barrel` or `hinge_pin` solids unless the prompt explicitly switches to pin/mechanical/removable hinge hardware"
+                        if living_hinge_requested and not detached_hinge_requested
+                        else (
+                            "if the requirement explicitly requests detachable hinge hardware such as a removable pin, separate hinge parts, or an exposed hinge assembly, detached hinge barrels or hinge pins are allowed, but keep the default physical-part target at lid/base only and avoid inventing extra hinge solids beyond the requested hardware"
+                            if detached_hinge_requested
+                            else "a plain `pin hinge` or `mechanical hinge` still defaults to a two-part lid/base target: keep the hinge knuckles/barrels host-owned on lid/base and only detach the pin/hardware when the prompt explicitly asks for a removable pin, separate hinge parts, or an exposed hinge assembly"
+                        )
+                    ),
+                    (
+                        "plain `pin hinge` or `mechanical hinge` still defaults to a two-part lid/base target: keep the hinge knuckles/barrels host-owned on lid/base and only detach the pin/hardware when the prompt explicitly asks for a removable pin, separate hinge parts, or an exposed hinge assembly"
+                        if plain_pin_or_mechanical_hinge_requested and not detached_hinge_requested
+                        else "only use detached hinge hardware when the prompt explicitly names detachable hinge hardware such as a removable pin, separate hinge parts, or an exposed hinge assembly"
+                    ),
+                    "Build123d `extrude(amount=h)` grows one-sided from the active sketch plane; it does not automatically create a centered `[-h/2, +h/2]` shell interval around that plane.",
+                    "For centered lid/base intervals, sketch on the real start face plane or translate the finished solid afterward; do not assume `Locations((0, 0, center_z))` plus `extrude(amount=h)` creates a centered shell interval by itself.",
+                    "for a living hinge, the back-edge seam coordinate belongs to the hinge strip itself, not to the whole shell envelope; do not translate the whole lid or base to the back seam coordinate just to make the hinge touch",
+                    "do not drop an unrotated default `Cylinder(...)` directly onto `(x, hinge_y, split_z)` or `(x, -depth/2, z)` inside lid/base builders and assume it became an X-axis hinge barrel or pin; without a supported rotation/orientation lane that cylinder still runs along Z",
+                    "for front/back clamshell-local edits such as a thumb notch, front label recess, or mating-face pocket, treat the host as Y-normal and start from `Plane.XZ.offset(±depth/2)` or `Plane(face)` instead of `Plane.XY`/`Plane.YZ` plus guessed 3D placement",
+                    "for top/bottom mating-face edits, keep the host plane in the XY family at the real face datum such as `Plane.XY.offset(z_face)` and place only in-plane `(x, y)` coordinates locally",
                     "if a local cut uses sketch primitives such as `SlotOverall(...)` or `Rectangle(...)`, open `BuildSketch(target_plane)` on the intended host plane first, then extrude/subtract from that same shell host",
+                    "if a thumb notch or front label recess is externalized as a detached cutter such as `notch_cutter` or `label_recess`, that detached builder must stay positive or `mode=Mode.PRIVATE`; do not write `with BuildPart() as notch_cutter:` followed by `extrude(..., mode=Mode.SUBTRACT)` because a detached cutter builder has no host yet",
+                    "do not try to rescue a wrong host plane by nesting `BuildSketch(Plane.XY)` or `BuildSketch(Plane.YZ)` inside `Locations((x, y, z))`, `shift_origin(...)`, or extra rotations when the requested host is front/back",
                     "do not reopen `with BuildPart() as lid:` or `with BuildPart() as base:` later just to start detached subtractive mini-builders for late local cuts",
-                    "keep hinge barrels, hinge pins, and other rotated hardware as detached separate positive solids after the shell hosts close, then assemble those detached solids in the shared closed pose",
+                    "only when the prompt explicitly requests detached back-edge hinge barrels or pins should you separate the hinge seam location from the hinge axis direction: the seam still sits at `y = ±depth/2`, while the cylinder axis is chosen separately by transform; do not reinterpret the back-edge hinge seam as a `Plane.YZ` sketch family just because the hinge sits at the back edge",
+                    "when detached hinge hardware is explicitly requested, keep hinge barrels, hinge pins, and other rotated hardware as detached separate positive solids after the shell hosts close, then assemble those detached solids in the shared closed pose",
+                    "a safe detached hinge lane is `Pos(0, ±depth/2, split_z) * (Rot(Y=90) * hinge_barrel.part)` after the hinge builder closes, keeping the Y seam coordinate explicit instead of rebuilding the hinge on `Plane.YZ`",
+                    "choose one axis-orientation lane for a detached hinge cylinder: either create it with one supported primitive rotation lane, or build it unrotated and orient the closed solid afterward, but do not stack `Cylinder(..., rotation=...)` and a second `Rot(...) * hinge_barrel.part` just to realize one hinge axis",
                     "if a detached boolean is still required for one local cutter, build that cutter as a positive/private solid after the shell hosts close and do one explicit final boolean outside the active host builders",
                 ],
             },
@@ -6273,6 +7489,11 @@ def _build_preflight_repair_recipe(
         if clamshell_half_shell_context:
             return _clamshell_host_local_cut_recipe()
         return _nested_hollow_section_same_builder_subtract_recipe()
+    if (
+        clamshell_half_shell_context
+        and "invalid_build123d_contract.named_face_plane_family_mismatch" in lint_ids
+    ):
+        return _clamshell_host_local_cut_recipe()
     if "slots" in family_ids and lint_ids.intersection(
         {
             "invalid_build123d_api.bare_subtract_helper",
@@ -6450,6 +7671,7 @@ def _build_preflight_repair_recipe(
         }
     if clamshell_half_shell_context and lint_ids.intersection(
         {
+            "invalid_build123d_contract.clamshell_hinge_unrotated_default_cylinder",
             "invalid_build123d_contract.detached_subtractive_builder_without_host",
             "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic",
             "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind",
@@ -6917,6 +8139,24 @@ def _build_preflight_repair_recipe(
                 ],
             },
         }
+    if "invalid_build123d_contract.named_face_plane_family_mismatch" in lint_ids and "explicit_anchor_hole" not in family_id_set:
+        return {
+            "recipe_id": "build123d_named_face_plane_family_contract",
+            "recipe_summary": (
+                "Named-face local edits must start from the plane family whose normal matches the "
+                "requested face instead of sketching on the wrong global plane and hoping later "
+                "offsets or rotations recover the host."
+            ),
+            "recipe_skeleton": {
+                "mode": "local_edit_via_execute_build123d",
+                "steps": [
+                    "map the named face to the matching plane family before any sketch or cutter placement: `top/bottom -> Plane.XY`, `front/back -> Plane.XZ`, `left/right -> Plane.YZ`",
+                    "translate that plane only along its own normal axis, or bind directly to `Plane(face)` if topology already selected the host face",
+                    "keep the host-face normal authoritative; do not compensate for a wrong plane family with extra `rotated(...)`, `shift_origin(...)`, or guessed world-space offsets",
+                    "if the host solid is centered, combine the correct plane family with the correct face datum such as `depth/2`, `width/2`, or `height/2` rather than the full span",
+                ],
+            },
+        }
     if "invalid_build123d_contract.directional_drill_plane_offset_coordinate_mixup" in lint_ids:
         return {
             "recipe_id": "directional_drill_workplane_coordinate_contract",
@@ -7042,6 +8282,25 @@ def _build_preflight_repair_recipe(
                 ],
             },
         }
+    if "invalid_build123d_contract.broad_local_finish_tail_fillet_on_first_write" in lint_ids:
+        return {
+            "recipe_id": "local_finish_fillet_postpone_contract",
+            "recipe_summary": (
+                "When the requirement already frames a fillet/chamfer as later local finishing, "
+                "do not spend the first whole-part rebuild on a broad edge selector. Stabilize "
+                "the host first, then finish that edge set from exact topology refs."
+            ),
+            "recipe_skeleton": {
+                "mode": "whole_part_rebuild_via_execute_build123d",
+                "steps": [
+                    "build the primary host geometry and the directly expressible pockets, holes, and recesses first",
+                    "if the fillet/chamfer is already described as a later local finish, leave it out of the first whole-part write instead of guessing a broad edge selector",
+                    "do not fillet `builder.edges().filter_by(...)`, `filter_by_position(...)`, or stored broad edge sets before exact topology refs exist",
+                    "once the host is stable, use query_topology to identify the exact target edges and finish that detail through the bounded local-finish lane",
+                    "if a rebuild still needs a fillet, narrow the selector to a verified edge subset instead of broad whole-part edge bands",
+                ],
+            },
+        }
     explicit_anchor_hole_countersink_recipe_lint_ids = {
         "legacy_api.countersink_workplane_method",
         "legacy_api.cut_extrude_helper",
@@ -7055,6 +8314,8 @@ def _build_preflight_repair_recipe(
         "invalid_build123d_keyword.countersink_angle_alias",
         "invalid_build123d_keyword.countersink_depth_alias",
         "invalid_build123d_context.countersinkhole_requires_buildpart",
+        "invalid_build123d_contract.centered_box_face_plane_full_span_offset",
+        "invalid_build123d_contract.named_face_plane_family_mismatch",
         "legacy_api.workplane_chain",
     }
     if lint_ids.intersection(
@@ -7105,10 +8366,13 @@ def _build_preflight_repair_recipe(
                 ],
             },
         }
-    path_sweep_specific_lint_ids = {
+    path_sweep_signature_lint_ids = {
         "invalid_build123d_contract.explicit_radius_arc_prefers_center_arc",
         "invalid_build123d_keyword.center_arc_arc_angle_alias",
+        "invalid_build123d_keyword.center_arc_end_angle_alias",
         "invalid_build123d_contract.center_arc_missing_start_angle",
+    }
+    path_sweep_specific_lint_ids = {
         "invalid_build123d_contract.sweep_path_wire_method_reference",
         "invalid_build123d_contract.sweep_path_line_alias",
         "invalid_build123d_keyword.sweep_section_alias",
@@ -7122,7 +8386,8 @@ def _build_preflight_repair_recipe(
     if lint_ids.intersection(path_sweep_specific_lint_ids) or (
         "path_sweep" in family_ids
         and (
-            "invalid_build123d_contract.builder_method_reference_assignment" in lint_ids
+            lint_ids.intersection(path_sweep_signature_lint_ids)
+            or "invalid_build123d_contract.builder_method_reference_assignment" in lint_ids
             or "invalid_build123d_api.symbolic_degree_constant" in lint_ids
         )
     ):
@@ -7152,7 +8417,9 @@ def _build_preflight_repair_recipe(
         {
             "invalid_build123d_keyword.circle_arc_size",
             "invalid_build123d_keyword.center_arc_arc_angle_alias",
+            "invalid_build123d_keyword.center_arc_end_angle_alias",
             "invalid_build123d_contract.center_arc_missing_start_angle",
+            "invalid_build123d_contract.circle_make_face_trim_profile",
             "invalid_build123d_api.semicircle_helper_name",
             "invalid_build123d_api.symbolic_degree_constant",
         }

@@ -26,6 +26,16 @@ _BENCHMARK_HELPERS = None
 _STEP_SIMILARITY = None
 _ROUND_FILE_RE = re.compile(r"round_(?P<round>[0-9]+)_")
 _TOPOLOGY_REF_RE = re.compile(r"^(?:face|edge):(?P<step>[0-9]+):[A-Z]_[A-Za-z0-9_]+$")
+_NON_ACTION_HISTORY_TYPES = {"snapshot", "get_history", "clear_session"}
+_SKETCH_LANE_CONTEXT_ACTIONS = {
+    "add_circle",
+    "add_rectangle",
+    "add_polygon",
+    "add_path",
+    "cut_extrude",
+    "extrude",
+    "trim_solid",
+}
 
 
 @contextmanager
@@ -535,101 +545,80 @@ def _summarize_read_model_usage(
     if actions_dir.exists():
         for path in sorted(actions_dir.glob("*.json")):
             payload = _read_json(path)
-            action_history = (
-                payload.get("action_history")
-                if isinstance(payload.get("action_history"), list)
-                else []
+            resolved_action = _resolve_effective_local_targeting_action(payload)
+            if resolved_action is None:
+                continue
+            action_type = resolved_action["action_type"]
+            face_ref = resolved_action["face_ref"]
+            edge_refs = resolved_action["edge_refs"]
+            local_targeting_action_count += 1
+            if face_ref:
+                face_ref_action_count += 1
+            if edge_refs:
+                edge_ref_action_count += 1
+            action_round = _extract_round_no_from_artifact_name(path.name)
+            latest_topology_window = _latest_topology_window_before_round(
+                topology_windows=topology_windows,
+                round_no=action_round,
             )
-            for item in action_history:
-                if not isinstance(item, dict):
-                    continue
-                action_type = str(item.get("action_type") or "").strip()
-                if not action_type or action_type == "snapshot":
-                    continue
-                action_params = (
-                    item.get("action_params")
-                    if isinstance(item.get("action_params"), dict)
-                    else {}
-                )
-                face_ref = str(action_params.get("face_ref") or "").strip()
-                edge_refs = [
-                    str(ref).strip()
-                    for ref in (action_params.get("edge_refs") or [])
-                    if isinstance(ref, str) and str(ref).strip()
-                ]
-                if not face_ref and not edge_refs:
-                    continue
-                local_targeting_action_count += 1
-                if face_ref:
-                    face_ref_action_count += 1
-                if edge_refs:
-                    edge_ref_action_count += 1
-                action_round = _extract_round_no_from_artifact_name(path.name)
-                latest_topology_window = _latest_topology_window_before_round(
-                    topology_windows=topology_windows,
-                    round_no=action_round,
-                )
-                latest_ref_ids = (
-                    latest_topology_window.get("ref_ids")
-                    if isinstance(latest_topology_window, dict)
-                    else set()
-                )
-                latest_ref_steps = (
-                    latest_topology_window.get("ref_steps")
-                    if isinstance(latest_topology_window, dict)
-                    else set()
-                )
-                latest_ref_step = max(latest_ref_steps) if latest_ref_steps else None
-                referenced_items = [face_ref] if face_ref else []
-                referenced_items.extend(edge_refs)
-                parsed_ref_steps = [_parse_topology_ref_step(ref_id) for ref_id in referenced_items]
-                has_candidate_label = any(
-                    isinstance(ref_id, str) and ref_id.strip().startswith("candidate:")
+            latest_ref_ids = (
+                latest_topology_window.get("ref_ids")
+                if isinstance(latest_topology_window, dict)
+                else set()
+            )
+            latest_ref_steps = (
+                latest_topology_window.get("ref_steps")
+                if isinstance(latest_topology_window, dict)
+                else set()
+            )
+            latest_ref_step = max(latest_ref_steps) if latest_ref_steps else None
+            referenced_items = [face_ref] if face_ref else []
+            referenced_items.extend(edge_refs)
+            parsed_ref_steps = [_parse_topology_ref_step(ref_id) for ref_id in referenced_items]
+            has_candidate_label = any(
+                isinstance(ref_id, str) and ref_id.strip().startswith("candidate:")
+                for ref_id in referenced_items
+            )
+            has_nonconcrete_ref = any(step is None for step in parsed_ref_steps)
+            has_stale_ref = bool(
+                latest_ref_step is not None
+                and any(step is not None and step < latest_ref_step for step in parsed_ref_steps)
+            )
+            is_fresh_targeting = bool(
+                latest_ref_ids
+                and not has_nonconcrete_ref
+                and all(
+                    isinstance(ref_id, str) and ref_id in latest_ref_ids
                     for ref_id in referenced_items
                 )
-                has_nonconcrete_ref = any(step is None for step in parsed_ref_steps)
-                has_stale_ref = bool(
-                    latest_ref_step is not None
-                    and any(
-                        step is not None and step < latest_ref_step
-                        for step in parsed_ref_steps
-                    )
-                )
-                is_fresh_targeting = bool(
-                    latest_ref_ids
-                    and not has_nonconcrete_ref
-                    and all(
-                        isinstance(ref_id, str) and ref_id in latest_ref_ids
-                        for ref_id in referenced_items
-                    )
-                )
-                if latest_topology_window is None:
-                    targeting_without_topology_query_count += 1
-                if has_candidate_label:
-                    candidate_label_ref_action_count += 1
-                if has_nonconcrete_ref:
-                    nonconcrete_ref_action_count += 1
-                if has_stale_ref:
-                    stale_ref_action_count += 1
-                if is_fresh_targeting:
-                    fresh_targeting_action_count += 1
-                local_targeting_examples.append(
-                    {
-                        "file": str(path.relative_to(case_dir)),
-                        "action_type": action_type,
-                        "face_ref": face_ref or None,
-                        "edge_refs": edge_refs[:8],
-                        "latest_topology_query_round": (
-                            latest_topology_window.get("round_no")
-                            if isinstance(latest_topology_window, dict)
-                            else None
-                        ),
-                        "fresh_targeting": is_fresh_targeting,
-                        "stale_ref_detected": has_stale_ref,
-                        "nonconcrete_ref_detected": has_nonconcrete_ref,
-                        "candidate_label_ref_detected": has_candidate_label,
-                    }
-                )
+            )
+            if latest_topology_window is None:
+                targeting_without_topology_query_count += 1
+            if has_candidate_label:
+                candidate_label_ref_action_count += 1
+            if has_nonconcrete_ref:
+                nonconcrete_ref_action_count += 1
+            if has_stale_ref:
+                stale_ref_action_count += 1
+            if is_fresh_targeting:
+                fresh_targeting_action_count += 1
+            local_targeting_examples.append(
+                {
+                    "file": str(path.relative_to(case_dir)),
+                    "action_type": action_type,
+                    "face_ref": face_ref or None,
+                    "edge_refs": edge_refs[:8],
+                    "latest_topology_query_round": (
+                        latest_topology_window.get("round_no")
+                        if isinstance(latest_topology_window, dict)
+                        else None
+                    ),
+                    "fresh_targeting": is_fresh_targeting,
+                    "stale_ref_detected": has_stale_ref,
+                    "nonconcrete_ref_detected": has_nonconcrete_ref,
+                    "candidate_label_ref_detected": has_candidate_label,
+                }
+            )
     kernel_summary = (
         round_digest.get("domain_kernel_summary")
         if isinstance(round_digest.get("domain_kernel_summary"), dict)
@@ -664,6 +653,46 @@ def _summarize_read_model_usage(
         or any(example.get("matched_ref_ids") or example.get("candidate_sets") for example in topology_examples),
         "host_role_targeting_observed": bool(candidate_host_roles),
     }
+
+
+def _resolve_effective_local_targeting_action(
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    action_history = payload.get("action_history") if isinstance(payload.get("action_history"), list) else []
+    history_entries: list[dict[str, Any]] = []
+    for item in action_history:
+        if not isinstance(item, dict):
+            continue
+        action_type = str(item.get("action_type") or "").strip().lower()
+        if not action_type or action_type in _NON_ACTION_HISTORY_TYPES:
+            continue
+        action_params = item.get("action_params") if isinstance(item.get("action_params"), dict) else {}
+        face_ref = str(action_params.get("face_ref") or "").strip()
+        edge_refs = [
+            str(ref).strip()
+            for ref in (action_params.get("edge_refs") or [])
+            if isinstance(ref, str) and str(ref).strip()
+        ]
+        history_entries.append(
+            {
+                "action_type": action_type,
+                "face_ref": face_ref,
+                "edge_refs": edge_refs,
+            }
+        )
+    if not history_entries:
+        return None
+    current_entry = dict(history_entries[-1])
+    if current_entry["face_ref"] or current_entry["edge_refs"]:
+        return current_entry
+    if current_entry["action_type"] not in _SKETCH_LANE_CONTEXT_ACTIONS:
+        return None
+    for previous_entry in reversed(history_entries[:-1]):
+        if previous_entry["face_ref"] or previous_entry["edge_refs"]:
+            current_entry["face_ref"] = previous_entry["face_ref"]
+            current_entry["edge_refs"] = list(previous_entry["edge_refs"])
+            return current_entry
+    return None
 
 
 def _practice_case_status(runtime_summary: dict[str, Any]) -> str:

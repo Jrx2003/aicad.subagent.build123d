@@ -112,5 +112,26 @@
       "wall_thickness_mm": [1.8, 2.2],
       "thumb_notch_mm": [7, 9]
     }
+  },
+  {
+    "seed_id": "clamshell_host_local_cut_focus",
+    "title": "双壳前后表面与铰链表达练习",
+    "prompt_template": "Create a two-part rounded clamshell enclosure sized {width_mm}mm x {depth_mm}mm x {height_mm}mm with a {hinge_style} at the back. Keep wall thickness near {wall_thickness_mm}mm, keep the lid and base as clearly separated shells, add two shallow circular magnet recesses on the mating faces near the front corners, add one shallow rounded label recess and one thumb notch on the front face, and add one small cable exit on the {cable_side} side. Keep the front/back face semantics stable, place local shell cuts on the correct host faces, and represent the hinge as either a thin living hinge strip or detached hinge solids rather than a blocking merged bar.",
+    "difficulty_band": "medium",
+    "expected_part_count": 2,
+    "target_feature_families": [
+      "half_shell",
+      "named_face_local_edit",
+      "directional_hole"
+    ],
+    "local_topology_targeting_expected": false,
+    "variation_knobs": {
+      "width_mm": [62, 70],
+      "depth_mm": [44, 52],
+      "height_mm": [22, 28],
+      "hinge_style": ["living hinge", "pin hinge"],
+      "wall_thickness_mm": [1.8, 2.2],
+      "cable_side": ["left", "right"]
+    }
   }
 ]

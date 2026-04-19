@@ -295,3 +295,109 @@ def test_summarize_read_model_usage_marks_stale_and_nonconcrete_refs(tmp_path) -
     assert summary["nonconcrete_ref_action_count"] == 1
     assert summary["candidate_label_ref_action_count"] == 1
     assert summary["exact_ref_consumption_rate"] == 0.0
+
+
+def test_summarize_read_model_usage_tracks_latest_action_type_in_cumulative_sketch_lane(
+    tmp_path,
+) -> None:
+    case_dir = tmp_path / "practice_case"
+    queries_dir = case_dir / "queries"
+    actions_dir = case_dir / "actions"
+    queries_dir.mkdir(parents=True)
+    actions_dir.mkdir(parents=True)
+
+    (queries_dir / "round_03_query_topology.json").write_text(
+        json.dumps(
+            {
+                "matched_ref_ids": ["face:1:F_FRONT"],
+                "candidate_sets": [
+                    {
+                        "candidate_id": "front_faces",
+                        "label": "Front Faces",
+                        "entity_type": "face",
+                        "ref_ids": ["face:1:F_FRONT"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (actions_dir / "round_05_apply_cad_action.json").write_text(
+        json.dumps(
+            {
+                "action_history": [
+                    {
+                        "action_type": "snapshot",
+                        "action_params": {},
+                    },
+                    {
+                        "action_type": "create_sketch",
+                        "action_params": {"face_ref": "face:1:F_FRONT"},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (actions_dir / "round_06_apply_cad_action.json").write_text(
+        json.dumps(
+            {
+                "action_history": [
+                    {
+                        "action_type": "snapshot",
+                        "action_params": {},
+                    },
+                    {
+                        "action_type": "create_sketch",
+                        "action_params": {"face_ref": "face:1:F_FRONT"},
+                    },
+                    {
+                        "action_type": "add_circle",
+                        "action_params": {"radius": 3.5},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (actions_dir / "round_07_apply_cad_action.json").write_text(
+        json.dumps(
+            {
+                "action_history": [
+                    {
+                        "action_type": "snapshot",
+                        "action_params": {},
+                    },
+                    {
+                        "action_type": "create_sketch",
+                        "action_params": {"face_ref": "face:1:F_FRONT"},
+                    },
+                    {
+                        "action_type": "add_circle",
+                        "action_params": {"radius": 3.5},
+                    },
+                    {
+                        "action_type": "cut_extrude",
+                        "action_params": {"depth": 5.0},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = _summarize_read_model_usage(case_dir=case_dir, round_digest={})
+
+    assert summary["local_targeting_action_count"] == 3
+    assert summary["fresh_targeting_action_count"] == 3
+    assert summary["face_ref_action_count"] == 3
+    assert [item["action_type"] for item in summary["local_targeting_examples"]] == [
+        "create_sketch",
+        "add_circle",
+        "cut_extrude",
+    ]
+    assert [item["face_ref"] for item in summary["local_targeting_examples"]] == [
+        "face:1:F_FRONT",
+        "face:1:F_FRONT",
+        "face:1:F_FRONT",
+    ]

@@ -81,6 +81,7 @@ def test_build123d_codegen_prompt_describes_semicircle_arc_contract() -> None:
     assert "Do not invent `Circle(..., arc_size=...)`" in prompt
     assert "there is no `Semicircle(...)` helper" in prompt
     assert "use `CenterArc(...)` or `RadiusArc(...)` inside `BuildLine`" in prompt
+    assert "Do not mix a full `Circle(...)` with helper trim lines plus `make_face()`" in prompt
 
 
 def test_build123d_codegen_prompt_describes_plain_degree_angle_contract() -> None:
@@ -110,6 +111,7 @@ def test_build123d_codegen_prompt_discourages_nested_buildpart_cutter_arithmetic
 
     assert "Do not open a nested `BuildPart()` cutter inside an active `BuildPart`" in prompt
     assert "`part.part -= cutter.part`" in prompt
+    assert "do not open a nested `BuildPart()` cutter inside an active host and then mutate `host.part -= cutter.part`" in prompt
 
 
 def test_build123d_codegen_prompt_describes_valid_countersink_helper_contract() -> None:
@@ -219,6 +221,30 @@ def test_build123d_codegen_prompt_describes_detached_hinge_rotation_pattern() ->
     assert "do not write `with Rot(...): Cylinder(...)` inside `BuildPart`" in prompt
     assert "`Rot(...) * hinge_barrel.part`" in prompt
     assert "`Pos(...) * Rot(...) * hinge_barrel.part`" in prompt
+
+
+def test_build123d_codegen_prompt_describes_centered_clamshell_split_pose_and_boundaries() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "place the base shell center at `split_z - base_h/2`" in prompt
+    assert "lid shell center at `split_z + lid_h/2`" in prompt
+    assert "back seam normally sits at `y = -depth/2`" in prompt
+    assert "front opening boundary at `y = +depth/2`" in prompt
+    assert "hinge belongs on the back seam `y = -depth/2`" in prompt
+    assert "A default `Cylinder(...)` still runs along Z" in prompt
+    assert "do not drop an unrotated default `Cylinder(...)` directly onto `(x, hinge_y, split_z)`" in prompt
+    assert "without a supported rotation/orientation lane that cylinder still runs along Z" in prompt
+    assert "do not reuse the seam Y coordinate as an X offset" in prompt
+    assert "A plain `pin hinge` or `mechanical hinge` on a two-part lid/base enclosure does not by itself authorize extra detached hinge solids or a third physical part" in prompt
+    assert "`extrude(amount=h)` grows one-sided from the active sketch plane" in prompt
+    assert "do not assume `Locations((0, 0, center_z))` plus `extrude(amount=h)` creates a centered shell interval" in prompt
+
+
+def test_build123d_codegen_prompt_preserves_rectangle_rounded_outer_envelope() -> None:
+    prompt = load_prompt("codegen")
+
+    assert "`RectangleRounded(width, depth, radius=...)` already uses the outer footprint spans" in prompt
+    assert "do not shrink the requested overall width/depth to `width - 2*radius`" in prompt
 
 
 def test_build123d_codegen_prompt_preserves_named_feature_face_on_shelled_hosts() -> None:

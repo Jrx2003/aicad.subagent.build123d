@@ -27,36 +27,280 @@
     <section id="summary" class="hero card">
       <div>
         <p class="eyebrow">三问直答</p>
-        <h2 class="hero-title">
-          今天的工作，把 practice lane 从“会跑出很多日志，但 closure 容易在尾段失控”，推进到“真实 Kimi run 已经能完成 front-face topology targeting 与局部修改，剩余问题被收窄到 countersink 几何承认与最后一轮预算收口”。
-        </h2>
+        <h2 class="hero-title">今天的主线已经可以一句话讲清：一边把 successful local finish 之后的 whole-part fallback 收成共享 policy，一边把 practice artifact 的展示层修正到可以直接拿去演示。</h2>
         <p>
-          如果只需要一句汇报：今天不是继续围 benchmark 加 case 规则，而是继续把
-          <code>grounding</code>、
-          <code>policy closure</code>
-          和
-          <code>local targeting</code>
-          做成可复用的 runtime 能力，并且已经在
-          <code>20260419_154837</code>、
-          <code>20260419_155523</code>、
-          <code>20260419_155831</code>、
-          <code>20260419_160521</code>
-          四条真实 run 中留下了逐步收敛的证据。
+          当前最值得直接打开讲的是这三份证据：
+          <code>tests/unit/sub_agent_runtime/test_agent_loop_v2_policy.py</code>、
+          <code>practice_runs/20260419_203038/.../practice_analysis.md</code>、
+          <code>practice_runs/20260419_201455/.../summary.json vs 20260419_203038/.../summary.json</code>。
+          第一份证明 policy bug 被钉死，第二份证明 artifact 已能正确展示真实 local-finish 链路，第三份证明 live run 的 whole-part fallback 和 hallucination 已明显下降。
         </p>
       </div>
 
       <div class="hero-metrics">
         <article class="metric">
-          <span class="metric-value">做了什么</span>
-          <span class="metric-label">补了 side-specific grounding，补了三条 short-budget closure policy，并把 local-targeting 的成功与 freshness 真正落入 practice analysis。</span>
+          <span class="metric-value">今天做了什么</span>
+          <span class="metric-label">新增 <code>semantic_refresh_after_successful_local_finish</code>，并修正 <code>practice_runner</code> 对 cumulative <code>action_history</code> 的误判，让 round 6/7 不再被错误展示成 <code>create_sketch</code>。</span>
         </article>
         <article class="metric">
-          <span class="metric-value">如何证明</span>
-          <span class="metric-label">单测先锁住，再看真实 run：<code>154837 → 155523 → 155831 → 160521</code>，从 graph-refresh 卡死推进到真实 <code>face_ref → apply_cad_action</code>，再推进到最后一轮真实修复。</span>
+          <span class="metric-value">如何证明有效</span>
+          <span class="metric-label">policy 红测修复后 <code>1 passed</code>，相关子集 <code>21 passed</code>；practice analysis focused 回归 <code>3 passed</code>；真实 run <code>201455 -&gt; 203038</code> 中 hallucination 已从 <code>2</code> 降到 <code>0</code>。</span>
         </article>
         <article class="metric">
-          <span class="metric-value">下一步</span>
-          <span class="metric-label">继续压 <code>explicit_anchor_hole</code> 的 countersink 几何承认链，并验证最后一轮 repair / code escape closure 是否已稳定进入 live rerun。</span>
+          <span class="metric-value">后续方向</span>
+          <span class="metric-label">继续推进更高难 practice seed，优先看 <code>clamshell_enclosure_highwater</code> 或 <code>organic_clamshell_storage_midhigh</code> 是否还能保持 exact targeting、低 hallucination 和 evidence-first validation。</span>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <p class="section-no">00</p>
+        <div>
+          <h2>今天最适合直接演示的 4 份文件</h2>
+          <p>如果需要在几分钟内把“今天做了什么、为什么有效、下一步是什么”讲清楚，先打开下面这四份文件即可。</p>
+        </div>
+      </div>
+
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3>1. Policy 红绿证据</h3>
+          <ul>
+            <li><code>tests/unit/sub_agent_runtime/test_agent_loop_v2_policy.py</code></li>
+            <li>关注测试：<code>test_successful_local_finish_under_short_budget_prefers_semantic_refresh_before_code_escape</code></li>
+            <li>作用：证明 whole-part fallback 是共享 policy bug，不是单个 case 偶然失败</li>
+          </ul>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>2. 修正后的真实 local-finish 链路</h3>
+          <ul>
+            <li><code>practice_runs/20260419_203038/hinged_pillbox_magnet_medium_v00_e34c3c99/practice_analysis.md</code></li>
+            <li>现在能直接看到：<code>create_sketch -&gt; add_circle -&gt; cut_extrude</code></li>
+            <li>作用：证明 artifact 展示层已经和真实 action 链路对齐</li>
+          </ul>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>3. 新旧 run 对比</h3>
+          <ul>
+            <li>旧：<code>practice_runs/20260419_201455/.../summary.json</code></li>
+            <li>新：<code>practice_runs/20260419_203038/.../summary.json</code></li>
+            <li>直接差异：<code>hallucination 2 -&gt; 0</code>，<code>last_error</code> 清零，whole-part fallback 消失</li>
+          </ul>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>4. 下一步主入口</h3>
+          <ul>
+            <li><code>practice/seed_manifest.json</code></li>
+            <li>下一步优先 seed：<code>clamshell_enclosure_highwater</code>、<code>organic_clamshell_storage_midhigh</code></li>
+            <li>作用：说明当前方向是更高难 custom practice，而不是回去拟合 benchmark</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <p class="section-no">00</p>
+        <div>
+          <h2>晚间新增：`134500` 卡死根因</h2>
+          <p>这一段是今天后半段最重要的新结论，建议汇报时直接讲，不要再只停留在“live run 卡住了”。</p>
+        </div>
+      </div>
+
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3>不是模型卡，也不是几何卡</h3>
+          <ul>
+            <li>同一份 round 1 Build123d 代码，本地直接执行可成功返回</li>
+            <li>同一份源码，单独走 <code>McpSandboxRunner.execute(...)</code> 也可成功返回</li>
+            <li>真正卡住的是进入 sandbox 前的 preflight lint</li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_134500/hinged_pillbox_magnet_medium_v00_e34c3c99/plans/round_01_response.json">134500 round_01_response.json</a>
+            <a href="../docs/work_logs/2026-04-19.md">work log</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>根因已经落到具体函数</h3>
+          <ul>
+            <li><code>_preflight_lint_execute_build123d</code></li>
+            <li><code>_find_rectanglerounded_radius_bounds_hits</code></li>
+            <li><code>_collect_numeric_assignment_env</code></li>
+            <li>真实栈文件：<code>/tmp/preflight_lint_stack.txt</code></li>
+          </ul>
+          <p>触发模式是同一个变量名在不同 loop 中重复赋值，旧的 fixed-point numeric env 会在两个值之间来回振荡。</p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>修复已经过两层验证</h3>
+          <ul>
+            <li>focused pytest：<code>2 passed</code></li>
+            <li>真实源码重放 preflight lint：<code>elapsed_sec 2.504</code></li>
+            <li>新的 live rerun：<code>practice_runs/20260419_195039/</code></li>
+          </ul>
+          <p class="links">
+            <a href="../tests/unit/sub_agent_runtime/test_tool_runtime_preflight_lint.py">preflight lint tests</a>
+            <a href="../practice_runs/20260419_195039/practice_manifest.json">195039 practice_manifest.json</a>
+            <a href="./shareable-report.md">shareable-report.md</a>
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <p class="section-no">00</p>
+        <div>
+          <h2>晚间新增：`apply_cad_action` no-effect 假成功</h2>
+          <p>这是 `134500` 死锁修掉之后暴露出来的新共享问题，重点不是“选不中面”，而是“已经选中面，却把没有几何效果的实体写误当成成功”。</p>
+        </div>
+      </div>
+
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3>真实 run 已证明 exact targeting 不是问题</h3>
+          <ul>
+            <li><code>195039</code> 的 round 4 已真实跑到 <code>query_topology + query_kernel_state</code></li>
+            <li>round 5-7 真实消费了 <code>face:1:F_47d924eaa64a</code></li>
+            <li><code>practice_analysis.md</code> 中 <code>exact_ref_consumption_rate = 1.0</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_195039/hinged_pillbox_magnet_medium_v00_e34c3c99/plans/round_05_response.json">round_05_response.json</a>
+            <a href="../practice_runs/20260419_195039/hinged_pillbox_magnet_medium_v00_e34c3c99/practice_analysis.md">practice_analysis.md</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>旧链路的问题是实体写无效果</h3>
+          <ul>
+            <li>round 7 的 <code>cut_extrude</code> 返回 <code>success=true</code></li>
+            <li>但 step 2 → 4 的 geometry 体积、bbox、面边数量没有任何变化</li>
+            <li>validator 仍明确报告：<code>feature_notch_or_profile_cut</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_195039/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_07_apply_cad_action.json">round_07_apply_cad_action.json</a>
+            <a href="../practice_runs/20260419_195039/hinged_pillbox_magnet_medium_v00_e34c3c99/queries/round_07_validate_requirement_post_write.json">round_07_validate_requirement_post_write.json</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>新修复是通用保护，不是 case rule</h3>
+          <ul>
+            <li><code>service.py</code> 现在会拦截“solid-mutating action success but no geometry delta”</li>
+            <li><code>turn_state.py</code> 新增 <code>no_op_action_count</code></li>
+            <li>相关 focused/merged 回归当前为 <code>22 passed</code></li>
+          </ul>
+          <p class="links">
+            <a href="../src/sandbox_mcp_server/service.py">service.py</a>
+            <a href="../tests/unit/sandbox_mcp_server/test_action_contracts.py">test_action_contracts.py</a>
+            <a href="../tests/unit/sub_agent_runtime/test_turn_state.py">test_turn_state.py</a>
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <p class="section-no">00</p>
+        <div>
+          <h2>今天这轮最短可讲版本</h2>
+          <p>如果现在需要直接汇报“今天做了什么、如何证明有效、后续方向是什么”，先讲下面这三组证据。</p>
+        </div>
+      </div>
+
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3>今天做了什么</h3>
+          <p>今天不是继续围 benchmark 加规则，而是沿 practice lane 再补两层共享 contract。</p>
+          <ul>
+            <li>living hinge 默认回到 host-owned back-edge strip，不再把整块 lid / base 平移到 seam</li>
+            <li>fresh <code>create_sketch(face_ref=...)</code> 成功后，下一轮改成 apply-only，不再把空 <code>query_sketch</code> 暴露成同级选项</li>
+            <li>对应代码：<code>src/sub_agent_runtime/skill_pack.py</code>、<code>src/sub_agent_runtime/tool_runtime.py</code>、<code>src/sub_agent_runtime/agent_loop_v2.py</code></li>
+          </ul>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>如何证明有效</h3>
+          <p><code>124200</code> 和 <code>130800</code> 两条真实 Kimi run 已经把问题明显收缩。</p>
+          <ul>
+            <li><code>124200/practice_analysis.md</code>：<code>hallucination: events=0</code>，<code>exact_ref_consumption_rate = 1.0</code></li>
+            <li><code>124200/plans/round_04_response.json</code>：local finish 已直接消费 exact <code>face_ref</code></li>
+            <li><code>130800/plans/round_05_response.json</code> + <code>queries/round_05_query_sketch.json</code>：把新的 closure gap 钉死为“fresh create_sketch 之后仍看空 sketch”</li>
+            <li><code>130800/plans/round_06_response.json</code> + <code>plans/round_08_response.json</code>：后半段已经能继续走出 <code>add_rectangle -&gt; cut_extrude</code></li>
+          </ul>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>后续方向</h3>
+          <p>下一步不是回去写单 case helper，而是继续拿 live rerun 验证 shared policy 是否真的改变路径。</p>
+          <ul>
+            <li>当前 live rerun：<code>practice_runs/20260419_134500/</code></li>
+            <li>验证目标：省掉 <code>130800</code> round 5 那次空 <code>query_sketch</code></li>
+            <li>若生效，下一层问题会更纯粹地落到 whole-part two-part / living hinge 几何组织与 validator grounding</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <p class="section-no">00</p>
+        <div>
+          <h2>今天最值得直接打开的证据</h2>
+          <p>如果只需要快速说明“今天做了什么、如何证明有效、后续方向是什么”，下面这 6 个文件已经够用。</p>
+        </div>
+      </div>
+
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3><code>234500</code>：旧问题长什么样</h3>
+          <p>这条 run 代表修复前的状态：write-surface 仍在主导，系统主要在 whole-part 盲修里消耗回合。</p>
+          <ul>
+            <li><code>hallucination.event_count = 10</code></li>
+            <li><code>executed_action_count = 5</code></li>
+            <li><code>failure_cluster = code_path_family_gap</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_234500/hinged_pillbox_magnet_medium_v00_e34c3c99/summary.json">summary.json</a>
+            <a href="../practice_runs/20260419_234500/hinged_pillbox_magnet_medium_v00_e34c3c99/practice_analysis.md">practice_analysis.md</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3><code>184731</code>：今天这轮修复已经把幻觉压下去了</h3>
+          <p>同一个 seed 的后续 run 已经不再被大量 Build123d 幻觉主导，first solid 成功，剩余问题开始转成 feature/read/validation 协同。</p>
+          <ul>
+            <li><code>hallucination.event_count = 1</code></li>
+            <li><code>last_error = null</code></li>
+            <li><code>query_topology = 3</code></li>
+            <li>剩余 blocker：<code>feature_notch_or_profile_cut</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_184731/hinged_pillbox_magnet_medium_v00_e34c3c99/summary.json">summary.json</a>
+            <a href="../practice_runs/20260419_184731/hinged_pillbox_magnet_medium_v00_e34c3c99/practice_analysis.md">practice_analysis.md</a>
+            <a href="../practice_runs/20260419_184731/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_08_execute_build123d.json">round_08_execute_build123d.json</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3><code>185457</code>：最新 live run 正在把下一层瓶颈暴露出来</h3>
+          <p>这条最新 live run 的价值在于：它没有重新退回 pure read stall，而是最终重新跑到了 exact-ref local finish。也正因为这样，剩余问题被收窄成了两个更清楚的共享 family。</p>
+          <ul>
+            <li><code>hallucination.event_count = 2</code></li>
+            <li><code>local_targeting_action_count = 1</code></li>
+            <li><code>fresh_targeting_action_count = 1</code></li>
+            <li><code>exact_ref_consumption_rate = 1.0</code></li>
+            <li>剩余问题：<code>named_face_plane_family_mismatch</code> 与 <code>detached_subtractive_builder_without_host</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_185457/hinged_pillbox_magnet_medium_v00_e34c3c99/summary.json">summary.json</a>
+            <a href="../practice_runs/20260419_185457/hinged_pillbox_magnet_medium_v00_e34c3c99/practice_analysis.md">practice_analysis.md</a>
+            <a href="../practice_runs/20260419_185457/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_08_apply_cad_action.json">round_08_apply_cad_action.json</a>
+          </p>
         </article>
       </div>
     </section>
@@ -66,34 +310,18 @@
         <p class="section-no">01</p>
         <div>
           <h2>今天做了什么</h2>
-          <p>今天的改动是一条主线，不是几处零散补丁：让 local-face grounding 更具体，让短预算下的 closure 更稳，让 practice 分析能真实说明 ref 有没有被消费。</p>
+          <p>今天的改动是一条主线，不是几处零散补丁：先修 runtime 的 completion closure，再修 exact host face 已有时的 local-finish 动作优先级。</p>
         </div>
       </div>
 
       <div class="evidence-grid">
         <article class="card evidence-item">
-          <h3>Side-Specific Grounding</h3>
-          <p>把 <code>named_face_local_edit</code> 从“知道有面需求”推进到“知道是不是明确落在 front/side face 上”。</p>
+          <h3>修掉 validation complete 之后还继续跑的 closure 缺口</h3>
+          <p>如果当前回合里已经出现 <code>validate_requirement -&gt; is_complete=true</code>，runtime 现在会直接以 <code>validated_complete</code> 停止，而不是继续进入下一轮。</p>
           <ul>
-            <li><code>requested_face_targets</code></li>
-            <li><code>requested_side_face_targets</code></li>
-            <li><code>specific_side_target_grounded</code></li>
-            <li><code>local_host_target_not_grounded</code></li>
-          </ul>
-          <p class="links">
-            <a href="../src/sandbox_mcp_server/feature_probe_grounding.py">feature_probe_grounding.py</a>
-            <a href="../src/sandbox_mcp_server/service.py">service.py</a>
-            <a href="../tests/unit/sandbox_mcp_server/test_feature_probe_grounding.py">对应单测</a>
-          </p>
-        </article>
-
-        <article class="card evidence-item">
-          <h3>Short-Budget Closure</h3>
-          <p>新增两条通用 policy，避免最后两轮继续耗在 graph refresh 或 validation-only closure 上。</p>
-          <ul>
-            <li><code>repair_after_topology_refresh_under_budget</code></li>
-            <li><code>repair_after_local_finish_semantic_refresh_under_budget</code></li>
-            <li><code>code_escape_after_local_finish_semantic_refresh_under_budget</code></li>
+            <li>当前回合检测 successful complete validation</li>
+            <li>写入 <code>stop_reason=validated_complete</code></li>
+            <li>后续 policy 只允许 <code>finish_run</code></li>
           </ul>
           <p class="links">
             <a href="../src/sub_agent_runtime/agent_loop_v2.py">agent_loop_v2.py</a>
@@ -102,17 +330,35 @@
         </article>
 
         <article class="card evidence-item">
-          <h3>Practice 里的 Ref 质量统计</h3>
-          <p>现在不只看有没有 <code>query_topology</code>，还看 ref 是否 fresh、是否具体、是否真的被局部动作消费。</p>
+          <h3>给 exact host face 的 local finish 增加 direct hole/countersink 偏置</h3>
+          <p>当 family 是 <code>explicit_anchor_hole</code>，且 exact <code>face_ref</code> 已经可用时，prompt contract 现在会明确要求：如果动作本来就能直接表示成 host-face hole/countersink，就先直接写，不要先开 <code>create_sketch(face_ref=...)</code>。</p>
           <ul>
-            <li><code>local_targeting_action_count</code></li>
-            <li><code>fresh_targeting_action_count</code></li>
-            <li><code>stale_ref_action_count</code></li>
-            <li><code>exact_ref_consumption_rate</code></li>
+            <li><code>preferred_action_types = [hole, countersink, counterbore]</code></li>
+            <li>focus attachment 明确写入“before opening create_sketch(face_ref=...)”</li>
+            <li>skill guidance 同步强调 direct host-face action 优先</li>
           </ul>
           <p class="links">
-            <a href="../src/sub_agent_runtime/practice_runner.py">practice_runner.py</a>
-            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/practice_analysis.md">最新真实产物</a>
+            <a href="../src/sub_agent_runtime/context_manager.py">context_manager.py</a>
+            <a href="../src/sub_agent_runtime/skill_pack.py">skill_pack.py</a>
+            <a href="../tests/unit/sub_agent_runtime/test_context_manager.py">context_manager 单测</a>
+            <a href="../tests/unit/sub_agent_runtime/test_skill_pack.py">skill_pack 单测</a>
+          </p>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>把改动放进真实 Kimi run，而不是停留在单测</h3>
+          <p>今天最重要的不是代码本身，而是它已经被真实 run 消费，能明确看到失败形态怎么收缩，并且已经出现跨 seed 复用证据。</p>
+          <ul>
+            <li><code>173500</code>：暴露 closure bug</li>
+            <li><code>181500</code>：暴露 sketch-chain 偏置</li>
+            <li><code>184800</code>：证明 direct hole/countersink 路径已进入 live lane</li>
+            <li><code>201500</code>：不同 seed 也已 complete，且 <code>hallucination_events = 0</code></li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_173500/brief_report.md">173500 brief_report</a>
+            <a href="../practice_runs/20260419_181500/brief_report.md">181500 brief_report</a>
+            <a href="../practice_runs/20260419_184800/brief_report.md">184800 brief_report</a>
+            <a href="../practice_runs/20260419_201500/brief_report.md">201500 brief_report</a>
           </p>
         </article>
       </div>
@@ -123,200 +369,247 @@
         <p class="section-no">02</p>
         <div>
           <h2>如何证明有效</h2>
-          <p>最值得讲的是三条真实 run 的递进关系，因为它们把“问题到底被压到了哪一层”讲得最清楚。</p>
+          <p>下面四张卡就是今天最值得直接演示的证据链，因为它们完整覆盖了“发现问题、定位问题、修复生效、跨 seed 复用”四个阶段。</p>
         </div>
       </div>
 
       <div class="proof-grid">
         <article class="card">
-          <h3><code>20260419_154837</code>：把旧卡点定位清楚</h3>
-          <p>这条 run 证明 front-face grounding 在 probe 里已经存在，但 runtime 还会困在 <code>semantic_refresh_before_under_grounded_kernel_patch_for_local_feature_gap</code>，最后停在 <code>max_rounds_reached</code>。</p>
+          <h3><code>20260419_173500</code>：问题先被定位清楚</h3>
+          <p>这条 run 的价值在于：round 7 的 <code>validate_requirement</code> 已经返回 <code>is_complete=true</code> 且 <code>blockers=[]</code>，但 runtime 仍然进入了 round 8。</p>
           <ul>
-            <li>说明当时主问题是 closure，不是“根本找不到 front face”</li>
-            <li>也是今天补 short-budget repair policy 的直接起点</li>
+            <li>说明旧问题是 completion closure 缺失</li>
+            <li>不是“validator 根本没通过”</li>
+            <li>也是今天补 <code>validated_complete</code> 的直接起点</li>
           </ul>
           <p class="links">
-            <a href="../practice_runs/20260419_154837/brief_report.md">brief_report.md</a>
-            <a href="../practice_runs/20260419_154837/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_06_query_feature_probes.json">round_06_query_feature_probes.json</a>
-            <a href="../practice_runs/20260419_154837/front_face_sketch_recess_focus_v00_194ed1dd/trace/events.jsonl">events.jsonl</a>
+            <a href="../practice_runs/20260419_173500/brief_report.md">brief_report.md</a>
+            <a href="../practice_runs/20260419_173500/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_07_validate_requirement.json">round_07_validate_requirement.json</a>
+            <a href="../practice_runs/20260419_173500/front_face_sketch_recess_focus_v00_194ed1dd/plans/round_08_response.json">round_08_response.json</a>
           </p>
         </article>
 
         <article class="card">
-          <h3><code>20260419_155523</code>：第一条 budget closure 已进入 live lane</h3>
-          <p>这条 run 已经不再困在 graph refresh，而是在 round 4 重新打开了 <code>execute_build123d</code> repair。</p>
+          <h3><code>20260419_181500</code>：问题已经收窄到 local-finish 动作优先级</h3>
+          <p>这条 run 的核心结论是：<code>hallucination_events = 0</code>，exact bottom <code>face_ref</code> 已经存在，但 round 4 仍然选择先开 <code>create_sketch(face_ref=...)</code>。</p>
           <ul>
-            <li><code>hallucination_events = 1</code></li>
-            <li>round 4 已真实执行 code repair</li>
-            <li>说明 <code>repair_after_topology_refresh_under_budget</code> 已经影响真实 Kimi run</li>
+            <li>说明主矛盾已经不再是 write-surface API 幻觉</li>
+            <li>而是 local finish 的动作优先级不对</li>
+            <li>这就是 direct hole/countersink bias 的直接起点</li>
           </ul>
           <p class="links">
-            <a href="../practice_runs/20260419_155523/brief_report.md">brief_report.md</a>
-            <a href="../practice_runs/20260419_155523/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_04_execute_build123d.json">round_04_execute_build123d.json</a>
-            <a href="../practice_runs/20260419_155523/front_face_sketch_recess_focus_v00_194ed1dd/trace/events.jsonl">events.jsonl</a>
+            <a href="../practice_runs/20260419_181500/brief_report.md">brief_report.md</a>
+            <a href="../practice_runs/20260419_181500/front_face_sketch_recess_focus_v00_194ed1dd/plans/round_04_response.json">round_04_response.json</a>
+            <a href="../practice_runs/20260419_181500/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_04_apply_cad_action.json">round_04_apply_cad_action.json</a>
           </p>
         </article>
 
         <article class="card">
-          <h3><code>20260419_155831</code>：第一次真正落到 exact face ref 的局部修改</h3>
-          <p>这条 run 的价值不在于“已经完成”，而在于它第一次真正走到了 <code>query_topology → apply_cad_action(face_ref=...)</code>。</p>
+          <h3><code>20260419_184800</code>：修复后真实改成 direct hole/countersink</h3>
+          <p>同类 prompt 在修复后，round 4 不再开 <code>create_sketch</code>，而是直接选择 <code>apply_cad_action(action_type="hole", hole_type="countersink", face_ref=...)</code>，最终整条 run 成功 complete。</p>
           <ul>
+            <li><code>status = complete</code></li>
+            <li><code>validation = 1</code></li>
+            <li><code>blockers = []</code></li>
+            <li>exact host-face local finish 已被真实模型消费</li>
+          </ul>
+          <p class="links">
+            <a href="../practice_runs/20260419_184800/brief_report.md">brief_report.md</a>
+            <a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/plans/round_04_response.json">round_04_response.json</a>
+            <a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_04_apply_cad_action.json">round_04_apply_cad_action.json</a>
+            <a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_07_validate_requirement_post_write.json">round_07_validate_requirement_post_write.json</a>
+            <a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/practice_analysis.md">practice_analysis.md</a>
+          </p>
+        </article>
+
+        <article class="card">
+          <h3><code>20260419_201500</code>：跨 seed 也已复用成功</h3>
+          <p>这条 run 不再是前面的同 prompt rerun，而是另一条 <code>topology_local_finish_focus</code> seed。结果是直接 complete，且 exact ref local finish 同样被稳定消费。</p>
+          <ul>
+            <li><code>status = complete</code></li>
+            <li><code>hallucination_events = 0</code></li>
             <li><code>local_targeting_action_count = 1</code></li>
             <li><code>fresh_targeting_action_count = 1</code></li>
+            <li><code>stale_ref_action_count = 0</code></li>
             <li><code>exact_ref_consumption_rate = 1.0</code></li>
-            <li>前表面精确 ref：<code>face:2:F_d510e00ff44d</code></li>
           </ul>
           <p class="links">
-            <a href="../practice_runs/20260419_155831/brief_report.md">brief_report.md</a>
-            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/practice_analysis.md">practice_analysis.md</a>
-            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_05_query_topology.json">round_05_query_topology.json</a>
-            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_04_apply_cad_action.json">round_04_apply_cad_action.json</a>
+            <a href="../practice_runs/20260419_201500/brief_report.md">brief_report.md</a>
+            <a href="../practice_runs/20260419_201500/topology_local_finish_focus_v00_95ab3188/practice_analysis.md">practice_analysis.md</a>
+            <a href="../practice_runs/20260419_201500/topology_local_finish_focus_v00_95ab3188/plans/round_04_response.json">round_04_response.json</a>
+            <a href="../practice_runs/20260419_201500/topology_local_finish_focus_v00_95ab3188/actions/round_04_apply_cad_action.json">round_04_apply_cad_action.json</a>
           </p>
         </article>
 
         <article class="card">
-          <h3>当前剩余瓶颈已经被收窄</h3>
-          <p>最新 run 的剩余失败不再是“读不到前表面”，而是 <code>explicit_anchor_hole</code> 的 countersink 几何没有被 validator 承认。</p>
+          <h3><code>20260419_210500</code>：把 plane-family matcher 的误伤根因钉死</h3>
+          <p>这条 enclosure rerun 仍然失败，但它把问题暴露得更精确：旧的 <code>named_face_plane_family_mismatch</code> 会把真正错误的 front-face local edit 和 base/lid 的 host-profile sketch 混在一起，一次 round 1 就打出 6 个 hit。</p>
           <ul>
-            <li><code>feature_countersink</code></li>
-            <li><code>two_mounting_holes_on_the_bottom_face</code></li>
-            <li><code>countersinks_on_the_mounting_holes</code></li>
+            <li>旧 run round 1：6 个 plane-family mismatch</li>
+            <li>当前代码对同一份 round 1 源码做离线 preflight 复算：只剩 2 个 hit</li>
+            <li>保留下来的正是 label / notch 这两个真正的 front-face local edit</li>
           </ul>
           <p class="links">
-            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_06_validate_requirement.json">round_06_validate_requirement.json</a>
-            <a href="../practice_runs/20260419_155831/front_face_sketch_recess_focus_v00_194ed1dd/trace/failure_bundle.json">failure_bundle.json</a>
+            <a href="../practice_runs/20260419_210500/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">210500 round_01_execute_build123d.json</a>
+            <a href="../practice_runs/20260419_210500/hinged_pillbox_magnet_medium_v00_e34c3c99/plans/round_01_response.json">210500 round_01_response.json</a>
+            <a href="../docs/work_logs/2026-04-19.md">2026-04-19 work log</a>
           </p>
         </article>
 
         <article class="card">
-          <h3><code>20260419_160521</code>：最后一轮已切回真实修复</h3>
-          <p>最新 rerun 继续证明尾段 closure 正在变健康。最后一轮不再停在 <code>validate_requirement</code>，而是实际执行了 <code>execute_build123d</code>。</p>
+          <h3><code>20260419_224800</code>：把 host-profile alias 误伤的最后一层根因钉死</h3>
+          <p>这条 live rerun 又把问题推进了一步：真正剩下的误伤不是 plane-family 大方向错了，而是 <code>inner_w = width - 2 * wall_thick</code>、<code>inner_d = depth - 2 * wall_thick</code> 这类典型壳体中空 alias 之前没有被 lint 当成 host-profile 派生。</p>
           <ul>
-            <li>round 5：<code>apply_cad_action(create_sketch, face_ref='face:1:F_0c4e17d39333')</code></li>
-            <li>round 6：<code>execute_build123d</code> whole-part escape</li>
-            <li><code>failure_bundle.last_good_write.round = 6</code></li>
+            <li>旧 lint 复算：`line 45 -> XY`、`line 61 -> XY`</li>
+            <li>当前修复：modifier 识别从精确命名升级成 token 归一</li>
+            <li>当前同源码复算：<code>[]</code></li>
+            <li>说明 enclosure seed 的 first-write 误伤面又少了一层</li>
           </ul>
           <p class="links">
-            <a href="../practice_runs/20260419_160521/brief_report.md">brief_report.md</a>
-            <a href="../practice_runs/20260419_160521/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_05_apply_cad_action.json">round_05_apply_cad_action.json</a>
-            <a href="../practice_runs/20260419_160521/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_06_execute_build123d.json">round_06_execute_build123d.json</a>
+            <a href="../practice_runs/20260419_224800/hinged_pillbox_magnet_medium_v00_e34c3c99/plans/round_01_response.json">224800 round_01_response.json</a>
+            <a href="../practice_runs/20260419_224800/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">224800 round_01_execute_build123d.json</a>
+            <a href="../src/sub_agent_runtime/tool_runtime.py">tool_runtime.py</a>
+            <a href="../tests/unit/sub_agent_runtime/test_tool_runtime_preflight_lint.py">新增单测</a>
           </p>
         </article>
 
         <article class="card">
-          <h3>新增红绿测：最后一轮没有 patch 时也不再空耗</h3>
-          <p>今天把尾段 closure 正式拆成两种共享情况：有 actionable patch 时走 repair；没有 actionable patch 但 blocker 还在时，直接放行 <code>execute_build123d</code> 做 whole-part escape。</p>
+          <h3><code>20260419_221500 -&gt; 20260419_223900</code>：clamshell seed 已从 write-only 盲修推进到 topology-aware local finish</h3>
+          <p>这组对比是今天最强的新证据。<code>221500</code> 里 8 轮全是 <code>execute_build123d</code>，<code>hallucination_events = 26</code>；<code>223900</code> 已经变成 5 次写、1 次 <code>query_feature_probes</code>、1 次 <code>query_kernel_state</code>、1 次 <code>query_topology</code>，而且 exact <code>face_ref</code> 已经被真实消费。</p>
           <ul>
-            <li><code>repair_after_local_finish_semantic_refresh_under_budget</code></li>
-            <li><code>code_escape_after_local_finish_semantic_refresh_under_budget</code></li>
-            <li>两条策略都已被单测锁成回归行为</li>
+            <li><code>hallucination_events: 26 -&gt; 5</code></li>
+            <li><code>query_topology: 0 -&gt; 1</code></li>
+            <li><code>local_targeting_action_count: 0 -&gt; 1</code></li>
+            <li><code>exact_ref_consumption_rate: 0.0 -&gt; 1.0</code></li>
+            <li>round 1 的 <code>named_face_plane_family_mismatch</code> 已经被压掉，只剩 <code>transform_context_manager</code></li>
           </ul>
           <p class="links">
-            <a href="../tests/unit/sub_agent_runtime/test_agent_loop_v2_policy.py">test_agent_loop_v2_policy.py</a>
-            <a href="../src/sub_agent_runtime/agent_loop_v2.py">agent_loop_v2.py</a>
+            <a href="../practice_runs/20260419_221500/brief_report.md">221500 brief_report.md</a>
+            <a href="../practice_runs/20260419_223900/brief_report.md">223900 brief_report.md</a>
+            <a href="../practice_runs/20260419_223900/hinged_pillbox_magnet_medium_v00_e34c3c99/queries/round_04_query_topology.json">223900 round_04_query_topology.json</a>
+            <a href="../practice_runs/20260419_223900/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_05_apply_cad_action.json">223900 round_05_apply_cad_action.json</a>
           </p>
         </article>
       </div>
+    </section>
 
-      <div class="card compare-card">
-        <h2>这三条 Run 最重要的变化</h2>
-        <table class="compare-table">
-          <thead>
-            <tr>
-              <th>Run</th>
-              <th>最重要的进步</th>
-              <th>还卡在哪里</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><code>154837</code></td>
-              <td>front-face grounding 已存在，但 closure 仍卡在 graph refresh</td>
-              <td>没有把剩余预算打回 repair lane</td>
-            </tr>
-            <tr>
-              <td><code>155523</code></td>
-              <td>round 4 已真实重开 <code>execute_build123d</code> repair</td>
-              <td>feature-probe 后最后一轮仍可能继续 refresh</td>
-            </tr>
-            <tr>
-              <td><code>155831</code></td>
-              <td>真实完成 <code>face_ref → apply_cad_action</code> 局部修改</td>
-              <td>countersink 几何承认 + 最后一轮 validation-only closure</td>
-            </tr>
-          </tbody>
-        </table>
+    <section class="section">
+      <div class="section-head">
+        <p class="section-no">03</p>
+        <div>
+          <h2>代码与测试证据</h2>
+          <p>今天的结论不是凭感觉写出来的。下面这组代码文件和回归，正好对应上面三条 run 的因果链。</p>
+        </div>
+      </div>
+
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3>核心代码文件</h3>
+          <ul>
+            <li><a href="../src/sub_agent_runtime/agent_loop_v2.py">src/sub_agent_runtime/agent_loop_v2.py</a></li>
+            <li><a href="../src/sub_agent_runtime/context_manager.py">src/sub_agent_runtime/context_manager.py</a></li>
+            <li><a href="../src/sub_agent_runtime/skill_pack.py">src/sub_agent_runtime/skill_pack.py</a></li>
+          </ul>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>对应回归文件</h3>
+          <ul>
+            <li><a href="../tests/unit/sub_agent_runtime/test_agent_loop_v2_policy.py">test_agent_loop_v2_policy.py</a></li>
+            <li><a href="../tests/unit/sub_agent_runtime/test_context_manager.py">test_context_manager.py</a></li>
+            <li><a href="../tests/unit/sub_agent_runtime/test_skill_pack.py">test_skill_pack.py</a></li>
+          </ul>
+        </article>
+
+        <article class="card evidence-item">
+          <h3>今天通过的关键回归</h3>
+          <p>执行：</p>
+          <pre><code>./.venv/bin/pytest tests/unit/sub_agent_runtime/test_context_manager.py tests/unit/sub_agent_runtime/test_skill_pack.py tests/unit/sub_agent_runtime/test_agent_loop_v2_policy.py tests/unit/sub_agent_runtime/test_tool_runtime_preflight_lint.py tests/unit/sandbox_mcp_server/test_validate_requirement_contract.py -q</code></pre>
+          <p>结果：<code>304 passed, 11 warnings</code></p>
+        </article>
       </div>
     </section>
 
     <section id="next" class="section">
       <div class="section-head">
-        <p class="section-no">03</p>
+        <p class="section-no">04</p>
         <div>
           <h2>后续方向</h2>
-          <p>下一步继续压共享 family，不回到单 case 拟合。</p>
+          <p>今天收口后，主问题已经从“Build123d 普遍不会用”推进到了两条更窄、也更值得继续优化的共享问题。</p>
         </div>
       </div>
 
-      <div class="next-grid">
-        <article class="card">
-          <h3>1. 压 <code>explicit_anchor_hole</code> 的 countersink 几何承认链</h3>
-          <p>当前最明确的剩余失败就是：动作层已经尝试做 countersink，但 geometry / validator 还没有稳定认定“沉头孔已满足”。</p>
+      <div class="evidence-grid">
+        <article class="card evidence-item">
+          <h3>方向 1：继续减少 first-write helper / plane contract 幻觉残差</h3>
+          <p>当前 first-write 的 plane-family false positive 已经被继续压掉：`224800` 暴露出的 host-profile alias 误伤面已经在当前代码里被清零。下一层更明确的 whole-part 残差已经收缩成 clamshell first-write 里的 <code>transform_context_manager</code> 与 detached hinge positive-solid lane，而最新 rerun <code>20260419_231500</code> 正在验证 enclosure seed 是否能真正越过这层新的 alias 修复面。</p>
+          <p class="links">
+            <a href="../practice_runs/20260419_203500/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">203500 round_01_execute_build123d.json</a>
+            <a href="../practice_runs/20260419_210500/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">210500 round_01_execute_build123d.json</a>
+            <a href="../practice_runs/20260419_223900/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">223900 round_01_execute_build123d.json</a>
+            <a href="../practice_runs/20260419_224800/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">224800 round_01_execute_build123d.json</a>
+            <a href="../practice_runs/20260419_231500/hinged_pillbox_magnet_medium_v00_e34c3c99/prompt.txt">231500 prompt.txt</a>
+          </p>
         </article>
-        <article class="card">
-          <h3>2. 继续验证最后一轮 repair lane 重开</h3>
-          <p>今天已经把 <code>repair_after_local_finish_semantic_refresh_under_budget</code> 收进 policy。<code>20260419_160521</code> 已经证明最后一轮能切回真实修复，下一步继续看 whole-part escape 能否保住前面拿到的 local anchors。</p>
+
+        <article class="card evidence-item">
+          <h3>方向 2：继续压 local-targeting 之后的 stale-ref repeat</h3>
+          <p><code>184800</code> 的 <code>practice_analysis.md</code> 已显示：</p>
+          <ul>
+            <li><code>local_targeting_action_count = 3</code></li>
+            <li><code>fresh_targeting_action_count = 2</code></li>
+            <li><code>stale_ref_action_count = 1</code></li>
+          </ul>
+          <p>说明 exact targeting 已跑起来，但 freshness discipline 还可以继续收紧。</p>
+          <p class="links">
+            <a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/practice_analysis.md">184800 practice_analysis.md</a>
+          </p>
         </article>
-        <article class="card">
-          <h3>3. 继续收窄 validator 的 broad aggregation</h3>
-          <p><code>feature_target_face_edit</code> 这类高层 check 还偏宽，后续继续推进 evidence-first grounding，避免“模糊通过”。</p>
+
+        <article class="card evidence-item">
+          <h3>方向 3：继续做跨 seed 真实 Kimi rerun</h3>
+          <p>下一步不会回到 benchmark 拟合，而是继续用 practice seed 做真跑，验证今天新补的 host-profile alias suppressor、clamshell transform-lane skill 和 open-sketch code-escape 是否已经共同进入 live lane。<code>20260419_201500</code> 已给出跨 seed 正向证据，<code>20260419_223900</code> 已给出 enclosure/clamshell 侧的 topology-aware local finish 证据，而 <code>20260419_231500</code> 正在验证最新这轮 first-write 收窄。</p>
+          <p class="links">
+            <a href="../practice_runs/20260419_201500/brief_report.md">201500 brief_report</a>
+            <a href="../practice_runs/20260419_223900/brief_report.md">223900 brief_report</a>
+            <a href="../practice_runs/20260419_223900/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_07_apply_cad_action.json">223900 round_07_apply_cad_action.json</a>
+            <a href="../practice_runs/20260419_231500/practice_manifest.json">231500 practice_manifest.json</a>
+          </p>
         </article>
       </div>
     </section>
 
     <section id="appendix" class="section">
       <div class="section-head">
-        <p class="section-no">04</p>
+        <p class="section-no">05</p>
         <div>
-          <h2>附录：工件链路</h2>
-          <p>如果需要现场下钻，推荐按下面顺序开文件。</p>
+          <h2>附录：演示时优先打开的文件</h2>
+          <p>如果只需要快速演示，请按下面顺序打开。</p>
         </div>
       </div>
 
-      <div class="evidence-grid">
-        <article class="card evidence-item">
-          <h3>推荐打开顺序</h3>
-          <ol>
-            <li><code>practice_runs/20260419_154837/brief_report.md</code></li>
-            <li><code>practice_runs/20260419_155523/.../actions/round_04_execute_build123d.json</code></li>
-            <li><code>practice_runs/20260419_155831/.../queries/round_05_query_topology.json</code></li>
-            <li><code>practice_runs/20260419_155831/.../actions/round_04_apply_cad_action.json</code></li>
-            <li><code>practice_runs/20260419_155831/.../queries/round_06_validate_requirement.json</code></li>
-          </ol>
-        </article>
-
-        <article class="card evidence-item">
-          <h3>完整 run 目录</h3>
-          <p class="links">
-            <a href="../practice_runs/20260419_154837/">20260419_154837</a>
-            <a href="../practice_runs/20260419_155523/">20260419_155523</a>
-            <a href="../practice_runs/20260419_155831/">20260419_155831</a>
-          </p>
-        </article>
-
-        <article class="card evidence-item">
-          <h3>参考图片</h3>
-          <div class="preview-grid">
-            <figure>
-              <img src="../practice_runs/20260419_143759/hinged_pillbox_magnet_medium_v00_e34c3c99/evaluation/generated_preview_iso.png" alt="ISO 视图">
-              <figcaption>ISO 视图</figcaption>
-            </figure>
-            <figure>
-              <img src="../practice_runs/20260419_143759/hinged_pillbox_magnet_medium_v00_e34c3c99/evaluation/generated_preview_front.png" alt="Front 视图">
-              <figcaption>Front 视图</figcaption>
-            </figure>
-          </div>
-        </article>
+      <div class="card">
+        <ol>
+          <li><a href="../practice_runs/20260419_173500/brief_report.md">practice_runs/20260419_173500/brief_report.md</a></li>
+          <li><a href="../practice_runs/20260419_173500/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_07_validate_requirement.json">173500 / round_07_validate_requirement.json</a></li>
+          <li><a href="../practice_runs/20260419_181500/brief_report.md">practice_runs/20260419_181500/brief_report.md</a></li>
+          <li><a href="../practice_runs/20260419_181500/front_face_sketch_recess_focus_v00_194ed1dd/plans/round_04_response.json">181500 / round_04_response.json</a></li>
+          <li><a href="../practice_runs/20260419_184800/brief_report.md">practice_runs/20260419_184800/brief_report.md</a></li>
+          <li><a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/plans/round_04_response.json">184800 / round_04_response.json</a></li>
+          <li><a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/actions/round_04_apply_cad_action.json">184800 / round_04_apply_cad_action.json</a></li>
+          <li><a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/queries/round_07_validate_requirement_post_write.json">184800 / round_07_validate_requirement_post_write.json</a></li>
+          <li><a href="../practice_runs/20260419_184800/front_face_sketch_recess_focus_v00_194ed1dd/practice_analysis.md">184800 / practice_analysis.md</a></li>
+          <li><a href="../practice_runs/20260419_201500/brief_report.md">201500 / brief_report.md</a></li>
+          <li><a href="../practice_runs/20260419_201500/topology_local_finish_focus_v00_95ab3188/practice_analysis.md">201500 / practice_analysis.md</a></li>
+          <li><a href="../practice_runs/20260419_201500/topology_local_finish_focus_v00_95ab3188/plans/round_04_response.json">201500 / round_04_response.json</a></li>
+          <li><a href="../practice_runs/20260419_203500/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">203500 / round_01_execute_build123d.json</a></li>
+          <li><a href="../practice_runs/20260419_210500/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">210500 / round_01_execute_build123d.json</a></li>
+          <li><a href="../practice_runs/20260419_224800/hinged_pillbox_magnet_medium_v00_e34c3c99/plans/round_01_response.json">224800 / round_01_response.json</a></li>
+          <li><a href="../practice_runs/20260419_224800/hinged_pillbox_magnet_medium_v00_e34c3c99/actions/round_01_execute_build123d.json">224800 / round_01_execute_build123d.json</a></li>
+          <li><a href="../practice_runs/20260419_231500/practice_manifest.json">231500 / practice_manifest.json</a></li>
+          <li><a href="../docs/work_logs/2026-04-19.md">2026-04-19 / work_log.md</a></li>
+          <li><a href="./shareable-report.md">shareable-report.md</a></li>
+        </ol>
       </div>
     </section>
   </main>

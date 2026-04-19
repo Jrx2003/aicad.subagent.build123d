@@ -648,6 +648,35 @@ class IterativeAgentLoopV2:
                 break
 
             run_state.add_turn(turn)
+            if _turn_has_successful_validation_completion(turn):
+                converged = True
+                run_state.previous_error = None
+                run_state.add_turn_envelope(
+                    TurnEnvelope(
+                        round_no=round_no,
+                        prompt_metrics=prompt_bundle.metrics,
+                        decision_log=decision_log,
+                        tool_calls=turn.tool_calls,
+                        tool_results=turn.tool_results,
+                        compaction_boundary=compaction_boundary,
+                        turn_tool_policy=turn_tool_policy,
+                        stop_reason="validated_complete",
+                        previous_error=None,
+                    )
+                )
+                stop_reason = {
+                    "code": "validated_complete",
+                    "detail": "validate_requirement returned complete",
+                    "round": round_no,
+                }
+                self._append_round_completed_trace(
+                    trace_file=trace_file,
+                    round_no=round_no,
+                    requested_finish=batch_result.requested_finish,
+                    turn=turn,
+                    previous_error=run_state.previous_error,
+                )
+                break
             if (
                 not batch_result.requested_finish
                 and _should_auto_validate_after_post_write(
@@ -890,7 +919,7 @@ class IterativeAgentLoopV2:
             render_image_attached_for_prompt=False,
             inspection_only_rounds=run_state.inspection_only_rounds,
             inspection_requested_rounds=run_state.inspection_only_rounds,
-            no_op_action_count=0,
+            no_op_action_count=run_state.no_op_action_count,
             token_usage=run_state.token_usage,
             reasoning_log_available=bool(run_state.visible_decision_logs),
             tool_event_count=len(run_state.tool_execution_events),
@@ -1617,6 +1646,30 @@ def _determine_turn_tool_policy(
 
     preferred_probe_families = _preferred_probe_families_for_turn(run_state)
 
+    if (
+        _is_successful_validation(run_state.latest_validation)
+        and "finish_run" in all_tool_names
+    ):
+        allowed_tool_names = [
+            name for name in all_tool_names if name == "finish_run"
+        ]
+        blocked_tool_names = [
+            name for name in all_tool_names if name not in set(allowed_tool_names)
+        ]
+        return TurnToolPolicy(
+            round_no=round_no,
+            policy_id="finish_after_successful_validation",
+            mode="completion_judge",
+            reason=(
+                "The latest successful validate_requirement already marked the requirement "
+                "complete, so close the run instead of reopening read or local-finish lanes."
+            ),
+            allowed_tool_names=allowed_tool_names,
+            blocked_tool_names=blocked_tool_names,
+            preferred_tool_names=["finish_run"],
+            preferred_probe_families=preferred_probe_families,
+        )
+
     incomplete_finish_round = _latest_incomplete_finish_round(run_state)
     if incomplete_finish_round is not None and not _has_tool_turn_since_round(
         run_state,
@@ -1683,8 +1736,16 @@ def _determine_turn_tool_policy(
                 ],
                 preferred_probe_families=preferred_probe_families,
             )
+        sketch_window_requires_apply_write_first = (
+            _open_sketch_window_requires_apply_write_first(run_state)
+        )
+        sketch_window_allowed_tools = (
+            {"apply_cad_action"}
+            if sketch_window_requires_apply_write_first
+            else {"apply_cad_action", "query_sketch"}
+        )
         allowed_tool_names = [
-            name for name in all_tool_names if name in {"apply_cad_action", "query_sketch"}
+            name for name in all_tool_names if name in sketch_window_allowed_tools
         ]
         blocked_tool_names = [
             name for name in all_tool_names if name not in set(allowed_tool_names)
@@ -1696,6 +1757,10 @@ def _determine_turn_tool_policy(
             reason=(
                 "The latest successful apply_cad_action opened or extended a sketch window, "
                 "so continue that bounded sketch lane before validation or broader semantic reads."
+                if not sketch_window_requires_apply_write_first
+                else "The latest successful create_sketch opened a fresh empty sketch window, "
+                "so spend the next turn on apply_cad_action to add the first sketch geometry "
+                "instead of re-querying the same empty window."
             ),
             allowed_tool_names=allowed_tool_names,
             blocked_tool_names=blocked_tool_names,
@@ -1764,6 +1829,60 @@ def _determine_turn_tool_policy(
             ],
             preferred_probe_families=preferred_probe_families,
         )
+
+    latest_successful_structured_write_turn = run_state.latest_successful_write_turn
+    if (
+        latest_successful_structured_write_turn is not None
+        and latest_successful_structured_write_turn.write_tool_name == "apply_cad_action"
+        and not _turn_has_open_sketch_window_after_successful_apply(
+            latest_successful_structured_write_turn
+        )
+        and not _latest_validation_is_fresh_for_write(
+            run_state,
+            write_round=latest_successful_structured_write_turn.round_no,
+        )
+        and not _has_successful_semantic_refresh_since_round(
+            run_state,
+            after_round=latest_successful_structured_write_turn.round_no,
+        )
+        and not _has_tool_turn_since_round(
+            run_state,
+            after_round=latest_successful_structured_write_turn.round_no,
+            tool_names={"validate_requirement"},
+        )
+    ):
+        allowed_tool_names = _semantic_refresh_allowed_tool_names_for_turn(
+            run_state,
+            all_tool_names=all_tool_names,
+        )
+        if allowed_tool_names:
+            blocked_tool_names = [
+                name for name in all_tool_names if name not in set(allowed_tool_names)
+            ]
+            preferred_tool_names = [
+                name
+                for name in _preferred_validation_assessment_tools_for_turn(
+                    run_state,
+                    all_tool_names=all_tool_names,
+                )
+                if name in allowed_tool_names
+            ]
+            if not preferred_tool_names:
+                preferred_tool_names = list(allowed_tool_names)
+            return TurnToolPolicy(
+                round_no=round_no,
+                policy_id="semantic_refresh_after_successful_local_finish",
+                mode="graph_refresh",
+                reason=(
+                    "A successful local-finish write already changed geometry, but the semantic "
+                    "state has not been refreshed since that write. Refresh feature/kernel evidence "
+                    "once before reopening whole-part code or budgeting against stale blockers."
+                ),
+                allowed_tool_names=allowed_tool_names,
+                blocked_tool_names=blocked_tool_names,
+                preferred_tool_names=preferred_tool_names,
+                preferred_probe_families=preferred_probe_families,
+            )
 
     latest_successful_structured_write_turn = run_state.latest_successful_write_turn
     if (
@@ -5812,6 +5931,17 @@ def _should_auto_validate_after_non_progress(run_state: RunState) -> bool:
     return True
 
 
+def _turn_has_successful_validation_completion(turn: TurnRecord | None) -> bool:
+    if turn is None:
+        return False
+    for result in turn.tool_results:
+        if result.name != "validate_requirement" or not result.success:
+            continue
+        if _is_successful_validation(result.payload):
+            return True
+    return False
+
+
 def _should_auto_validate_after_post_write(
     *,
     run_state: RunState,
@@ -5923,6 +6053,21 @@ def _latest_successful_apply_action_type_with_open_sketch_window(
     return action_type
 
 
+def _latest_successful_tool_payload(
+    run_state: RunState,
+    *,
+    tool_name: str,
+) -> dict[str, Any] | None:
+    payload = run_state.evidence.latest_by_tool.get(tool_name)
+    if isinstance(payload, dict):
+        return payload
+    for turn in reversed(run_state.turns):
+        for result in reversed(turn.tool_results):
+            if result.name == tool_name and result.success and isinstance(result.payload, dict):
+                return result.payload
+    return None
+
+
 def _open_sketch_window_requires_code_escape(
     *,
     run_state: RunState,
@@ -5934,7 +6079,10 @@ def _open_sketch_window_requires_code_escape(
     remaining_rounds = max(max_rounds - len(run_state.turns), 0)
     if remaining_rounds <= 0:
         return True
-    query_sketch_payload = run_state.evidence.latest_by_tool.get("query_sketch")
+    query_sketch_payload = _latest_successful_tool_payload(
+        run_state,
+        tool_name="query_sketch",
+    )
     sketch_state = (
         query_sketch_payload.get("sketch_state")
         if isinstance(query_sketch_payload, dict)
@@ -5961,6 +6109,12 @@ def _open_sketch_window_requires_code_escape(
         min_write_steps_remaining = 2
     if min_write_steps_remaining <= 0:
         return False
+    if latest_action_type == "create_sketch" and not profile_refs and not path_refs:
+        # An empty sketch window still needs at least one geometry-building write plus the
+        # materialization write. When only two rounds remain, the bounded local lane is already
+        # too tight to recover reliably, so reopen the whole-part escape instead of trapping the
+        # model inside a sketch-only tail.
+        return remaining_rounds <= min_write_steps_remaining
     return remaining_rounds < min_write_steps_remaining
 
 
@@ -5969,12 +6123,36 @@ def _preferred_sketch_window_tools(
     *,
     all_tool_names: list[str],
 ) -> list[str]:
-    preferred_order = (
-        ["apply_cad_action", "query_sketch"]
-        if action_type == "create_sketch"
-        else ["query_sketch", "apply_cad_action"]
-    )
+    preferred_order = ["apply_cad_action", "query_sketch"]
     return [name for name in preferred_order if name in all_tool_names]
+
+
+def _open_sketch_window_requires_apply_write_first(run_state: RunState) -> bool:
+    latest_action_type = _latest_successful_apply_action_type_with_open_sketch_window(run_state)
+    if latest_action_type != "create_sketch":
+        return False
+    query_sketch_payload = _latest_successful_tool_payload(
+        run_state,
+        tool_name="query_sketch",
+    )
+    sketch_state = (
+        query_sketch_payload.get("sketch_state")
+        if isinstance(query_sketch_payload, dict)
+        else None
+    )
+    profile_refs = (
+        sketch_state.get("profile_refs")
+        if isinstance(sketch_state, dict)
+        and isinstance(sketch_state.get("profile_refs"), list)
+        else []
+    )
+    path_refs = (
+        sketch_state.get("path_refs")
+        if isinstance(sketch_state, dict)
+        and isinstance(sketch_state.get("path_refs"), list)
+        else []
+    )
+    return not profile_refs and not path_refs
 
 
 def _result_has_positive_session_backed_solid(result: ToolResultRecord) -> bool:

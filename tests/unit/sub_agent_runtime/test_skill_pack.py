@@ -200,6 +200,37 @@ def test_build_runtime_skill_pack_surfaces_structural_priority_for_mixed_failure
     assert "rule=invalid_build123d_contract.active_builder_part_mutation" in guidance
 
 
+def test_build_runtime_skill_pack_surfaces_transform_rebind_repair_lane_for_failure_lint() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Create a two-part rounded clamshell enclosure with a pin hinge and front thumb notch."
+            )
+        },
+        latest_validation={},
+        latest_write_health={"tool": "execute_build123d"},
+        previous_tool_failure_summary={
+            "tool": "execute_build123d",
+            "lint_hits": [
+                {
+                    "rule_id": "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind",
+                    "message": "Primitive was rebound with Rot(...) after already entering the active host.",
+                }
+            ],
+        },
+    )
+
+    lint_skill = next(
+        item
+        for item in skills
+        if item["skill_id"] == "execute_build123d_failure_lint_contract"
+    )
+    guidance = "\n".join(lint_skill["guidance"])
+
+    assert "inside an active host, place the primitive correctly with `Locations(...)` at creation time" in guidance
+    assert "close that builder first and only then orient/place the detached solid with `Rot(...) * part` or `Pos(...) * Rot(...) * part`" in guidance
+
+
 def test_build_runtime_skill_pack_adds_detached_cylindrical_cutter_contract_guidance() -> None:
     skills = build_runtime_skill_pack(
         requirements={
@@ -306,13 +337,54 @@ def test_build_runtime_skill_pack_adds_clamshell_split_axis_and_hinge_contract()
 
     assert "share the same outer width/depth footprint" in guidance
     assert "split the parts only along the closure axis" in guidance
+    assert "place the base outer-envelope center at `split_z - base_height/2`" in guidance
+    assert "lid outer-envelope center at `split_z + lid_height/2`" in guidance
+    assert "back-edge seam normally sits at `y = -depth/2`" in guidance
     assert "`Cylinder(...)` points along +Z by default" in guidance
+    assert "unrotated default `Cylinder(...)` is not yet a valid hinge barrel or pin" in guidance
+    assert "do not drop an unrotated default `Cylinder(...)` directly onto `(x, hinge_y, split_z)`" in guidance
+    assert "without a supported rotation/orientation lane that cylinder still runs along Z" in guidance
+    assert "do not reuse the seam Y coordinate as an X offset" in guidance
     assert "hinge seam location from the hinge axis direction" in guidance
     assert "`Cylinder(...)` is centered along its own axis by default" in guidance
     assert "do not let the hinge barrel or pin protrude outside the declared bounding box" in guidance
+    assert "`extrude(amount=h)` grows one-sided from the active sketch plane" in guidance
+    assert "do not assume `Locations((0, 0, center_z))` plus `extrude(amount=h)` creates a centered shell interval" in guidance
+    assert "`RectangleRounded(width, depth, radius=...)` already uses the outer footprint spans" in guidance
+    assert "do not rewrite the requested outer envelope as `width - 2*radius` / `depth - 2*radius`" in guidance
     assert "treat that as a two-part target by default" in guidance
+    assert "A plain `pin hinge` or `mechanical hinge` still defaults to a two-part lid/base target" in guidance
+    assert "only detach the pin/hardware when the prompt explicitly asks for a removable pin, separate hinge parts, or an exposed hinge assembly" in guidance
     assert "Only keep hinge pins, hinge barrels, or other hinge hardware as detached shapes" in guidance
     assert "prefer `Compound([base.part, lid.part])`" in guidance
+
+
+def test_build_runtime_skill_pack_frontloads_living_hinge_as_host_owned_two_part_contract() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Create a two-part rounded pillbox enclosure with a living hinge at the back, "
+                "overall dimensions 64 mm x 48 mm x 24 mm, front magnet recesses, and a front "
+                "thumb notch."
+            )
+        },
+        latest_validation={},
+        latest_write_health={},
+    )
+
+    split_skill = next(
+        item
+        for item in skills
+        if item["skill_id"] == "clamshell_split_axis_and_hinge_contract"
+    )
+    visible_guidance = "\n".join(split_skill["guidance"][:6])
+    all_guidance = "\n".join(split_skill["guidance"])
+
+    assert "living hinge" in visible_guidance
+    assert "integrated host-owned thin back-edge strip or flexure bridge" in visible_guidance
+    assert "do not introduce detached hinge barrels, hinge pins, or extra hinge solids" in all_guidance
+    assert "pin/mechanical/removable hinge" in all_guidance
+    assert "do not translate the whole lid or base to the back seam coordinate" in all_guidance
 
 
 def test_build_runtime_skill_pack_frontloads_enclosure_first_write_skills() -> None:
@@ -331,13 +403,14 @@ def test_build_runtime_skill_pack_frontloads_enclosure_first_write_skills() -> N
 
     skill_ids = [item["skill_id"] for item in skills[:5]]
 
-    assert skill_ids[:3] == [
+    assert skill_ids[:4] == [
         "execute_build123d_minimal_script_hygiene",
+        "execute_build123d_clamshell_host_local_cut_contract",
         "nested_hollow_section_builder_native_cavity",
         "enclosure_local_feature_placement_contract",
     ]
     assert "multi_part_assembled_pose_bbox_contract" in skill_ids
-    assert "clamshell_split_axis_and_hinge_contract" in skill_ids
+    assert "clamshell_split_axis_and_hinge_contract" in [item["skill_id"] for item in skills]
 
 
 def test_build_runtime_skill_pack_frontloads_buildsketch_and_transform_hygiene() -> None:
@@ -421,7 +494,9 @@ def test_build_runtime_skill_pack_frontloads_code_first_local_finish_tail_contra
     guidance = "\n".join(tail_skill["guidance"])
 
     assert "CounterSinkHole(...)" in guidance
+    assert "counter_sink_angle=..." in guidance
     assert "do not approximate countersinks with manual `Cylinder(...)` cutters" in guidance
+    assert "does not provide a `Workplanes(...)` helper" in guidance
     assert "postpone it to a later topology-guided local finish" in guidance
     assert "do not call `shift_origin((0, 0, 0))`" in guidance
 
@@ -569,9 +644,57 @@ def test_build_runtime_skill_pack_adds_clamshell_host_local_cut_contract_guidanc
     guidance = "\n".join(clamshell_skill["guidance"])
 
     assert "one authoritative `BuildPart` per shell host" in guidance
+    assert "place the base shell center at `split_z - base_height/2`" in guidance
+    assert "lid shell center at `split_z + lid_height/2`" in guidance
+    assert "front opening/notch boundary at `y = +depth/2`" in guidance
     assert "before that shell builder closes" in guidance
+    assert "`Plane.XZ.offset(±depth/2)`" in guidance
     assert "hinge barrels, hinge pins, and other rotated hardware as detached positive solids" in guidance
+    assert "do not reinterpret the back-edge hinge seam as a `Plane.YZ` sketch family" in guidance
+    assert "`Pos(0, ±depth/2, split_z) * (Rot(Y=90) * hinge_barrel.part)`" in guidance
+    assert "A default `Cylinder(...)` still runs along Z" in guidance
+    assert "do not plug `hinge_y` into the X position" in guidance
+    assert "choose one axis-orientation lane for a detached hinge cylinder" in guidance
     assert "Do not reopen `with BuildPart() as lid:`" in guidance
+    assert "notch_cutter" in guidance
+    assert "mode=Mode.SUBTRACT" in guidance
+
+
+def test_build_runtime_skill_pack_clamshell_guidance_forbids_detached_subtractive_notch_builders() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Create a rounded clamshell pillbox enclosure with a living hinge, front thumb "
+                "notch, and front label recess."
+            )
+        },
+        latest_validation={},
+        latest_write_health={"tool": "execute_build123d"},
+        previous_tool_failure_summary={
+            "tool": "execute_build123d",
+            "lint_hits": [
+                {
+                    "rule_id": "invalid_build123d_contract.detached_subtractive_builder_without_host",
+                    "message": "Detached subtractive builder started without a host.",
+                }
+            ],
+            "repair_recipe": {
+                "recipe_id": "clamshell_host_local_cut_contract",
+                "recipe_summary": "Keep shell hosts authoritative and late local cuts host-owned.",
+            },
+        },
+    )
+
+    clamshell_skill = next(
+        item
+        for item in skills
+        if item["skill_id"] == "execute_build123d_clamshell_host_local_cut_contract"
+    )
+    guidance = "\n".join(clamshell_skill["guidance"])
+
+    assert "do not write `with BuildPart() as notch_cutter:`" in guidance
+    assert "positive/private solid" in guidance
+
 
 
 def test_build_runtime_skill_pack_frontloads_clamshell_host_local_cut_contract_on_first_turn() -> None:
@@ -594,13 +717,68 @@ def test_build_runtime_skill_pack_frontloads_clamshell_host_local_cut_contract_o
         if item["skill_id"] == "execute_build123d_clamshell_host_local_cut_contract"
     )
     visible_guidance = "\n".join(host_local_cut_skill["guidance"][:6])
+    all_guidance = "\n".join(host_local_cut_skill["guidance"])
 
     assert "execute_build123d_clamshell_host_local_cut_contract" in skill_ids
+    assert "`Plane.XZ.offset(±depth/2)`" in visible_guidance
     assert "never write `with Rot(...): Cylinder(...)`" in visible_guidance
-    assert "already-added host geometry" in visible_guidance
-    assert "hinge_barrel = Rot(...)" in visible_guidance
-    assert "without `with Rot(...):`" in visible_guidance
-    assert "`Rot(...) * hinge_barrel.part`" in visible_guidance
+    assert "notch_cutter" in visible_guidance
+    assert "already-added host geometry" in all_guidance
+    assert "hinge_barrel = Rot(...)" in all_guidance
+    assert "without `with Rot(...):`" in all_guidance
+    assert "`Rot(...) * hinge_barrel.part`" in all_guidance
+    assert "seam location from the hinge axis direction" in all_guidance
+    assert "back-edge hinge seam as a `Plane.YZ` sketch family" in all_guidance
+    assert "do not stack `Cylinder(..., rotation=...)` and a second `Rot(...) * hinge_barrel.part`" in all_guidance
+
+
+def test_build_runtime_skill_pack_prioritizes_clamshell_host_local_cut_guidance_ahead_of_generic_enclosure_placement() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Create a rounded clamshell pillbox enclosure with a living hinge, front thumb "
+                "notch, front label recess, and corner magnet recesses."
+            )
+        },
+        latest_validation={},
+        latest_write_health={},
+    )
+
+    skill_ids = [item["skill_id"] for item in skills]
+
+    assert "execute_build123d_clamshell_host_local_cut_contract" in skill_ids
+    assert "enclosure_local_feature_placement_contract" in skill_ids
+    assert skill_ids.index("execute_build123d_clamshell_host_local_cut_contract") < skill_ids.index(
+        "enclosure_local_feature_placement_contract"
+    )
+
+
+def test_build_runtime_skill_pack_generic_local_finish_tail_maps_named_faces_to_plane_families() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Create a centered service bracket with a top pocket, a front face recess, and "
+                "countersunk mounting holes on the bottom face, while leaving any small edge "
+                "fillet for a later topology-aware local finish."
+            )
+        },
+        latest_validation={},
+        latest_write_health={},
+    )
+
+    local_finish_skill = next(
+        item
+        for item in skills
+        if item["skill_id"] == "code_first_local_finish_tail_contract"
+    )
+    guidance = "\n".join(local_finish_skill["guidance"])
+
+    assert "`front/back -> Plane.XZ`" in guidance
+    assert "`left/right -> Plane.YZ`" in guidance
+    assert (
+        "use the actual side-face workplane directly with the correct `Plane.YZ.offset(...)` "
+        "or `Plane.XZ.offset(...)` translation"
+    ) not in guidance
 
 
 def test_build_runtime_skill_pack_surfaces_previous_failure_repair_recipe_steps() -> None:
@@ -672,6 +850,49 @@ def test_build_runtime_skill_pack_adds_active_builder_authority_repair_guidance(
     assert "one closed `BuildPart` per physical part" in guidance
 
 
+def test_build_runtime_skill_pack_adds_clamshell_transform_lane_guidance_after_rot_context_failure() -> None:
+    skills = build_runtime_skill_pack(
+        requirements={
+            "description": (
+                "Create a two-part rounded clamshell enclosure with a hollow lid and base, "
+                "a living hinge, front thumb notch, front label recess, and corner magnet recesses."
+            )
+        },
+        latest_validation={},
+        latest_write_health={"tool": "execute_build123d"},
+        previous_tool_failure_summary={
+            "tool": "execute_build123d",
+            "lint_hits": [
+                {
+                    "rule_id": "invalid_build123d_context.transform_context_manager",
+                    "message": "Rot(...) is a transform helper, not a context manager.",
+                }
+            ],
+            "repair_recipe": {
+                "recipe_id": "clamshell_host_local_cut_contract",
+                "recipe_summary": (
+                    "Keep each shell host authoritative, finish host-owned local cuts before "
+                    "closing it, and keep hinge solids detached and positive."
+                ),
+            },
+        },
+    )
+
+    transform_skill = next(
+        item
+        for item in skills
+        if item["skill_id"] == "execute_build123d_clamshell_transform_lane_contract"
+    )
+    guidance = "\n".join(transform_skill["guidance"])
+
+    assert "`BuildSketch(Plane.XZ.offset(±depth/2))`" in guidance
+    assert "do not wrap `Cylinder(...)` or `Box(...)` in `with Rot(...):`" in guidance
+    assert "`Rot(...) * part`" in guidance
+    assert "back-edge seam coordinate stays on Y" in guidance
+    assert "do not switch to `Plane.YZ` just because the hinge sits at the back edge" in guidance
+    assert "pick one axis lane for the detached hinge helper" in guidance
+
+
 def test_build_runtime_skill_pack_adds_local_finish_exact_face_ref_contract_guidance() -> None:
     skills = build_runtime_skill_pack(
         requirements={
@@ -692,7 +913,14 @@ def test_build_runtime_skill_pack_adds_local_finish_exact_face_ref_contract_guid
     guidance = "\n".join(local_finish_skill["guidance"])
 
     assert "face_ref='face:...'" in guidance
+    assert "do not spend `apply_cad_action` on `get_history`" in guidance
+    assert (
+        "prefer a direct `apply_cad_action` hole/countersink step on that exact `face_ref` before opening `create_sketch(face_ref=...)`"
+        in guidance
+    )
     assert "create_sketch(face_ref=...)" in guidance
+    assert "After a successful `create_sketch(face_ref=...)`" in guidance
+    assert "do not burn the next turn on `query_sketch`" in guidance
     assert "plane='XY'" in guidance
 
 
@@ -1049,6 +1277,9 @@ def test_build_runtime_skill_pack_adds_enclosure_local_feature_placement_contrac
     assert "`with BuildSketch(target_plane): SlotOverall(...)` and then `extrude(..., mode=Mode.SUBTRACT)`" in guidance
     assert "`SlotOverall(..., mode=Mode.SUBTRACT)`" in guidance
     assert "keep local features attached to their real physical host part" in guidance
+    assert "Map named enclosure faces to plane families by host normal before any local sketch or recess" in guidance
+    assert "`front/back -> Plane.XZ`" in guidance
+    assert "`Plane.YZ` is a side-face family" in guidance
 
 
 def test_build_runtime_skill_pack_discourages_nested_buildpart_cutters_for_hole_layouts() -> None:
@@ -1100,6 +1331,7 @@ def test_build_runtime_skill_pack_discourages_nested_buildpart_cutters_for_hole_
     assert "For explicit countersink arrays on a planar host face, prefer one `CounterSinkHole(...)` pass on the first attempt" in hygiene_guidance
     assert "same active `BuildPart`" in hole_guidance
     assert "Locations((x, y, top_z), ...)" in hole_guidance
+    assert "`front/back -> Plane.XZ`" in hole_guidance
     assert "Only fall back to an explicit same-builder cylinder+cone or revolved countersink recipe" in hole_guidance
     assert "prefer a corner-anchored host sketch/extrude" in hole_guidance
     assert "declaring `top_face_plane` or `host_plane` is not enough by itself" in hole_guidance

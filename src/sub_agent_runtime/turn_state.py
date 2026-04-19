@@ -254,6 +254,26 @@ class RunState:
         ]
 
     @property
+    def no_op_action_count(self) -> int:
+        count = 0
+        for turn in self.turns:
+            for result in turn.tool_results:
+                if result.name != "apply_cad_action":
+                    continue
+                payload = result.payload if isinstance(result.payload, dict) else {}
+                error_message = " ".join(
+                    item
+                    for item in [
+                        str(payload.get("error_message") or "").strip(),
+                        str(result.error or "").strip(),
+                    ]
+                    if item
+                ).lower()
+                if "no geometry change" in error_message:
+                    count += 1
+        return count
+
+    @property
     def first_write_tool(self) -> str | None:
         for turn in self.turns:
             if turn.write_tool_name is not None:

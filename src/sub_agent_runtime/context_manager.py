@@ -149,12 +149,25 @@ class V2ContextManager:
             "If previous_tool_failure_summary is present, repair that concrete failure before broad re-inspection unless the current state evidence proves a different blocker is dominant. "
             "If previous_tool_failure_summary exposes a normalized failure kind or recovery bias, avoid repeating the same failing write pattern. "
             "If turn_tool_policy is present, obey it strictly for this turn and only call tools that remain exposed. "
+            "If turn_tool_policy exposes one or more non-finish tools for this turn, do not stop at a prose-only repair sketch; emit at least one allowed tool call now. "
+            "When the policy exposes exactly one write tool such as `execute_build123d`, call that tool directly instead of returning a code block or repair plan without a tool invocation. "
             "If runtime skill notes are present, treat them as concise operational guidance for the current failure mode. "
             "Sketch primitives such as `Circle(...)`, `Ellipse(...)`, and `Rectangle(...)` belong inside `BuildSketch`, not directly inside an active `BuildPart`. "
+            "Do not mix `Circle(...)` with `BuildLine` + `make_face()` in the same `BuildSketch` to fake a semicircle or rounded notch; `Circle(...)` already creates a full disk. For a half-round profile, build the arc in `BuildLine`, close it with `Line(...)`, then call `make_face()`. "
+            "Build123d `Cylinder(...)` accepts literal radius/height only; do not pass `axis=` or `length=`. If a cylinder must point along X or Y, create it first, close that builder, then orient the detached solid with `Rot(...)` and place it with `Pos(...)` or `Locations(...)`. "
             "Do not write `with Rot(...):` or `with Pos(...):`; they are transforms, not builder context managers. "
             "Do not import `ocp_vscode` or call `show(...)` / `show_object(...)`; sandbox execution must return geometry through `result = ...` only. "
             "Inside an active BuildPart, do not create a primitive and then relocate it with `Pos(...) * solid` or `Rot(...) * solid`; use `Locations(...)` at creation time, or close the builder first and transform the detached solid afterward. "
-            "For rounded rectangular shells or bodies, do not invent `Box(..., radius=...)`; use `RectangleRounded(...)` plus BuildSketch/extrude or add explicit fillets after a plain box. For rounded pillbox or enclosure shells, prefer that rounded footprint directly over a first-pass broad shell-edge fillet across `edges().filter_by(Axis.Z)`. "
+            "Do not open a nested `BuildPart` cutter inside an active host and then mutate `host.part -= cutter.part`; keep repeated cuts in the same authoritative host builder with `mode=Mode.SUBTRACT`, or close the host first and subtract the detached positive cutter afterward. "
+            "Do not open a detached builder whose first real operation is subtractive. If the cut belongs to an existing host, keep it inside that authoritative host with `mode=Mode.SUBTRACT`; if a detached cutter is truly required, build it as a positive or `mode=Mode.PRIVATE` solid first and subtract it only after the host builder closes. "
+            "Map named host faces to plane families by host normal: top/bottom -> `Plane.XY`, front/back -> `Plane.XZ`, and left/right -> `Plane.YZ`. For front/back notches, pockets, or label recesses, do not sketch them on `Plane.XY` or `Plane.YZ` and hope later transforms recover the host. "
+            "For centered clamshells with depth on Y, keep the back seam at `y = -depth/2` and the front opening/notch boundary at `y = +depth/2`; do not swap those front/back seam signs during hinge or notch placement. "
+            "For a back-edge clamshell pin hinge, the pin/barrel axis usually runs along X/width; do not leave hinge barrels or hinge pins as default Z-axis cylinders when their height or span is meant to follow the enclosure width. "
+            "do not drop an unrotated default `Cylinder(...)` directly onto `(x, hinge_y, split_z)` or `(x, -depth/2, z)` inside lid/base builders and assume it became an X-axis hinge barrel or pin; without a supported rotation/orientation lane that cylinder still runs along Z. "
+            "A plain `pin hinge` or `mechanical hinge` on a two-part lid/base enclosure does not by itself authorize extra detached hinge solids or a third physical part. Keep the default physical-part target at lid/base, and only detach the pin/hardware when the prompt explicitly asks for a removable pin, separate hinge parts, or an exposed hinge assembly. "
+            "Build123d `extrude(amount=h)` grows one-sided from the active sketch plane; it does not automatically create a centered `[-h/2, +h/2]` shell interval around that plane. "
+            "For centered lid/base intervals, sketch on the real start face plane or translate the finished solid afterward; do not assume `Locations((0, 0, center_z))` plus `extrude(amount=h)` creates a centered shell interval by itself. "
+            "For rounded rectangular shells or bodies, do not invent `Box(..., radius=...)`; use `RectangleRounded(...)` plus BuildSketch/extrude or add explicit fillets after a plain box. For rounded pillbox or enclosure shells, prefer that rounded footprint directly over a first-pass broad shell-edge fillet across `edges().filter_by(Axis.Z)`. `RectangleRounded(width, depth, radius=...)` already uses the outer footprint spans, so do not shrink the requested outer width/depth to `width - 2*radius` / `depth - 2*radius` before the outer profile call unless the requirement explicitly defines inner straight spans instead of the overall envelope. "
             "If a detached helper, cavity proxy, or cutter needs anisotropic scaling, use lowercase `scale(shape, by=(sx, sy, sz))`; do not invent `Scale(...)` or `Scale.by(...)`. "
             "For detached hinge barrels, hinge pins, or other rotated helper solids, build them positively first, close that builder, then orient the closed solid with `Rot(...) * part` or `Pos(...) * Rot(...) * part`. "
             "Treat stale read evidence from before the latest successful write as expired, especially old probe or validation results. "
@@ -385,7 +398,8 @@ class V2ContextManager:
         if not isinstance(lint_hits, list) or not lint_hits:
             return None
         summarized: list[dict[str, Any]] = []
-        for item in lint_hits[:4]:
+        occurrence_counts: dict[str, int] = {}
+        for item in lint_hits:
             if not isinstance(item, dict):
                 continue
             payload: dict[str, Any] = {}
@@ -402,8 +416,24 @@ class V2ContextManager:
                 if isinstance(value, str) and value.strip():
                     text = value.strip()
                     payload[key] = text if len(text) <= 240 else text[:240] + "..."
-            if payload:
-                summarized.append(payload)
+            if not payload:
+                continue
+            dedupe_key = payload.get("rule_id")
+            if isinstance(dedupe_key, str) and dedupe_key in occurrence_counts:
+                occurrence_counts[dedupe_key] += 1
+                continue
+            if len(summarized) >= 4:
+                continue
+            if isinstance(dedupe_key, str):
+                occurrence_counts[dedupe_key] = 1
+            summarized.append(payload)
+        for payload in summarized:
+            rule_id = payload.get("rule_id")
+            if not isinstance(rule_id, str):
+                continue
+            count = occurrence_counts.get(rule_id, 0)
+            if count > 1:
+                payload["occurrence_count"] = count
         return summarized or None
 
     def _summarize_failure_repair_recipe(
@@ -611,6 +641,16 @@ class V2ContextManager:
         if candidate_lines:
             lines.append("- candidate set preferred refs:")
             lines.extend(candidate_lines[:4])
+        preferred_action_types = [
+            str(action_type).strip()
+            for action_type in (contract.get("preferred_action_types") or [])
+            if str(action_type).strip()
+        ]
+        if preferred_action_types:
+            lines.append(f"- preferred_action_types: {', '.join(preferred_action_types[:4])}")
+            lines.append(
+                "- If one of those direct host-face actions already expresses the next edit, use it before opening create_sketch(face_ref=...)."
+            )
         lines.append(
             "- Use one preferred exact ref directly in the next apply_cad_action instead of selecting a different ref from the broader matched list."
         )
@@ -1202,6 +1242,14 @@ class V2ContextManager:
                 _append_unique(preferred_face_refs, ref_id)
             elif ref_id.startswith("edge:"):
                 _append_unique(preferred_edge_refs, ref_id)
+        active_family_ids = {
+            str(item.get("family_id") or "").strip()
+            for item in (domain_kernel_digest or {}).get("active_feature_instances", [])
+            if isinstance(item, dict) and str(item.get("family_id") or "").strip()
+        }
+        preferred_action_types: list[str] = []
+        if "explicit_anchor_hole" in active_family_ids:
+            preferred_action_types.extend(["hole", "countersink", "counterbore"])
         preserved_layout = self._build_local_finish_preserved_layout(domain_kernel_digest)
         instructions = [
             "Consume the freshest query_topology refs directly in apply_cad_action; do not replace them with broad aliases like face='top' or face='bottom'.",
@@ -1221,6 +1269,7 @@ class V2ContextManager:
             "must_consume_exact_topology_refs": True,
             "preferred_face_refs": preferred_face_refs[:4],
             "preferred_edge_refs": preferred_edge_refs[:8],
+            "preferred_action_types": preferred_action_types[:4],
             "candidate_sets": compact_jsonish(
                 candidate_sets[:4],
                 max_depth=3,

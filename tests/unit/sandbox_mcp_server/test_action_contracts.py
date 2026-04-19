@@ -1,6 +1,11 @@
+import pytest
+
+from sandbox.interface import SandboxResult
 from sandbox_mcp_server.contracts import (
     ActionHistoryEntry,
     BoundingBox3D,
+    CADActionInput,
+    CADActionOutput,
     CADActionType,
     TopologyFaceEntity,
     TopologyObjectIndex,
@@ -12,6 +17,18 @@ from sandbox_mcp_server.service import SandboxMCPService
 class _DummyRunner:
     async def execute(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("not used in this test")
+
+
+class _StaticSuccessRunner:
+    async def execute(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return SandboxResult(
+            success=True,
+            stdout="",
+            stderr="",
+            output_files=[],
+            output_file_contents={},
+            error_message=None,
+        )
 
 
 def _bbox() -> BoundingBox3D:
@@ -242,3 +259,93 @@ def test_registry_normalizes_hole_countersink_radius_to_canonical_diameter() -> 
     )
 
     assert normalized["countersink_diameter"] == 9.0
+
+
+@pytest.mark.asyncio
+async def test_apply_cad_action_rejects_no_effect_cut_extrude(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = SandboxMCPService(runner=_StaticSuccessRunner())
+    session_id = "no-effect-cut-extrude"
+    service._session_manager.clear_session(session_id)
+
+    base_snapshot = service._empty_snapshot()
+    base_snapshot.geometry.solids = 1
+    base_snapshot.geometry.faces = 48
+    base_snapshot.geometry.edges = 120
+    base_snapshot.geometry.volume = 22083.234552601418
+    base_snapshot.geometry.bbox = [64.0, 48.3, 24.0]
+    base_snapshot.geometry.center_of_mass = [0.0, 0.4, -2.4]
+    base_snapshot.geometry.surface_area = 20550.881159458335
+    base_snapshot.geometry.bbox_min = [-32.0, -24.0, -12.0]
+    base_snapshot.geometry.bbox_max = [32.0, 24.3, 12.0]
+    base_snapshot.topology_index = TopologyObjectIndex(
+        faces=[
+            TopologyFaceEntity(
+                face_ref="face:1:F_front",
+                face_id="F_front",
+                step=1,
+                area=416.0,
+                center=[0.0, 24.0, 8.0],
+                normal=[0.0, 1.0, 0.0],
+                axis_origin=None,
+                axis_direction=None,
+                radius=None,
+                geom_type="PLANE",
+                bbox=_bbox().model_copy(
+                    update={
+                        "ymin": 24.0,
+                        "ymax": 24.0,
+                        "zmin": -12.0,
+                        "zmax": 12.0,
+                    }
+                ),
+                parent_solid_id="S1",
+                edge_refs=[],
+                adjacent_face_refs=[],
+            )
+        ],
+        edges=[],
+        faces_total=1,
+        edges_total=0,
+        max_items_per_type=20,
+    )
+
+    history = [
+        ActionHistoryEntry(
+            step=1,
+            action_type=CADActionType.CREATE_SKETCH,
+            action_params={"face_ref": "face:1:F_front", "plane": "YZ"},
+            result_snapshot=base_snapshot.model_copy(deep=True),
+            success=True,
+        ),
+        ActionHistoryEntry(
+            step=2,
+            action_type=CADActionType.ADD_CIRCLE,
+            action_params={"radius": 3.5, "center": [0, 24], "name": "thumb_notch_profile"},
+            result_snapshot=base_snapshot.model_copy(deep=True),
+            success=True,
+        ),
+    ]
+    for entry in history:
+        service._session_manager.append_action(session_id, entry)
+
+    monkeypatch.setattr(
+        service,
+        "_parse_snapshot",
+        lambda _result: base_snapshot.model_copy(deep=True),
+    )
+
+    result: CADActionOutput = await service.apply_cad_action(
+        CADActionInput(
+            session_id=session_id,
+            action_type=CADActionType.CUT_EXTRUDE,
+            action_params={"depth": 12, "direction": "through"},
+        )
+    )
+
+    assert result.success is False
+    assert result.error_code.value == "execution_error"
+    assert result.error_message is not None
+    assert "no geometry change" in result.error_message
+    assert "cut_extrude" in result.error_message
+    assert len(result.action_history) == 2
+    assert any("query_sketch" in suggestion for suggestion in result.suggestions)

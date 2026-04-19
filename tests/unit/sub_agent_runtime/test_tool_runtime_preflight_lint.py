@@ -1,4 +1,10 @@
+import ast
+
 from sub_agent_runtime.tool_runtime import (
+    _collect_numeric_assignment_env,
+    _find_named_face_plane_family_mismatch_hits,
+    _find_rectanglerounded_radius_bounds_hits,
+    _named_face_requirement_plane_groups,
     _preflight_gate_apply_cad_action,
     _preflight_lint_execute_build123d,
 )
@@ -1216,6 +1222,32 @@ def test_preflight_lint_rejects_circle_arc_size_and_surfaces_arc_profile_contrac
     assert payload["repair_recipe"]["recipe_id"] == "build123d_arc_profile_contract"
 
 
+def test_preflight_lint_rejects_circle_plus_make_face_trim_pattern_and_surfaces_arc_profile_contract() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    with BuildSketch(Plane.YZ):\n"
+            "        Circle(radius=3)\n"
+            "        with BuildLine():\n"
+            "            Line((-3, 0), (3, 0))\n"
+            "        make_face()\n"
+            "    extrude(amount=20, both=True)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a rounded thumb notch with a semicircular profile on the front face."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.circle_make_face_trim_profile" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_arc_profile_contract"
+
+
 def test_preflight_lint_rejects_center_arc_arc_angle_alias_and_surfaces_arc_profile_contract() -> None:
     payload = _preflight_lint_execute_build123d(
         code=(
@@ -1238,6 +1270,28 @@ def test_preflight_lint_rejects_center_arc_arc_angle_alias_and_surfaces_arc_prof
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_keyword.center_arc_arc_angle_alias" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "build123d_path_sweep_contract"
+
+
+def test_preflight_lint_rejects_center_arc_end_angle_alias_and_surfaces_arc_profile_contract() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as part:\n"
+            "    with BuildLine() as profile:\n"
+            "        CenterArc((0, 0), 20, start_angle=-90, end_angle=180)\n"
+            "    result = None\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a half-cylindrical shell with a semicircular arc profile and a flat split edge."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_keyword.center_arc_end_angle_alias" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_arc_profile_contract"
 
 
 def test_preflight_lint_rejects_symbolic_degree_constants_and_surfaces_arc_profile_contract() -> None:
@@ -1702,6 +1756,38 @@ def test_preflight_lint_rejects_broad_shell_axis_fillet_when_selector_is_stored_
         in rule_ids
     )
     assert payload["repair_recipe"]["recipe_id"] == "shell_edge_fillet_postpone_contract"
+
+
+def test_preflight_lint_rejects_broad_fillet_when_requirement_marks_it_as_local_finish_tail() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as bracket:\n"
+            "    Box(66, 42, 16)\n"
+            "    with BuildSketch(Plane.XY.offset(8)):\n"
+            "        Rectangle(60, 36)\n"
+            "    extrude(amount=-2.5, mode=Mode.SUBTRACT)\n"
+            "    top_edges = bracket.part.edges().filter_by(Axis.Z).filter_by(lambda e: e.center().Z > 7.9)\n"
+            "    fillet(top_edges, radius=1.0)\n"
+            "result = bracket.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a rectangular service bracket sized 66mm x 42mm x 16mm with a shallow top "
+            "pocket and two mounting holes on the bottom face. Add a centered rounded-rectangle "
+            "recess on the front face and leave the small edge fillet for a later topology-aware "
+            "local finish."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert (
+        "invalid_build123d_contract.broad_local_finish_tail_fillet_on_first_write"
+        in rule_ids
+    )
+    assert payload["repair_recipe"]["recipe_id"] == "local_finish_fillet_postpone_contract"
 
 
 def test_preflight_lint_rejects_plane_normal_keyword_alias_and_surfaces_path_sweep_contract() -> None:
@@ -2600,6 +2686,514 @@ def test_preflight_lint_rejects_centered_box_for_plane_anchored_positive_extrude
     assert payload["repair_recipe"]["recipe_id"] == "build123d_plane_anchored_extrude_contract"
 
 
+def test_preflight_lint_rejects_full_span_face_plane_offset_on_centered_box() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 66.0\n"
+            "depth = 42.0\n"
+            "height = 16.0\n"
+            "with BuildPart() as part:\n"
+            "    Box(width, depth, height)\n"
+            "    with BuildSketch(Plane.XY.offset(height)):\n"
+            "        Rectangle(width - 6.0, depth - 6.0)\n"
+            "    extrude(amount=-3.0, mode=Mode.SUBTRACT)\n"
+            "    with Locations(Plane.YZ.offset(width)):\n"
+            "        with Locations((0, height / 2)):\n"
+            "            CounterSinkHole(radius=2.5, counter_sink_radius=5.0, depth=height, counter_sink_angle=82)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a rectangular bracket body, cut a shallow top pocket from the top face, "
+            "and add countersunk holes on the front face of the centered block."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.centered_box_face_plane_full_span_offset" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "explicit_anchor_hole_countersink_array_safe_recipe"
+
+
+def test_preflight_lint_allows_half_span_face_plane_offset_on_centered_box() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 66.0\n"
+            "depth = 42.0\n"
+            "height = 16.0\n"
+            "with BuildPart() as part:\n"
+            "    Box(width, depth, height)\n"
+            "    with BuildSketch(Plane.XY.offset(height / 2)):\n"
+            "        Rectangle(width - 6.0, depth - 6.0)\n"
+            "    extrude(amount=-3.0, mode=Mode.SUBTRACT)\n"
+            "    with Locations(Plane.YZ.offset(width / 2)):\n"
+            "        pass\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a rectangular bracket body, cut a shallow top pocket from the top face, "
+            "and add a front-face feature on the centered block."
+        ),
+        run_state=None,
+    )
+
+    rule_ids = {item["rule_id"] for item in (payload or {}).get("lint_hits", [])}
+    assert "invalid_build123d_contract.centered_box_face_plane_full_span_offset" not in rule_ids
+
+
+def test_preflight_lint_rejects_named_front_face_plane_family_mismatch() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 66.0\n"
+            "depth = 42.0\n"
+            "height = 16.0\n"
+            "with BuildPart() as part:\n"
+            "    Box(width, depth, height)\n"
+            "    with BuildSketch(Plane.XY.offset(height / 2)):\n"
+            "        Rectangle(width - 6.0, depth - 6.0)\n"
+            "    extrude(amount=-3.0, mode=Mode.SUBTRACT)\n"
+            "    with BuildSketch(Plane.YZ.offset(-width / 2).shift_origin((0, 0, 0))):\n"
+            "        RectangleRounded(12.0, 6.0, radius=1.0)\n"
+            "    extrude(amount=2.0, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a rectangular bracket body, cut a shallow top pocket from the top face, "
+            "and add a centered rounded-rectangle recess on the front face."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.named_face_plane_family_mismatch" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "build123d_named_face_plane_family_contract"
+
+
+def test_preflight_lint_allows_named_front_face_xz_plane_family() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 66.0\n"
+            "depth = 42.0\n"
+            "height = 16.0\n"
+            "with BuildPart() as part:\n"
+            "    Box(width, depth, height)\n"
+            "    with BuildSketch(Plane.XY.offset(height / 2)):\n"
+            "        Rectangle(width - 6.0, depth - 6.0)\n"
+            "    extrude(amount=-3.0, mode=Mode.SUBTRACT)\n"
+            "    with BuildSketch(Plane.XZ.offset(-depth / 2)):\n"
+            "        RectangleRounded(12.0, 6.0, radius=1.0)\n"
+            "    extrude(amount=2.0, mode=Mode.SUBTRACT)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a rectangular bracket body, cut a shallow top pocket from the top face, "
+            "and add a centered rounded-rectangle recess on the front face."
+        ),
+        run_state=None,
+    )
+
+    rule_ids = {item["rule_id"] for item in (payload or {}).get("lint_hits", [])}
+    assert "invalid_build123d_contract.named_face_plane_family_mismatch" not in rule_ids
+
+
+def test_preflight_lint_ignores_bare_xy_host_profiles_when_front_face_local_edit_uses_xz() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 64.0\n"
+            "depth = 48.0\n"
+            "base_height = 12.0\n"
+            "lid_height = 10.0\n"
+            "with BuildPart() as base:\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        RectangleRounded(width, depth, radius=8.0)\n"
+            "    extrude(amount=base_height)\n"
+            "with BuildPart() as lid:\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        RectangleRounded(width, depth, radius=8.0)\n"
+            "    extrude(amount=lid_height)\n"
+            "with BuildPart() as label:\n"
+            "    with BuildSketch(Plane.XZ.offset(-depth / 2)):\n"
+            "        RectangleRounded(40.0, 12.0, radius=2.0)\n"
+            "    extrude(amount=1.0)\n"
+            "result = Compound(children=[base.part, lid.part, label.part])\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded pillbox enclosure and add a shallow rounded label window on the front face."
+        ),
+        run_state=None,
+    )
+
+    rule_ids = {item["rule_id"] for item in (payload or {}).get("lint_hits", [])}
+    assert "invalid_build123d_contract.named_face_plane_family_mismatch" not in rule_ids
+
+
+def test_named_face_plane_family_mismatch_only_hits_local_front_face_sketches_not_shell_profiles() -> None:
+    code = (
+        "from build123d import *\n"
+        "width = 64.0\n"
+        "depth = 48.0\n"
+        "height_per_part = 12.0\n"
+        "wall = 2.2\n"
+        "with BuildPart() as base:\n"
+        "    with BuildSketch(Plane.XY):\n"
+        "        RectangleRounded(width, depth, 8.0)\n"
+        "    extrude(amount=height_per_part)\n"
+        "    with Locations((0, 0, wall)):\n"
+        "        with BuildSketch(Plane.XY):\n"
+        "            RectangleRounded(width - 2*wall, depth - 2*wall, 6.0)\n"
+        "        extrude(amount=height_per_part - wall, mode=Mode.SUBTRACT)\n"
+        "    with BuildSketch(Plane.YZ.offset(depth / 2)):\n"
+        "        RectangleRounded(36.0, 14.0, 3.0)\n"
+        "    extrude(amount=1.2, mode=Mode.SUBTRACT)\n"
+        "with BuildPart() as lid:\n"
+        "    with BuildSketch(Plane.XY):\n"
+        "        RectangleRounded(width, depth, 8.0)\n"
+        "    extrude(amount=height_per_part)\n"
+        "    with Locations((0, 0, wall)):\n"
+        "        with BuildSketch(Plane.XY):\n"
+        "            RectangleRounded(width - 2*wall, depth - 2*wall, 6.0)\n"
+        "        extrude(amount=height_per_part - wall, mode=Mode.SUBTRACT)\n"
+        "    with BuildSketch(Plane.YZ.offset(depth / 2)):\n"
+        "        SlotOverall(7.0, height_per_part * 0.6, rotation=90)\n"
+        "    extrude(amount=3.0, mode=Mode.SUBTRACT)\n"
+        "result = base.part + lid.part\n"
+    )
+
+    hits = _find_named_face_plane_family_mismatch_hits(
+        ast.parse(code),
+        requirement_lower=(
+            "create a two-part rounded pillbox enclosure, add a shallow label window on the front face, "
+            "and add a thumb notch on the front face."
+        ),
+    )
+
+    assert len(hits) == 2
+    assert {item["plane_name"] for item in hits} == {"YZ"}
+
+
+def test_named_face_plane_family_mismatch_ignores_alias_derived_xy_host_profiles() -> None:
+    code = (
+        "from build123d import *\n"
+        "width = 64.0\n"
+        "depth = 48.0\n"
+        "base_height = 14.0\n"
+        "wall = 2.2\n"
+        "with BuildPart() as base:\n"
+        "    with BuildSketch(Plane.XY):\n"
+        "        RectangleRounded(width, depth, radius=8.0)\n"
+        "    extrude(amount=base_height)\n"
+        "    inner_w = width - 2 * wall\n"
+        "    inner_d = depth - 2 * wall\n"
+        "    inner_r = max(8.0 - wall, 2.0)\n"
+        "    with BuildSketch(Plane.XY.offset(wall)):\n"
+        "        RectangleRounded(inner_w, inner_d, radius=inner_r)\n"
+        "    extrude(amount=base_height - wall, mode=Mode.SUBTRACT)\n"
+        "    with BuildSketch(Plane.YZ.offset(-depth / 2)):\n"
+        "        RectangleRounded(40.0, 12.0, radius=2.0)\n"
+        "    extrude(amount=1.0, mode=Mode.SUBTRACT)\n"
+        "result = base.part\n"
+    )
+
+    hits = _find_named_face_plane_family_mismatch_hits(
+        ast.parse(code),
+        requirement_lower=(
+            "create a rounded clamshell base and add a shallow label recess on the front face."
+        ),
+    )
+
+    assert len(hits) == 1
+    assert hits[0]["plane_name"] == "YZ"
+
+
+def test_named_face_plane_family_mismatch_ignores_host_profile_aliases_derived_via_wall_thick_names() -> None:
+    code = (
+        "from build123d import *\n"
+        "width = 64.0\n"
+        "depth = 48.0\n"
+        "base_height = 14.0\n"
+        "lid_height = 10.0\n"
+        "wall_thick = 2.2\n"
+        "with BuildPart() as lid:\n"
+        "    with Locations((0, 0, base_height)):\n"
+        "        with BuildSketch(Plane.XY):\n"
+        "            RectangleRounded(width, depth, radius=8.0)\n"
+        "        extrude(amount=lid_height)\n"
+        "        inner_w = width - 2 * wall_thick\n"
+        "        inner_d = depth - 2 * wall_thick\n"
+        "        inner_r = max(8.0 - wall_thick, 2.0)\n"
+        "        with BuildSketch(Plane.XY.offset(base_height + lid_height - wall_thick)):\n"
+        "            RectangleRounded(inner_w, inner_d, radius=inner_r)\n"
+        "        extrude(amount=lid_height, mode=Mode.SUBTRACT)\n"
+        "    with BuildSketch(Plane.YZ.offset(-depth / 2)):\n"
+        "        RectangleRounded(12.0, 40.0, radius=2.0)\n"
+        "    extrude(amount=1.0, mode=Mode.SUBTRACT)\n"
+        "result = lid.part\n"
+    )
+
+    hits = _find_named_face_plane_family_mismatch_hits(
+        ast.parse(code),
+        requirement_lower=(
+            "create a two-part rounded pillbox enclosure with a front face label window recess, "
+            "a front thumb notch, and smooth lid/base shells."
+        ),
+    )
+
+    assert len(hits) == 1
+    assert hits[0]["line_no"] == 18
+    assert hits[0]["plane_name"] == "YZ"
+
+
+def test_named_face_requirement_plane_groups_include_mating_faces_as_top_bottom() -> None:
+    groups = _named_face_requirement_plane_groups(
+        "create a pillbox enclosure, add magnet recesses on the mating faces near the front corners, "
+        "and add a front face label recess."
+    )
+
+    assert groups == {"front_back", "top_bottom"}
+
+
+def test_named_face_plane_family_mismatch_allows_xy_mating_face_edits_when_requirement_mentions_front_face_and_mating_faces() -> None:
+    code = (
+        "from build123d import *\n"
+        "width = 64.0\n"
+        "depth = 48.0\n"
+        "base_height = 12.0\n"
+        "magnet_d = 1.5\n"
+        "with BuildPart() as base:\n"
+        "    with BuildSketch(Plane.XY):\n"
+        "        RectangleRounded(width, depth, radius=6.0)\n"
+        "    extrude(amount=base_height)\n"
+        "    with BuildSketch(Plane.XY.offset(base_height - magnet_d)):\n"
+        "        with Locations((20, depth/2 - 8), (-20, depth/2 - 8)):\n"
+        "            Circle(3.0)\n"
+        "    extrude(amount=magnet_d, mode=Mode.SUBTRACT)\n"
+        "    with BuildSketch(Plane.XZ.offset(depth / 2)):\n"
+        "        Circle(3.5)\n"
+        "    extrude(amount=3.0, mode=Mode.SUBTRACT)\n"
+        "result = base.part\n"
+    )
+
+    hits = _find_named_face_plane_family_mismatch_hits(
+        ast.parse(code),
+        requirement_lower=(
+            "create a pillbox enclosure, add magnet recesses on the mating faces near the front corners, "
+            "and add a front face label recess."
+        ),
+    )
+
+    assert hits == []
+
+
+def test_preflight_lint_rejects_rectanglerounded_radius_that_exceeds_half_of_height() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "label_w = 30.0\n"
+            "label_h = 12.0\n"
+            "label_r = 8.0\n"
+            "with BuildPart() as part:\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        RectangleRounded(label_w, label_h, label_r)\n"
+            "    extrude(amount=2.0)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text="Create a small rounded label plaque.",
+        run_state=None,
+    )
+
+    rule_ids = {hit["rule_id"] for hit in payload["lint_hits"]}
+
+    assert "invalid_build123d_contract.rectanglerounded_radius_bounds" in rule_ids
+
+
+def test_numeric_assignment_env_converges_when_same_name_is_reassigned_in_multiple_loops() -> None:
+    code = (
+        "from build123d import *\n"
+        "width = 64.0\n"
+        "depth = 48.0\n"
+        "wall = 2.2\n"
+        "for x_sign in [-1, 1]:\n"
+        "    magnet_z = depth / 2 - wall\n"
+        "for x_sign in [-1, 1]:\n"
+        "    magnet_z = wall / 2\n"
+        "with BuildPart() as part:\n"
+        "    with BuildSketch(Plane.XY):\n"
+        "        RectangleRounded(width, depth, radius=8.0)\n"
+        "    extrude(amount=4.0)\n"
+        "result = part.part\n"
+    )
+
+    tree = ast.parse(code)
+    env = _collect_numeric_assignment_env(tree)
+    hits = _find_rectanglerounded_radius_bounds_hits(tree)
+
+    assert env["width"] == 64.0
+    assert env["depth"] == 48.0
+    assert env["magnet_z"] == 1.1
+    assert hits == []
+
+
+def test_preflight_lint_ignores_locations_wrapped_xy_host_profiles_when_front_face_local_edit_uses_xz() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 64.0\n"
+            "depth = 48.0\n"
+            "base_height = 12.0\n"
+            "lid_height = 10.0\n"
+            "wall = 2.2\n"
+            "with BuildPart() as lid:\n"
+            "    with Locations((0, 0, base_height)):\n"
+            "        with BuildSketch(Plane.XY):\n"
+            "            RectangleRounded(width, depth, radius=8.0)\n"
+            "        extrude(amount=lid_height)\n"
+            "        with BuildSketch(Plane.XY.offset(wall)):\n"
+            "            RectangleRounded(width - 2*wall, depth - 2*wall, radius=6.0)\n"
+            "        extrude(amount=lid_height - wall, mode=Mode.SUBTRACT)\n"
+            "        with BuildSketch(Plane.XZ.offset(-depth / 2)):\n"
+            "            RectangleRounded(30.0, 12.0, radius=2.0)\n"
+            "        extrude(amount=1.0, mode=Mode.SUBTRACT)\n"
+            "result = lid.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded pillbox enclosure and add a shallow rounded label window on the front face."
+        ),
+        run_state=None,
+    )
+
+    rule_ids = {item["rule_id"] for item in (payload or {}).get("lint_hits", [])}
+    assert "invalid_build123d_contract.named_face_plane_family_mismatch" not in rule_ids
+
+
+def test_named_face_plane_family_mismatch_ignores_detached_positive_axisymmetric_hinge_builder() -> None:
+    code = (
+        "from build123d import *\n"
+        "width = 64.0\n"
+        "depth = 48.0\n"
+        "height = 24.0\n"
+        "with BuildPart() as base:\n"
+        "    with BuildSketch(Plane.XY):\n"
+        "        RectangleRounded(width, depth, radius=8.0)\n"
+        "    extrude(amount=height/2)\n"
+        "with BuildPart() as hinge:\n"
+        "    with BuildSketch(Plane.YZ.offset(-20.0)):\n"
+        "        Circle(2.5)\n"
+        "    extrude(amount=40.0)\n"
+        "result = base.part + hinge.part\n"
+    )
+
+    hits = _find_named_face_plane_family_mismatch_hits(
+        ast.parse(code),
+        requirement_lower=(
+            "create a two-part rounded pillbox enclosure with a living hinge at the back and "
+            "a shallow rounded recess on the front face."
+        ),
+    )
+
+    assert hits == []
+
+
+def test_named_face_plane_family_mismatch_still_hits_detached_front_face_label_builder() -> None:
+    code = (
+        "from build123d import *\n"
+        "width = 64.0\n"
+        "depth = 48.0\n"
+        "height = 24.0\n"
+        "with BuildPart() as base:\n"
+        "    with BuildSketch(Plane.XY):\n"
+        "        RectangleRounded(width, depth, radius=8.0)\n"
+        "    extrude(amount=height/2)\n"
+        "with BuildPart() as label:\n"
+        "    with BuildSketch(Plane.YZ.offset(-depth/2)):\n"
+        "        RectangleRounded(18.0, 8.0, radius=2.0)\n"
+        "    extrude(amount=1.2)\n"
+        "result = base.part + label.part\n"
+    )
+
+    hits = _find_named_face_plane_family_mismatch_hits(
+        ast.parse(code),
+        requirement_lower=(
+            "create a two-part rounded pillbox enclosure with a living hinge at the back and "
+            "a shallow rounded recess on the front face."
+        ),
+    )
+
+    assert len(hits) == 1
+    assert hits[0]["plane_name"] == "YZ"
+
+
+def test_named_face_plane_family_mismatch_ignores_placeholder_builder_without_materializing_ops() -> None:
+    code = (
+        "from build123d import *\n"
+        "width = 64.0\n"
+        "depth = 48.0\n"
+        "base_height = 13.0\n"
+        "label_depth = 1.0\n"
+        "with BuildPart() as base:\n"
+        "    with BuildSketch(Plane.XY):\n"
+        "        RectangleRounded(width, depth, radius=8.0)\n"
+        "    extrude(amount=base_height)\n"
+        "with BuildPart() as label_cut:\n"
+        "    with BuildSketch(Plane.YZ.offset(width/2)) as sk:\n"
+        "        pass\n"
+        "with BuildPart() as label_recess:\n"
+        "    with BuildSketch(Plane.XZ.offset(depth/2)):\n"
+        "        RectangleRounded(30.0, 12.0, radius=3.0)\n"
+        "    extrude(amount=label_depth)\n"
+        "result = base.part - label_recess.part\n"
+    )
+
+    hits = _find_named_face_plane_family_mismatch_hits(
+        ast.parse(code),
+        requirement_lower=(
+            "create a two-part rounded pillbox enclosure with a living hinge at the back and "
+            "a shallow rounded recess on the front face."
+        ),
+    )
+
+    assert hits == []
+
+
+def test_preflight_lint_routes_bottom_face_plane_family_mismatch_to_explicit_anchor_recipe() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 66.0\n"
+            "depth = 42.0\n"
+            "height = 16.0\n"
+            "with BuildPart() as part:\n"
+            "    Box(width, depth, height)\n"
+            "    with Locations(Plane.YZ.offset(width / 2)):\n"
+            "        with GridLocations(x_spacing=50.0, y_spacing=0, x_count=2, y_count=1):\n"
+            "            CounterSinkHole(radius=2.5, counter_sink_radius=4.5, depth=8.0, counter_sink_angle=90.0)\n"
+            "result = part.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a rectangular bracket body with two countersunk mounting holes on the bottom face."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.named_face_plane_family_mismatch" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "explicit_anchor_hole_countersink_array_safe_recipe"
+
+
 def test_preflight_lint_rejects_extrude_direction_keyword_alias() -> None:
     payload = _preflight_lint_execute_build123d(
         code=(
@@ -2978,6 +3572,35 @@ def test_preflight_lint_rejects_active_builder_part_mutation_inside_buildpart() 
     rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
     assert "invalid_build123d_contract.active_builder_part_mutation" in rule_ids
     assert payload["repair_recipe"]["recipe_id"] == "active_builder_part_mutation_contract"
+
+
+def test_preflight_lint_rejects_active_builder_part_mutation_for_direct_transformed_primitive_assignment() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "with BuildPart() as base:\n"
+            "    Box(72, 64, 13)\n"
+            "    cutter = Pos(24, 24, 1.0) * Cylinder(radius=2.0, height=2.0)\n"
+            "    base.part = base.part - cutter\n"
+            "result = base.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded clamshell enclosure with a hollow lid and base, "
+            "a pin hinge, corner magnet slots, and a front thumb notch."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.active_builder_part_mutation" in rule_ids
+    assert "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic" in rule_ids
+    assert (
+        "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind"
+        in rule_ids
+    )
+    assert payload["repair_recipe"]["recipe_id"] == "clamshell_host_local_cut_contract"
 
 
 def test_preflight_lint_rejects_plane_tuple_multiplication_for_locations() -> None:
@@ -3405,6 +4028,11 @@ def test_preflight_lint_keeps_clamshell_contract_priority_when_slots_family_come
     assert "slots" in payload["candidate_family_ids"]
     assert "half_shell" in payload["candidate_family_ids"]
     assert payload["repair_recipe"]["recipe_id"] == "clamshell_host_local_cut_contract"
+    repair_steps = "\n".join(payload["repair_recipe"]["recipe_skeleton"]["steps"])
+    assert "plain `pin hinge` or `mechanical hinge` still defaults to a two-part lid/base target" in repair_steps
+    assert "only detach the pin/hardware when the prompt explicitly asks for a removable pin, separate hinge parts, or an exposed hinge assembly" in repair_steps
+    assert "`extrude(amount=h)` grows one-sided from the active sketch plane" in repair_steps
+    assert "do not assume `Locations((0, 0, center_z))` plus `extrude(amount=h)` creates a centered shell interval" in repair_steps
 
 
 def test_preflight_lint_prefers_clamshell_host_local_cut_recipe_when_nested_subtractive_builder_is_present() -> None:
@@ -3439,6 +4067,86 @@ def test_preflight_lint_prefers_clamshell_host_local_cut_recipe_when_nested_subt
         payload["repair_recipe"]["recipe_id"]
         == "clamshell_host_local_cut_contract"
     )
+
+
+def test_preflight_lint_prefers_clamshell_host_local_cut_recipe_for_named_face_plane_family_mismatch() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 64.0\n"
+            "depth = 48.0\n"
+            "height = 24.0\n"
+            "wall = 2.2\n"
+            "with BuildPart() as base:\n"
+            "    with BuildSketch(Plane.XY):\n"
+            "        RectangleRounded(width, depth, radius=8.0)\n"
+            "    extrude(amount=height / 2)\n"
+            "    with BuildSketch(Plane.XY.offset(wall)):\n"
+            "        RectangleRounded(width - 2 * wall, depth - 2 * wall, radius=6.0)\n"
+            "    extrude(amount=height / 2 - wall, mode=Mode.SUBTRACT)\n"
+            "    with BuildSketch(Plane.YZ.offset(-width / 2).shift_origin((0, 0, 0))):\n"
+            "        RectangleRounded(18.0, 8.0, radius=2.0)\n"
+            "    extrude(amount=1.2, mode=Mode.SUBTRACT)\n"
+            "result = base.part\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a two-part rounded clamshell enclosure with a hollow lid and base, "
+            "a living hinge, corner magnet recesses, and a rounded label recess on the front face."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.named_face_plane_family_mismatch" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "clamshell_host_local_cut_contract"
+    repair_steps = "\n".join(payload["repair_recipe"]["recipe_skeleton"]["steps"])
+    assert "`Plane.XZ.offset(±depth/2)`" in repair_steps
+    assert "wrong host plane" in repair_steps
+    assert "if the requirement says `living hinge`" in repair_steps
+    assert "do not create detached `hinge_barrel` or `hinge_pin` solids" in repair_steps
+    assert "do not translate the whole lid or base to the back seam coordinate" in repair_steps
+    assert "hinge seam location from the hinge axis direction" in repair_steps
+    assert "do not reinterpret the back-edge hinge seam as a `Plane.YZ` sketch family" in repair_steps
+    assert "choose one axis-orientation lane for a detached hinge cylinder" in repair_steps
+
+
+def test_preflight_lint_rejects_unrotated_clamshell_hinge_cylinder_axis_mismatch() -> None:
+    payload = _preflight_lint_execute_build123d(
+        code=(
+            "from build123d import *\n"
+            "width = 72.0\n"
+            "depth = 64.0\n"
+            "split_z = 0.0\n"
+            "hinge_y = -depth / 2\n"
+            "with BuildPart() as base:\n"
+            "    Box(width, depth, 13)\n"
+            "    with Locations((0, hinge_y, split_z)):\n"
+            "        Cylinder(radius=2.0, height=12.0)\n"
+            "with BuildPart() as lid:\n"
+            "    Box(width, depth, 13)\n"
+            "    with Locations((12, hinge_y, split_z)):\n"
+            "        Cylinder(radius=2.0, height=12.0)\n"
+            "result = Compound([base.part, lid.part])\n"
+        ),
+        session_id="test-session",
+        requirement_text=(
+            "Create a snap clamshell enclosure with overall dimensions 72mm x 64mm x 26mm. "
+            "Use a pin hinge, keep wall thickness near 2.0mm, include two-part lid/base "
+            "separation, corner magnet slots, and a thumb notch. The outer form should remain "
+            "smooth and printable."
+        ),
+        run_state=None,
+    )
+
+    assert payload is not None
+    rule_ids = {item["rule_id"] for item in payload["lint_hits"]}
+    assert "invalid_build123d_contract.clamshell_hinge_unrotated_default_cylinder" in rule_ids
+    assert payload["repair_recipe"]["recipe_id"] == "clamshell_host_local_cut_contract"
+    repair_steps = "\n".join(payload["repair_recipe"]["recipe_skeleton"]["steps"])
+    assert "do not drop an unrotated default `Cylinder(...)` directly onto `(x, hinge_y, split_z)`" in repair_steps
+    assert "without a supported rotation/orientation lane that cylinder still runs along Z" in repair_steps
 
 
 def test_preflight_lint_allows_mode_private_temporary_primitive_boolean_inside_active_buildpart() -> None:

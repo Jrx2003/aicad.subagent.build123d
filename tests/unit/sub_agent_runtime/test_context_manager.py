@@ -169,6 +169,38 @@ def test_prompt_payload_adds_local_finish_contract_when_topology_refs_exist() ->
             ],
         },
     )
+    run_state.feature_graph = SimpleNamespace(
+        to_query_payload=lambda **_: {
+            "success": True,
+            "nodes": [],
+            "edges": [],
+            "bindings": [],
+            "active_feature_instances": [
+                {
+                    "instance_id": "instance.explicit_anchor_hole.feature_countersink",
+                    "family_id": "explicit_anchor_hole",
+                    "status": "blocked",
+                }
+            ],
+        },
+        nodes={
+            "feature.explicit_anchor_hole": SimpleNamespace(
+                node_id="feature.explicit_anchor_hole",
+                kind="feature",
+                status="blocked",
+            )
+        },
+        edges={},
+        bindings={},
+        active_node_ids=["feature.explicit_anchor_hole"],
+        revision_history=[],
+        feature_instances={
+            "instance.explicit_anchor_hole.feature_countersink": SimpleNamespace(
+                family_id="explicit_anchor_hole",
+                status="blocked",
+            )
+        },
+    )
 
     context_manager = V2ContextManager()
     payload = context_manager.build_prompt_payload(
@@ -187,6 +219,7 @@ def test_prompt_payload_adds_local_finish_contract_when_topology_refs_exist() ->
     assert isinstance(contract, dict)
     assert contract["must_consume_exact_topology_refs"] is True
     assert contract["preferred_face_refs"] == ["face:1:F_bottom_host"]
+    assert contract["preferred_action_types"][:2] == ["hole", "countersink"]
     assert contract["preferred_edge_refs"] == ["edge:1:E_bottom_outer_1"]
     assert "face_ref" in " ".join(contract["instructions"])
     assert (
@@ -305,6 +338,32 @@ def test_build_messages_surfaces_human_readable_exact_topology_refs_for_local_fi
     assert "Front Faces" in combined
 
 
+def test_build_messages_surfaces_direct_hole_before_sketch_guidance_for_exact_face_ref() -> None:
+    attachment = V2ContextManager()._build_local_finish_focus_attachment(
+        {
+            "local_finish_contract": {
+                "preferred_face_refs": ["face:1:F_bottom_host"],
+                "preferred_edge_refs": [],
+                "preferred_action_types": ["hole", "countersink", "counterbore"],
+                "candidate_sets": [
+                    {
+                        "candidate_id": "bottom_faces",
+                        "label": "Bottom Faces",
+                        "entity_type": "face",
+                        "preferred_ref_id": "face:1:F_bottom_host",
+                        "ref_ids": ["face:1:F_bottom_host"],
+                    }
+                ],
+            }
+        }
+    )
+    assert attachment is not None
+    combined = attachment.content
+
+    assert "preferred_action_types: hole, countersink" in combined
+    assert "before opening create_sketch(face_ref=...)" in combined
+
+
 def test_build_messages_system_prompt_surfaces_core_build123d_contracts() -> None:
     run_state = RunState(
         session_id="session-system-prompt-contracts",
@@ -319,13 +378,29 @@ def test_build_messages_system_prompt_surfaces_core_build123d_contracts() -> Non
     system_prompt = messages[0].content
 
     assert "Sketch primitives such as `Circle(...)`, `Ellipse(...)`, and `Rectangle(...)` belong inside `BuildSketch`" in system_prompt
+    assert "do not pass `axis=` or `length=`" in system_prompt
     assert "Do not write `with Rot(...):` or `with Pos(...):`" in system_prompt
     assert "Do not import `ocp_vscode` or call `show(...)` / `show_object(...)`" in system_prompt
     assert "do not create a primitive and then relocate it with `Pos(...) * solid` or `Rot(...) * solid`" in system_prompt
+    assert "Do not open a nested `BuildPart` cutter inside an active host and then mutate `host.part -= cutter.part`" in system_prompt
+    assert "Do not open a detached builder whose first real operation is subtractive" in system_prompt
+    assert "Do not mix `Circle(...)` with `BuildLine` + `make_face()` in the same `BuildSketch` to fake a semicircle" in system_prompt
+    assert "front/back -> `Plane.XZ`" in system_prompt
+    assert "back seam at `y = -depth/2` and the front opening/notch boundary at `y = +depth/2`" in system_prompt
+    assert "pin/barrel axis usually runs along X/width; do not leave hinge barrels or hinge pins as default Z-axis cylinders" in system_prompt
+    assert "do not drop an unrotated default `Cylinder(...)` directly onto `(x, hinge_y, split_z)`" in system_prompt
+    assert "without a supported rotation/orientation lane that cylinder still runs along Z" in system_prompt
+    assert "A plain `pin hinge` or `mechanical hinge` on a two-part lid/base enclosure does not by itself authorize extra detached hinge solids or a third physical part" in system_prompt
+    assert "`extrude(amount=h)` grows one-sided from the active sketch plane" in system_prompt
+    assert "do not assume `Locations((0, 0, center_z))` plus `extrude(amount=h)` creates a centered shell interval" in system_prompt
     assert "do not invent `Box(..., radius=...)`" in system_prompt
     assert "prefer that rounded footprint directly over a first-pass broad shell-edge fillet" in system_prompt
+    assert "`RectangleRounded(width, depth, radius=...)` already uses the outer footprint spans" in system_prompt
+    assert "do not shrink the requested outer width/depth to `width - 2*radius`" in system_prompt
     assert "use lowercase `scale(shape, by=(sx, sy, sz))`" in system_prompt
     assert "`Rot(...) * part` or `Pos(...) * Rot(...) * part`" in system_prompt
+    assert "do not stop at a prose-only repair sketch" in system_prompt
+    assert "call that tool directly instead of returning a code block or repair plan without a tool invocation" in system_prompt
 
 
 def test_local_finish_contract_surfaces_preserved_local_centers_from_domain_kernel() -> None:
@@ -771,6 +846,47 @@ def test_previous_tool_failure_summary_classifies_detached_subtractive_builder_r
     )
     assert summary["recovery_bias"] == "repair_detached_subtractive_builder_before_retry"
     assert summary["recommended_next_tools"] == ["execute_build123d", "query_kernel_state"]
+
+
+def test_summarize_failure_lint_hits_deduplicates_repeated_rule_ids() -> None:
+    summary = V2ContextManager()._summarize_failure_lint_hits(  # noqa: SLF001
+        [
+            {
+                "rule_id": "invalid_build123d_contract.clamshell_hinge_unrotated_default_cylinder",
+                "message": "Hinge cylinder stayed on Z.",
+                "repair_hint": "Repair the unrotated hinge cylinder at line 55.",
+                "layer": "write_surface",
+                "category": "invalid_api_contract",
+                "severity": "fatal",
+                "recommended_recipe_id": "clamshell_host_local_cut_contract",
+            },
+            {
+                "rule_id": "invalid_build123d_contract.clamshell_hinge_unrotated_default_cylinder",
+                "message": "Hinge cylinder stayed on Z.",
+                "repair_hint": "Repair the unrotated hinge cylinder at line 58.",
+                "layer": "write_surface",
+                "category": "invalid_api_contract",
+                "severity": "fatal",
+                "recommended_recipe_id": "clamshell_host_local_cut_contract",
+            },
+            {
+                "rule_id": "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic",
+                "message": "Temporary primitive arithmetic mutates the active host immediately.",
+                "repair_hint": "Repair the temporary solid arithmetic at line 96.",
+                "layer": "write_surface",
+                "category": "invalid_api_contract",
+                "severity": "fatal",
+                "recommended_recipe_id": "clamshell_host_local_cut_contract",
+            },
+        ]
+    )
+
+    assert summary is not None
+    assert len(summary) == 2
+    assert summary[0]["rule_id"] == "invalid_build123d_contract.clamshell_hinge_unrotated_default_cylinder"
+    assert summary[0]["occurrence_count"] == 2
+    assert summary[1]["rule_id"] == "invalid_build123d_contract.active_builder_temporary_primitive_arithmetic"
+    assert "occurrence_count" not in summary[1]
 
 
 def test_compacted_prompt_payload_keeps_topology_targeting_and_local_finish_contract() -> None:

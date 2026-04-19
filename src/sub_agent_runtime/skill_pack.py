@@ -476,6 +476,13 @@ def _failure_lint_runtime_skill(
             )
         if repair_hint:
             guidance.append("Direct repair hint: " + repair_hint)
+    if "invalid_build123d_contract.active_builder_temporary_primitive_transform_rebind" in lint_ids:
+        guidance.append(
+            "For active-builder transform rebind failures, choose one valid lane only: inside an active host, place the primitive correctly with `Locations(...)` at creation time instead of creating it first and relocating the Python variable afterward."
+        )
+        guidance.append(
+            "If the solid truly needs detached rotation or placement, close that builder first and only then orient/place the detached solid with `Rot(...) * part` or `Pos(...) * Rot(...) * part` outside the active builder."
+        )
     return {
         "skill_id": "execute_build123d_failure_lint_contract",
         "when_relevant": "Use when previous_tool_failure_summary exposes concrete lint hits with direct repair hints.",
@@ -593,6 +600,38 @@ def _requirement_mentions_multi_part_assembled_envelope(
         )
     )
     return has_envelope_signal
+
+
+def _requirement_prefers_living_hinge(requirement_lower: str) -> bool:
+    if not requirement_lower:
+        return False
+    return "living hinge" in requirement_lower or "living-hinge" in requirement_lower
+
+
+def _requirement_explicitly_requests_detached_hinge_hardware(
+    requirement_lower: str,
+) -> bool:
+    if not requirement_lower:
+        return False
+    return any(
+        token in requirement_lower
+        for token in (
+            "removable pin",
+            "removable hinge pin",
+            "detachable pin",
+            "separate hinge part",
+            "separate hinge parts",
+            "detached hinge",
+            "detached hinge hardware",
+            "exposed hinge assembly",
+            "external hinge assembly",
+            "hinge assembly",
+            "hinge barrel",
+            "hinge barrels",
+            "hinge pin",
+            "hinge pins",
+        )
+    )
 
 
 def requirement_prefers_code_first_family(
@@ -876,6 +915,10 @@ def build_runtime_skill_pack(
         token in requirement_lower
         for token in ("clamshell", "lid", "base", "top lid", "bottom base", "hinge")
     ):
+        living_hinge_requested = _requirement_prefers_living_hinge(requirement_lower)
+        detached_hinge_hardware_requested = (
+            _requirement_explicitly_requests_detached_hinge_hardware(requirement_lower)
+        )
         skills.append(
             {
                 "skill_id": "clamshell_split_axis_and_hinge_contract",
@@ -883,10 +926,28 @@ def build_runtime_skill_pack(
                 "guidance": [
                     "For lid/base or top-lid/bottom-base clamshells, both halves normally share the same outer width/depth footprint; do not halve the plan footprint just because there are two parts unless the prompt explicitly asks for left/right or front/back halves.",
                     "Use the requested overall envelope as the closed assembly pose and split the parts only along the closure axis or named mating plane, typically the thickness/height direction for lid/base shells.",
+                    "For a centered closed envelope with overall `width x depth x height`, keep the split plane explicit: if the mating plane is `z = split_z`, place the base outer-envelope center at `split_z - base_height/2` and the lid outer-envelope center at `split_z + lid_height/2`; do not place both shells on the same side of that split plane or let both shells straddle it.",
                     "When using centered primitives such as `Box(length, width, height)`, explicitly align or translate the parts so the base occupies the lower interval and the lid occupies the upper interval of the shared envelope instead of both straddling the split plane; keep the lid in the mating pose rather than stacking or exploding it for visibility.",
                     "For a plain two-part lid/base target, the first geometry milestone is exactly two dominant shell solids in one shared assembled envelope, or one `Compound(...)` that contains exactly those two shell solids. Return the assembled default as `Compound([base.part, lid.part])` when lid/base are the only physical parts; do not keep adding hinge, magnet, notch, or pocket detail while the write is still producing four detached solids, one fused shell, or an obviously exploded pose.",
+                    (
+                        "If the requirement says `living hinge`, treat the hinge as an integrated host-owned thin back-edge strip or flexure bridge between lid and base; do not introduce detached hinge barrels, hinge pins, or extra hinge solids unless the prompt explicitly switches to a pin/mechanical/removable hinge."
+                        if living_hinge_requested
+                        else (
+                            "If the requirement explicitly requests detachable hinge hardware such as a removable pin, separate hinge parts, or an exposed hinge assembly, detached hinge barrels/pins are allowed, but keep the default physical-part target at lid/base only and avoid inventing extra hinge solids beyond the requested hardware."
+                            if detached_hinge_hardware_requested
+                            else "A plain `pin hinge` or `mechanical hinge` still defaults to a two-part lid/base target: keep the hinge knuckles/barrels host-owned on lid/base and only detach the pin/hardware when the prompt explicitly asks for a removable pin, separate hinge parts, or an exposed hinge assembly."
+                        )
+                    ),
+                    "For a living hinge, the back-edge seam coordinate belongs to the hinge strip itself, not to the whole shell envelope; do not translate the whole lid or base to the back seam coordinate just to make the hinge touch.",
+                    "For a centered clamshell with depth on Y, the back-edge seam normally sits at `y = -depth/2` and the front opening boundary at `y = +depth/2`; keep those seam/boundary coordinates literal instead of inferring them from a rotated helper solid.",
+                    "Build123d `extrude(amount=h)` grows one-sided from the active sketch plane; it does not automatically create a centered `[-h/2, +h/2]` shell interval around that plane.",
+                    "For centered lid/base intervals, sketch on the real start face plane or translate the finished solid afterward; do not assume `Locations((0, 0, center_z))` plus `extrude(amount=h)` creates a centered shell interval by itself.",
                     "Remember that `Cylinder(...)` points along +Z by default. If a hinge barrel or pin must run along the back edge or shell width, rotate the detached cylinder onto that hinge axis before assembling it, and distinguish the hinge seam location from the hinge axis direction instead of assuming the long cylinder runs along the seam coordinate axis.",
+                    "For a back-edge pin hinge on a centered clamshell, the seam stays on the back Y boundary while the hinge axis normally runs along X/width, so an unrotated default `Cylinder(...)` is not yet a valid hinge barrel or pin until that closed solid is rotated onto the width axis.",
+                    "do not drop an unrotated default `Cylinder(...)` directly onto `(x, hinge_y, split_z)` or `(x, -depth/2, z)` inside lid/base builders and assume it became an X-axis hinge barrel or pin; without a supported rotation/orientation lane that cylinder still runs along Z.",
+                    "When that back-edge hinge axis runs along X/width, keep Y fixed at the seam and derive hinge offsets or spans from width for X placement; do not reuse the seam Y coordinate as an X offset or size that X-axis hinge from depth just because the seam lives on Y.",
                     "Remember that `Cylinder(...)` is centered along its own axis by default. If the barrel should stay inside the enclosure envelope, do not center a long hinge cylinder on the seam coordinate unless that span direction is actually intended; do not let the hinge barrel or pin protrude outside the declared bounding box unless the prompt explicitly allows an exposed external hinge.",
+                    "`RectangleRounded(width, depth, radius=...)` already uses the outer footprint spans when the requirement gives an overall rounded-rect shell envelope; do not rewrite the requested outer envelope as `width - 2*radius` / `depth - 2*radius` unless the requirement explicitly defines inner straight spans instead of the outer size.",
                     "If the prompt says separate parts and only names lid/base (or top/bottom shells) as the physical parts, treat that as a two-part target by default; fuse hinge barrels, cable posts, and other host-owned hardware into their real lid/base host unless detachable hinge hardware is explicitly requested.",
                     "Only keep hinge pins, hinge barrels, or other hinge hardware as detached shapes when the requirement explicitly calls for separate hinge parts, an exposed hinge assembly, or a removable pin; otherwise prefer `Compound([base.part, lid.part])` as the default assembled result shape list.",
                 ],
@@ -941,17 +1002,45 @@ def build_runtime_skill_pack(
             )
         )
     ):
+        living_hinge_requested = _requirement_prefers_living_hinge(requirement_lower)
+        detached_hinge_hardware_requested = (
+            _requirement_explicitly_requests_detached_hinge_hardware(requirement_lower)
+        )
         skills.append(
             {
                 "skill_id": "execute_build123d_clamshell_host_local_cut_contract",
                 "when_relevant": "Use on clamshell lid/base first-write or repair turns when shell hosts, late local cuts, and detached hinge solids can easily get mixed together.",
                 "guidance": [
                     "For clamshell lid/base shells, keep one authoritative `BuildPart` per shell host in the closed assembled pose; do not keep reopening the same lid/base alias later for late cuts.",
-                    "For detached hinge barrels or hinge pins, never write `with Rot(...): Cylinder(...)`; build the cylinder positively first, close that builder, then orient the closed solid with `Rot(...) * hinge_barrel.part` or `Pos(...) * Rot(...) * hinge_barrel.part` in the final assembly lane.",
+                    "For a centered closed envelope with overall `width x depth x height`, keep the split plane explicit: if the mating plane is `z = split_z`, place the base shell center at `split_z - base_height/2` and the lid shell center at `split_z + lid_height/2`; do not place both shells at positive Z or let both shells overlap the same split interval.",
+                    (
+                        "If the requirement says `living hinge`, keep the hinge as a host-owned thin hinge strip or flexure on the back edge and preserve the default two-shell target; do not create detached `hinge_barrel` / `hinge_pin` solids or a third/fourth hinge part unless the prompt explicitly requests a pin/mechanical/removable hinge."
+                        if living_hinge_requested
+                        else (
+                            "If the requirement explicitly requests detachable hinge hardware such as a removable pin, separate hinge parts, or an exposed hinge assembly, detached hinge barrels or hinge pins are allowed, but keep the default shell target at lid/base only and avoid inventing extra hinge parts beyond the requested hardware."
+                            if detached_hinge_hardware_requested
+                            else "A plain `pin hinge` or `mechanical hinge` still defaults to a two-part lid/base target: keep the hinge knuckles/barrels host-owned on lid/base and only detach the pin/hardware when the prompt explicitly asks for a removable pin, separate hinge parts, or an exposed hinge assembly."
+                        )
+                    ),
+                    "For a living hinge, the back-edge seam coordinate belongs to the hinge strip itself, not to the whole shell envelope; do not translate the whole lid or base to the back seam coordinate just to make the hinge touch.",
+                    "Only when the prompt explicitly requests detached back-edge hinge barrels or hinge pins should you use that lane at all: separate the hinge seam location from the hinge axis direction, keep the seam at `y = ±depth/2`, do not reinterpret the back-edge hinge seam as a `Plane.YZ` sketch family, and never write `with Rot(...): Cylinder(...)`; build the cylinder positively first, close that builder, then orient the closed solid with `Rot(...) * hinge_barrel.part` or `Pos(...) * Rot(...) * hinge_barrel.part` in the final assembly lane.",
+                    "For front/back clamshell-local features such as a thumb notch, front label recess, or mating-face pocket, the host is Y-normal, so start from `Plane.XZ.offset(±depth/2)` or `Plane(face)`; do not sketch that edit on `Plane.XY` or `Plane.YZ` and hope later offsets recover the host, and do not externalize that first pass into a detached subtractive alias such as `notch_cutter`.",
+                    "do not drop an unrotated default `Cylinder(...)` directly onto `(x, hinge_y, split_z)` or `(x, -depth/2, z)` inside lid/base builders and assume it became an X-axis hinge barrel or pin; without a supported rotation/orientation lane that cylinder still runs along Z.",
+                    "Build123d `extrude(amount=h)` grows one-sided from the active sketch plane; it does not automatically create a centered `[-h/2, +h/2]` shell interval around that plane.",
+                    "For centered lid/base intervals, sketch on the real start face plane or translate the finished solid afterward; do not assume `Locations((0, 0, center_z))` plus `extrude(amount=h)` creates a centered shell interval by itself.",
+                    "For centered clamshell coordinates, the back seam normally sits at `y = -depth/2` and the front opening/notch boundary at `y = +depth/2`; keep those front/back boundary coordinates literal instead of inferring them from a rotated helper or detached cutter center.",
+                    "If a thumb notch or front label recess is externalized as a detached cutter such as `notch_cutter` or `label_recess`, that detached builder must stay positive or `mode=Mode.PRIVATE`; do not write `with BuildPart() as notch_cutter:` followed by `extrude(..., mode=Mode.SUBTRACT)` because a detached cutter builder has no host yet.",
+                    "A safe back-edge detached hinge placement pattern is `Pos(0, ±depth/2, split_z) * (Rot(Y=90) * hinge_barrel.part)` after the hinge barrel builder closes; keep the Y seam coordinate explicit instead of rebuilding the hinge on `Plane.YZ`.",
+                    "A default `Cylinder(...)` still runs along Z, so a detached pin/barrel on the back edge is only valid after its closed solid is rotated onto the intended hinge axis, usually X/width for a back-edge clamshell pin.",
+                    "For detached back-edge hinge hardware whose axis runs along X/width, keep X placements and X spans derived from width while Y stays fixed at the seam; do not plug `hinge_y` into the X position or build an X-axis pin/barrel with a depth-derived span.",
+                    "choose one axis-orientation lane for a detached hinge cylinder: either create the cylinder with one supported primitive rotation lane, or build it unrotated and orient the closed solid afterward, but do not stack `Cylinder(..., rotation=...)` and a second `Rot(...) * hinge_barrel.part` just to realize one hinge axis.",
                     "Finish host-owned local cuts such as magnet recesses, thumb notches, slots, and pockets inside that same shell host before that shell builder closes.",
+                    "For top/bottom mating-face features, keep the XY-family host plane at the real face datum, for example `Plane.XY.offset(z_face)`, and only place local `(x, y)` coordinates on that plane.",
                     "If a local cut depends on sketch primitives such as `SlotOverall(...)`, `Rectangle(...)`, or `Circle(...)`, open `BuildSketch(target_plane)` first on the intended host plane, then extrude/subtract from that same shell host lane.",
-                    "Treat hinge barrels, hinge pins, and other rotated hardware as detached positive solids after the shell hosts close, then assemble them in shared coordinates; do not blur them into the shell-cut lane, and do not write patterns like `hinge_barrel = Rot(...) * hinge_barrel` while the primitive still lives inside an active host builder because that only rebinds the Python variable, not the already-added host geometry.",
-                    "A safe detached hinge pattern is: create the barrel or pin positively in its own builder without `with Rot(...):`, close that builder, then orient the closed solid with `Rot(...) * hinge_barrel.part` or `Pos(...) * Rot(...) * hinge_barrel.part` in the final assembly lane.",
+                    "Do not try to rescue a wrong front/back host by combining `BuildSketch(Plane.XY)` or `BuildSketch(Plane.YZ)` with a guessed `Locations((x, y, z))`, `shift_origin(...)`, or extra rotations; keep the correct host plane authoritative from the start.",
+                    "When detached hinge hardware is explicitly requested, treat hinge barrels, hinge pins, and other rotated hardware as detached positive solids after the shell hosts close, then assemble them in shared coordinates; do not blur them into the shell-cut lane, and do not write patterns like `hinge_barrel = Rot(...) * hinge_barrel` while the primitive still lives inside an active host builder because that only rebinds the Python variable, not the already-added host geometry.",
+                    "Keep the seam location from the hinge axis direction: the back edge fixes the Y coordinate, while the hinge axis is a separate transform decision.",
+                    "A safe detached hinge pattern is: create the barrel or pin positively in its own builder without `with Rot(...):`, close that builder, then orient the closed solid with `Rot(...) * hinge_barrel.part` or `Pos(...) * Rot(...) * hinge_barrel.part` in the final assembly lane, but only use this lane when detached hinge hardware is actually requested.",
                     "If a detached boolean is still unavoidable for one local cutter, build that cutter as a positive/private solid only after the shell host closes and subtract it once outside the active builder.",
                     "Do not reopen `with BuildPart() as lid:` or `with BuildPart() as base:` just to start subtractive mini-builders after the shell already exists.",
                 ],
@@ -993,6 +1082,38 @@ def build_runtime_skill_pack(
                     "For rotated detached solids such as hinge barrels or hinge pins, build the solid positively first, close that builder, and then orient it with `Rot(...) * solid` or `Pos(...) * Rot(...) * solid` outside the builder.",
                     "Do not write `with BuildPart() as cutter: Cylinder(..., mode=Mode.SUBTRACT)` and then try to rescue its orientation with `with Rot(...):`; choose one valid lane instead of mixing two invalid ones.",
                     "If a rotated cutter truly must be detached before the boolean, make it a positive/private solid first, rotate it outside the builder, and subtract it only after the authoritative host builder closes.",
+                ],
+            }
+        )
+
+    if (
+        latest_tool == "execute_build123d"
+        and "invalid_build123d_context.transform_context_manager"
+        in previous_failure_lint_ids
+        and (
+            "clamshell" in requirement_lower
+            or ("lid" in requirement_lower and "base" in requirement_lower)
+            or "lid and base" in requirement_lower
+            or "top lid" in requirement_lower
+            or "bottom base" in requirement_lower
+        )
+        and any(
+            token in requirement_lower
+            for token in ("hinge", "notch", "label", "recess", "magnet", "pocket", "slot")
+        )
+    ):
+        skills.append(
+            {
+                "skill_id": "execute_build123d_clamshell_transform_lane_contract",
+                "when_relevant": "Use when a clamshell repair turn failed because front/back local cuts or detached hinge helpers were expressed with `with Rot(...):` instead of a valid host-native or detached-solid transform lane.",
+                "guidance": [
+                    "For a front-face thumb notch, front label recess, or similar clamshell-local cut, keep the edit host-native on the real shell host: open `BuildSketch(Plane.XZ.offset(±depth/2))` or `BuildSketch(Plane(face))` and extrude/subtract there instead of building a detached cutter under `with Rot(...):`.",
+                    "If a cylindrical notch or recess cutter is clearer than a sketch, place that cutter directly inside the authoritative host with explicit `Locations(...)` and supported orientation data; do not wrap `Cylinder(...)` or `Box(...)` in `with Rot(...):`.",
+                    "For detached hinge bars, hinge barrels, or hinge pins, build the solid positively first, close that builder, and only then orient it with `Rot(...) * part` or `Pos(...) * Rot(...) * part` outside the builder.",
+                    "For detached back-edge hinge helpers, the back-edge seam coordinate stays on Y while the cylinder axis is chosen separately by transform; do not switch to `Plane.YZ` just because the hinge sits at the back edge.",
+                    "A safe detached hinge lane is `Pos(0, ±depth/2, split_z) * (Rot(Y=90) * hinge_barrel.part)` after the hinge builder closes, instead of reopening a new sketch on `Plane.YZ`.",
+                    "pick one axis lane for the detached hinge helper: either rely on one supported primitive rotation surface or one post-builder `Rot(...) * part` lane, but do not combine both just to force the same axis direction.",
+                    "Do not mix two lanes in one workaround: host-owned front/back cuts belong inside the shell builder, while truly detached hinge helpers belong to a later detached-solid assembly lane.",
                 ],
             }
         )
@@ -1248,6 +1369,7 @@ def build_runtime_skill_pack(
                     "Do not use `Loc(...)`, and do not open `with Rot(...):` or `with Pos(...):`; use `Location(...)` for a location object, `Locations(...)` for scoped builder placement, or apply `Pos(...) * Rot(...) * solid` after the host builder closes.",
                     "If a detached cavity proxy or organic cutter needs anisotropic scaling, use lowercase `scale(shape, by=...)` on the detached shape before the final boolean; do not invent `Scale.by(...)` or other capitalized scaling helpers.",
                     "`SlotOverall(...)`, `Rectangle(...)`, and `Circle(...)` belong inside `BuildSketch(...)` on the intended host plane; for thumb notches or slot-like cuts, use `with BuildSketch(target_plane): SlotOverall(...)` and then `extrude(..., mode=Mode.SUBTRACT)` from that sketch instead of `SlotOverall(..., mode=Mode.SUBTRACT)` inside `BuildPart`.",
+                    "Map named enclosure faces to plane families by host normal before any local sketch or recess: `top/bottom -> Plane.XY`, `front/back -> Plane.XZ`, and `left/right -> Plane.YZ`. For a front label window, front notch, or front recess, `Plane.YZ` is a side-face family, not the front/back face family.",
                     "For lid/base assemblies, keep local features attached to their real physical host part and do not cut the lid, base, hinge barrel, and closure features through one shared active builder when the requirement expects separate parts.",
                     "If evidence shows one dominant enclosure solid plus a tiny extra solid, treat that as a detached feature fragment rather than a valid second physical part: rebuild so magnets, thumb notches, plug pockets, hinge cuts, and similar local features stay builder-native on the host, or subtract exactly once after the host builder closes.",
                 ],
@@ -1340,8 +1462,11 @@ def build_runtime_skill_pack(
                 "when_relevant": "Use on code-first whole-part writes when the prompt already says a topology-aware local finishing pass should remain useful afterward.",
                 "guidance": [
                     "Treat the first execute_build123d write as a host-stabilizing pass: build the bracket/body, top pocket, front recess, and the directly expressible hole features first, then leave the most topology-sensitive finishing tail for later if needed.",
-                    "For countersinks on a named mounting/bottom/side/top host face, prefer one helper-first `CounterSinkHole(...)` pass on that actual host-face plane; do not approximate countersinks with manual `Cylinder(...)` cutters on the first whole-part attempt.",
-                    "For front/back/side face recesses on a centered host, use the actual side-face workplane directly with the correct `Plane.YZ.offset(...)` or `Plane.XZ.offset(...)` translation; do not call `shift_origin((0, 0, 0))` on a side-face plane or re-rotate an already-correct named face plane just to hunt for the origin.",
+                    "For countersinks on a named mounting/bottom/side/top host face, prefer one helper-first `CounterSinkHole(...)` pass on that actual host-face plane; keep the exact helper contract `CounterSinkHole(radius=..., counter_sink_radius=..., depth=..., counter_sink_angle=...)` and do not approximate countersinks with manual `Cylinder(...)` cutters on the first whole-part attempt.",
+                    "For bottom or side mounting faces, the host-face plane must carry the real face normal, not just the right offset distance. `Plane.XY.offset(-height/2)` still keeps a +Z normal, so it often leaves plain cylindrical holes instead of visible countersink cones on the bottom face.",
+                    "Build123d does not provide a `Workplanes(...)` helper; if you need a front/back/side host sketch, use the actual target plane directly with `BuildSketch(plane)` or place the feature with `Locations(...)` on that face plane.",
+                    "Map named faces to plane families before opening the local sketch: `top/bottom -> Plane.XY`, `front/back -> Plane.XZ`, and `left/right -> Plane.YZ`. Then translate only along that plane family's normal axis to the real host-face datum.",
+                    "For centered hosts, do not call `shift_origin((0, 0, 0))` on a named face plane or re-rotate an already-correct host plane just to hunt for the origin; keep the correct plane family authoritative from the start and place only the in-plane coordinates locally.",
                     "If the remaining fillet is only a local top-opening or rim finish and the edge set would still require guessed selectors, bounding-box heuristics, or broad `filter_by_position(...)` bands, postpone it to a later topology-guided local finish instead of forcing it into the first whole-part write.",
                     "Do not spend the first code path on broad whole-part fillet selectors such as `edges().filter_by(Axis.Z)` or broad top/bottom `filter_by_position(Axis.Z, ...)` bands when the prompt already frames those details as a later local-finishing tail.",
                     "Once a stable host exists, use `query_topology` plus `apply_cad_action` to finish the remaining exact face/edge-local detail instead of reopening another broad whole-part fillet or guessed host-face sketch.",
@@ -1365,7 +1490,10 @@ def build_runtime_skill_pack(
                 "guidance": [
                     "Once query_topology has already returned actionable host-face candidates, the next local write must consume exact refs from that read surface instead of reopening a broad plane-based sketch.",
                     "For local face edits, use `face_ref='face:...'` from the latest query_topology candidate sets or matched_ref_ids. Do not fall back to `face='top'`, `face='bottom'`, or `plane='XY'` aliases once exact refs exist.",
+                    "In local_finish mode, do not spend `apply_cad_action` on `get_history`, rollback, or other session-control escapes; spend it on the next topology-anchored local edit.",
+                    "If the next local edit is already directly expressible on that host face, prefer a direct `apply_cad_action` hole/countersink step on that exact `face_ref` before opening `create_sketch(face_ref=...)`.",
                     "If the local step needs a host sketch, use `create_sketch(face_ref=...)` on the chosen host face, then add the circle/rectangle/polygon on that sketch. Do not start with a detached `create_sketch(plane=...)` inside a bounded local-finish turn.",
+                    "After a successful `create_sketch(face_ref=...)`, spend the next local-finish turn adding the first profile or materializing cut with `apply_cad_action`; do not burn the next turn on `query_sketch` when the sketch was just opened and still has no geometry.",
                     "Keep bounded local finishing one write at a time: if the sketch edit needs create_sketch, profile creation, and cut/extrude, emit only the next apply_cad_action for the current turn and continue the sequence on later turns.",
                     "Treat planar-host requirements literally: when query_topology exposes planar host families such as `mating_faces`, `inner_planar_host`, or other planar face candidates, choose a planar `face_ref` first before opening the sketch.",
                     "If the latest topology evidence does not expose a suitable planar face, refresh query_topology or broaden the repair lane later; do not guess a broad plane alias while the turn is still constrained to local_finish.",
@@ -1704,9 +1832,11 @@ def build_runtime_skill_pack(
                 "If the requirement says the holes run in the Y direction and gives `x` plus `z` coordinates, use the XZ workplane so the local coordinates are `(x, z)` before drilling along Y.",
                 "Use `Plane.offset(...)` only for plane-normal translation: `Plane.XY.offset(d)` shifts along Z, `Plane.XZ.offset(d)` shifts along Y, and `Plane.YZ.offset(d)` shifts along X.",
                 "For Y-direction drilling on the XZ workplane, `Plane.XZ.offset(d)` shifts along Y, not Z, so do not encode a Z coordinate with `Plane.XZ.offset(z0)`.",
+                "Map named faces to plane families by host normal before any local edit: `top/bottom -> Plane.XY`, `front/back -> Plane.XZ`, and `left/right -> Plane.YZ`. If the requirement says `front face`, `Plane.YZ...` is an X-normal side plane, not the front/back plane.",
                 "If the named workplane already has the correct normal for the drill direction, keep it as-is instead of calling `Plane.rotated(...)` again; `Plane.rotated(rotation, ordering=...)` changes orientation only and leaves the origin unchanged.",
                 "If the hole coordinates clearly come from a rectangular face sketch corner, prefer a corner-anchored host sketch/extrude or explicitly translate those coordinates into the centered host frame before cutting.",
                 "If the host solid was created centered about the origin but the requirement's point coordinates came from a rectangular face sketch, translate those corner-based sketch coordinates into the centered host frame before placing the holes.",
+                "If the host solid was created with a default centered `Box(length, width, height)`, its named faces sit at `+/- length/2`, `+/- width/2`, and `+/- height/2`; do not target a named top/front/side face by offsetting the workplane with the full span such as `Plane.XY.offset(height)`.",
                 "If you still use `CounterSinkHole(...)`, keep the operation in `BuildPart` and include the host-face plane translation in the placement itself, for example `Locations((x, y, top_z), ...)` on a centered top face.",
                 "For explicit planar countersink arrays, start with `CounterSinkHole(...)` on the actual host-face plane and keep the helper contract exact before escalating to custom cutters.",
                 "Only fall back to an explicit same-builder cylinder+cone or revolved countersink recipe when the helper contract cannot express the host/placement semantics cleanly or when prior validation/evaluation evidence shows the helper result is dimensionally wrong for that family.",
@@ -2095,14 +2225,14 @@ def _skill_priority(
         return priorities.get(skill_id, 10)
     general_priorities = {
         "execute_build123d_minimal_script_hygiene": 0,
-        "code_first_local_finish_tail_contract": 1,
-        "nested_hollow_section_builder_native_cavity": 2,
-        "enclosure_local_feature_placement_contract": 3,
-        "multi_part_assembled_pose_bbox_contract": 4,
-        "clamshell_split_axis_and_hinge_contract": 5,
-        "execute_build123d_failure_lint_contract": 6,
-        "execute_build123d_api_lint_repair_first": 7,
-        "execute_build123d_clamshell_host_local_cut_contract": 8,
+        "execute_build123d_clamshell_host_local_cut_contract": 1,
+        "code_first_local_finish_tail_contract": 2,
+        "nested_hollow_section_builder_native_cavity": 3,
+        "enclosure_local_feature_placement_contract": 4,
+        "multi_part_assembled_pose_bbox_contract": 5,
+        "clamshell_split_axis_and_hinge_contract": 6,
+        "execute_build123d_failure_lint_contract": 7,
+        "execute_build123d_api_lint_repair_first": 8,
         "execute_build123d_detached_subtractive_builder_repair": 9,
         "execute_build123d_rotated_detached_cutter_contract": 10,
         "execute_build123d_compound_children_contract": 11,

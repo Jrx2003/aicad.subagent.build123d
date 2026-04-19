@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from sub_agent_runtime.agent_loop_v2 import (
     _determine_turn_tool_policy,
     _infer_runtime_failure_cluster,
+    _turn_has_successful_validation_completion,
     _local_finish_should_force_apply_after_topology_targeting,
     _latest_feature_probe_preferred_tools_for_turn,
     _payload_has_positive_session_backed_solid,
@@ -255,6 +256,34 @@ def test_infer_runtime_failure_cluster_ignores_read_stall_history_after_successf
     run_state.latest_validation = {"success": True, "is_complete": True, "blockers": []}
 
     assert _infer_runtime_failure_cluster(run_state) is None
+
+
+def test_turn_has_successful_validation_completion_detects_complete_validate_requirement_result() -> None:
+    turn = TurnRecord(
+        round_no=3,
+        decision_summary="validate current state",
+        tool_calls=[
+            ToolCallRecord(
+                name="validate_requirement",
+                category=ToolCategory.READ,
+            )
+        ],
+        tool_results=[
+            ToolResultRecord(
+                name="validate_requirement",
+                category=ToolCategory.READ,
+                success=True,
+                payload={
+                    "success": True,
+                    "is_complete": True,
+                    "blockers": [],
+                    "summary": "Requirement validation passed",
+                },
+            )
+        ],
+    )
+
+    assert _turn_has_successful_validation_completion(turn) is True
 
 
 def test_repeated_build123d_api_lint_failure_stays_on_code_repair_lane() -> None:
@@ -4006,6 +4035,277 @@ def test_local_finish_lane_forces_apply_even_with_remaining_validation_blockers(
     assert policy.allowed_tool_names == ["apply_cad_action"]
 
 
+def test_successful_local_finish_under_short_budget_prefers_semantic_refresh_before_code_escape() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-semantic-refresh-before-budget-escape",
+        requirements={
+            "description": (
+                "Create a rounded pillbox enclosure with a front thumb notch and a shallow front-face label recess."
+            )
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="build pillbox host",
+            tool_calls=[
+                ToolCallRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 21914.7,
+                                "bbox": [64.0, 48.0, 24.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="refresh feature probes and topology for front-face local work",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                ),
+                ToolCallRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                ),
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "probes": [
+                            {
+                                "family_id": "named_face_local_edit",
+                                "recommended_next_tools": [
+                                    "query_topology",
+                                    "apply_cad_action",
+                                ],
+                                "grounding_blockers": [],
+                            }
+                        ],
+                    },
+                ),
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "matched_ref_ids": ["face:1:F_front"],
+                        "candidate_sets": [
+                            {
+                                "candidate_id": "front_faces",
+                                "label": "Front Faces",
+                                "entity_type": "face",
+                                "ref_ids": ["face:1:F_front"],
+                            }
+                        ],
+                    },
+                ),
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=3,
+            decision_summary="open front-face sketch",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "create_sketch",
+                        "action_params": {"face_ref": "face:1:F_front"},
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 21914.7,
+                                "bbox": [64.0, 48.0, 24.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=4,
+            decision_summary="add thumb-notch profile",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "add_circle",
+                        "action_params": {"center": [0, 0], "radius": 3.5},
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 21914.7,
+                                "bbox": [64.0, 48.0, 24.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=5,
+            decision_summary="materialize thumb-notch cut",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "cut_extrude",
+                        "action_params": {"depth": 5.0, "direction": "through"},
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {
+                                "solids": 1,
+                                "volume": 21821.68,
+                                "bbox": [64.0, 48.0, 24.0],
+                            }
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.latest_write_payload = {
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 1,
+                "volume": 21821.68,
+                "bbox": [64.0, 48.0, 24.0],
+            }
+        },
+    }
+    run_state.latest_validation = {
+        "success": True,
+        "is_complete": False,
+        "summary": "Requirement validation has 2 blocker(s)",
+        "blockers": [
+            "feature_notch_or_profile_cut",
+            "feature_label_window_recess",
+        ],
+        "insufficient_evidence": True,
+        "coverage_confidence": 0.45,
+        "repair_hints": ["query_topology", "query_feature_probes"],
+        "decision_hints": ["query_topology"],
+    }
+    run_state.add_agent_event(
+        SimpleNamespace(  # type: ignore[arg-type]
+            kind="validation_result",
+            round_no=2,
+            role="runtime",
+            payload={
+                "summary": "Requirement validation has 2 blocker(s)",
+                "is_complete": False,
+                "blockers": [
+                    "feature_notch_or_profile_cut",
+                    "feature_label_window_recess",
+                ],
+            },
+        )
+    )
+    run_state.feature_graph = SimpleNamespace(
+        nodes={
+            "feature.body": SimpleNamespace(
+                node_id="feature.body",
+                kind="feature",
+                status="satisfied",
+            ),
+            "feature.named_face_local_edit.thumb_notch": SimpleNamespace(
+                node_id="feature.named_face_local_edit.thumb_notch",
+                kind="feature",
+                status="blocked",
+            ),
+            "feature.named_face_local_edit.label_recess": SimpleNamespace(
+                node_id="feature.named_face_local_edit.label_recess",
+                kind="feature",
+                status="blocked",
+            ),
+        }
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=6,
+        max_rounds=7,
+        all_tool_names=[
+            "execute_build123d",
+            "apply_cad_action",
+            "query_topology",
+            "query_kernel_state",
+            "query_feature_probes",
+            "validate_requirement",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "semantic_refresh_after_successful_local_finish"
+    assert policy.mode == "graph_refresh"
+    assert "execute_build123d" not in policy.allowed_tool_names
+    assert "query_feature_probes" in policy.allowed_tool_names
+    assert "query_kernel_state" in policy.allowed_tool_names
+
+
 def test_apply_contract_failure_keeps_local_finish_retry_lane_after_topology_refresh() -> None:
     run_state = RunState(
         session_id="session-local-finish-contract-retry",
@@ -4528,8 +4828,152 @@ def test_successful_create_sketch_keeps_next_turn_in_sketch_lane() -> None:
     assert policy is not None
     assert policy.policy_id == "continue_open_sketch_window_after_apply_action"
     assert policy.mode == "local_finish"
-    assert policy.allowed_tool_names == ["apply_cad_action", "query_sketch"]
-    assert policy.preferred_tool_names == ["apply_cad_action", "query_sketch"]
+    assert policy.allowed_tool_names == ["apply_cad_action"]
+    assert policy.preferred_tool_names == ["apply_cad_action"]
+
+
+def test_open_sketch_window_after_empty_query_sketch_still_prefers_apply_only() -> None:
+    host_payload = {
+        "success": True,
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 1,
+                "faces": 12,
+                "edges": 28,
+                "volume": 16000.0,
+                "bbox": [62.0, 40.0, 14.0],
+            }
+        },
+    }
+    run_state = RunState(
+        session_id="session-open-sketch-empty-query",
+        requirements={
+            "description": "Create a bracket with a topology-aware front-face notch."
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="initial whole-part build",
+            tool_calls=[ToolCallRecord(name="execute_build123d", category=ToolCategory.WRITE)],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload=host_payload,
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="pick front face",
+            tool_calls=[ToolCallRecord(name="query_topology", category=ToolCategory.READ)],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "matched_ref_ids": ["face:1:F_front"],
+                        "candidate_sets": [
+                            {
+                                "candidate_id": "front_faces",
+                                "label": "Front Faces",
+                                "entity_type": "face",
+                                "ref_ids": ["face:1:F_front"],
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    create_sketch_payload = {
+        "success": True,
+        "output_files": ["model.step", "geometry_info.json"],
+        "snapshot": host_payload["snapshot"],
+        "action_history": [
+            {
+                "step": 2,
+                "action_type": "create_sketch",
+                "action_params": {"face_ref": "face:1:F_front"},
+            }
+        ],
+    }
+    run_state.turns.append(
+        TurnRecord(
+            round_no=3,
+            decision_summary="open topology-anchored sketch",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "create_sketch",
+                        "action_params": {"face_ref": "face:1:F_front"},
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload=create_sketch_payload,
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=4,
+            decision_summary="inspected empty sketch despite create_sketch",
+            tool_calls=[ToolCallRecord(name="query_sketch", category=ToolCategory.READ)],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_sketch",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "step": 2,
+                        "sketch_state": {
+                            "plane": "XY",
+                            "profile_refs": [],
+                            "path_refs": [],
+                        },
+                    },
+                )
+            ],
+        )
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=5,
+        max_rounds=8,
+        all_tool_names=[
+            "apply_cad_action",
+            "query_sketch",
+            "query_topology",
+            "query_kernel_state",
+            "query_feature_probes",
+            "validate_requirement",
+            "execute_build123d",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "continue_open_sketch_window_after_apply_action"
+    assert policy.mode == "local_finish"
+    assert policy.allowed_tool_names == ["apply_cad_action"]
+    assert policy.preferred_tool_names == ["apply_cad_action"]
 
 
 def test_open_sketch_window_persists_after_query_sketch_when_profile_is_ready() -> None:
@@ -4662,6 +5106,162 @@ def test_open_sketch_window_persists_after_query_sketch_when_profile_is_ready() 
                             "profile_refs": ["profile:2:PR_1"],
                             "path_refs": [],
                         },
+                    },
+                )
+            ],
+        )
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=5,
+        max_rounds=8,
+        all_tool_names=[
+            "apply_cad_action",
+            "query_sketch",
+            "query_topology",
+            "query_kernel_state",
+            "query_feature_probes",
+            "validate_requirement",
+            "execute_build123d",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "continue_open_sketch_window_after_apply_action"
+    assert policy.mode == "local_finish"
+    assert policy.allowed_tool_names == ["apply_cad_action", "query_sketch"]
+    assert policy.preferred_tool_names == ["apply_cad_action", "query_sketch"]
+
+
+def test_open_sketch_window_with_fresh_profile_prefers_apply_over_query_sketch() -> None:
+    host_payload = {
+        "success": True,
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 1,
+                "faces": 12,
+                "edges": 28,
+                "volume": 16000.0,
+                "bbox": [62.0, 40.0, 14.0],
+            }
+        },
+    }
+    run_state = RunState(
+        session_id="session-open-sketch-fresh-profile",
+        requirements={
+            "description": "Create a bracket with a topology-aware front-face notch."
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="initial whole-part build",
+            tool_calls=[ToolCallRecord(name="execute_build123d", category=ToolCategory.WRITE)],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload=host_payload,
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="pick front face",
+            tool_calls=[ToolCallRecord(name="query_topology", category=ToolCategory.READ)],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "matched_ref_ids": ["face:1:F_front"],
+                        "candidate_sets": [
+                            {
+                                "candidate_id": "front_faces",
+                                "label": "Front Faces",
+                                "entity_type": "face",
+                                "preferred_ref_id": "face:1:F_front",
+                                "ref_ids": ["face:1:F_front"],
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=3,
+            decision_summary="open topology-anchored sketch",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "create_sketch",
+                        "action_params": {"face_ref": "face:1:F_front"},
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "output_files": ["model.step", "geometry_info.json"],
+                        "snapshot": host_payload["snapshot"],
+                        "action_history": [
+                            {
+                                "step": 2,
+                                "action_type": "create_sketch",
+                                "action_params": {"face_ref": "face:1:F_front"},
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=4,
+            decision_summary="add rectangle profile to open sketch",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "add_rectangle",
+                        "action_params": {"width": 7.0, "height": 4.0, "centered": True},
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "output_files": ["model.step", "geometry_info.json"],
+                        "snapshot": host_payload["snapshot"],
+                        "action_history": [
+                            {
+                                "step": 3,
+                                "action_type": "add_rectangle",
+                                "action_params": {"width": 7.0, "height": 4.0, "centered": True},
+                            }
+                        ],
                     },
                 )
             ],
@@ -4832,6 +5432,178 @@ def test_open_sketch_window_under_critical_budget_exits_to_code_first_escape() -
         run_state=run_state,
         round_no=5,
         max_rounds=5,
+        all_tool_names=[
+            "apply_cad_action",
+            "query_sketch",
+            "query_topology",
+            "query_kernel_state",
+            "query_feature_probes",
+            "validate_requirement",
+            "execute_build123d",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id == "code_escape_after_open_sketch_window_under_budget"
+    assert policy.mode == "code_first"
+
+
+def test_open_sketch_window_with_empty_sketch_and_two_rounds_left_exits_to_code_first_escape() -> None:
+    host_payload = {
+        "success": True,
+        "session_state_persisted": True,
+        "snapshot": {
+            "geometry": {
+                "solids": 1,
+                "faces": 12,
+                "edges": 28,
+                "volume": 16000.0,
+                "bbox": [62.0, 40.0, 14.0],
+            }
+        },
+    }
+    run_state = RunState(
+        session_id="session-open-sketch-two-rounds-left",
+        requirements={
+            "description": "Create a bracket with a front-face recess and remaining notch detail."
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="initial whole-part build",
+            tool_calls=[ToolCallRecord(name="execute_build123d", category=ToolCategory.WRITE)],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload=host_payload,
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="pick front face",
+            tool_calls=[ToolCallRecord(name="query_topology", category=ToolCategory.READ)],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "matched_ref_ids": ["face:1:F_front"],
+                        "candidate_sets": [
+                            {
+                                "candidate_id": "front_faces",
+                                "label": "Front Faces",
+                                "entity_type": "face",
+                                "preferred_ref_id": "face:1:F_front",
+                                "ref_ids": ["face:1:F_front"],
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=3,
+            decision_summary="open topology-anchored sketch",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    arguments={
+                        "action_type": "create_sketch",
+                        "action_params": {"face_ref": "face:1:F_front"},
+                    },
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "output_files": ["model.step", "geometry_info.json"],
+                        "snapshot": host_payload["snapshot"],
+                        "action_history": [
+                            {
+                                "step": 2,
+                                "action_type": "create_sketch",
+                                "action_params": {"face_ref": "face:1:F_front"},
+                            }
+                        ],
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=4,
+            decision_summary="refresh semantic state",
+            tool_calls=[ToolCallRecord(name="query_feature_probes", category=ToolCategory.READ)],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_feature_probes",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={"success": True, "probes": []},
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=5,
+            decision_summary="refresh kernel state",
+            tool_calls=[ToolCallRecord(name="query_kernel_state", category=ToolCategory.READ)],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_kernel_state",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={"success": True},
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=6,
+            decision_summary="inspect empty sketch",
+            tool_calls=[ToolCallRecord(name="query_sketch", category=ToolCategory.READ)],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_sketch",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "step": 2,
+                        "sketch_state": {
+                            "plane": "XY",
+                            "profile_refs": [],
+                            "path_refs": [],
+                        },
+                    },
+                )
+            ],
+        )
+    )
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=7,
+        max_rounds=8,
         all_tool_names=[
             "apply_cad_action",
             "query_sketch",
@@ -7301,6 +8073,137 @@ def test_last_round_local_finish_validation_evidence_gap_keeps_closure_validatio
     assert "finish_run" in policy.allowed_tool_names
     assert "apply_cad_action" not in policy.allowed_tool_names
     assert policy.preferred_tool_names[:2] == ["query_topology", "validate_requirement"]
+
+
+def test_successful_validation_after_local_finish_does_not_reopen_local_finish_read_stall_policy() -> None:
+    run_state = RunState(
+        session_id="session-local-finish-validated-complete",
+        requirements={
+            "description": (
+                "Create a service bracket with countersunk mounting holes and a front-face local recess."
+            )
+        },
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=1,
+            decision_summary="whole-part build succeeds",
+            tool_calls=[
+                ToolCallRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="execute_build123d",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {"solids": 1, "volume": 35000.0, "bbox": [66.0, 42.0, 16.0]}
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=2,
+            decision_summary="local finish succeeds with exact bottom face refs",
+            tool_calls=[
+                ToolCallRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="apply_cad_action",
+                    category=ToolCategory.WRITE,
+                    success=True,
+                    payload={
+                        "session_state_persisted": True,
+                        "snapshot": {
+                            "geometry": {"solids": 1, "volume": 34700.0, "bbox": [66.0, 42.0, 16.0]}
+                        },
+                    },
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=3,
+            decision_summary="refresh topology after local finish",
+            tool_calls=[
+                ToolCallRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="query_topology",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={"success": True, "candidate_sets": [{"candidate_id": "bottom_faces"}]},
+                )
+            ],
+        )
+    )
+    run_state.turns.append(
+        TurnRecord(
+            round_no=4,
+            decision_summary="validation confirms requirement complete",
+            tool_calls=[
+                ToolCallRecord(
+                    name="validate_requirement",
+                    category=ToolCategory.READ,
+                )
+            ],
+            tool_results=[
+                ToolResultRecord(
+                    name="validate_requirement",
+                    category=ToolCategory.READ,
+                    success=True,
+                    payload={
+                        "success": True,
+                        "is_complete": True,
+                        "blockers": [],
+                        "summary": "Requirement validation passed",
+                    },
+                )
+            ],
+        )
+    )
+    run_state.latest_validation = {
+        "success": True,
+        "is_complete": True,
+        "blockers": [],
+        "summary": "Requirement validation passed",
+    }
+
+    policy = _determine_turn_tool_policy(
+        run_state=run_state,
+        round_no=5,
+        max_rounds=8,
+        all_tool_names=[
+            "apply_cad_action",
+            "query_topology",
+            "query_kernel_state",
+            "validate_requirement",
+            "finish_run",
+        ],
+        previous_tool_failure_summary=None,
+    )
+
+    assert policy is not None
+    assert policy.policy_id != "apply_local_finish_after_topology_targeting_from_read_stall"
+    assert policy.allowed_tool_names == ["finish_run"]
+    assert policy.preferred_tool_names == ["finish_run"]
 
 
 def test_last_round_after_successful_local_finish_semantic_refresh_reopens_repair_lane() -> None:

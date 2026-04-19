@@ -222,7 +222,51 @@ def interpret_requirement_clauses(
         )
         for index, clause_text in enumerate(clauses, start=1)
     ]
+    interpretations = _reclassify_short_depth_modifier_fragments(interpretations)
     return build_interpretation_summary_from_clauses(interpretations, bundle=bundle)
+
+
+def _reclassify_short_depth_modifier_fragments(
+    clauses: list[RequirementClauseInterpretation],
+) -> list[RequirementClauseInterpretation]:
+    updated: list[RequirementClauseInterpretation] = []
+    for index, clause in enumerate(clauses):
+        if (
+            clause.status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
+            and _is_short_depth_modifier_fragment(clause.clause_text)
+            and index > 0
+            and clauses[index - 1].status == RequirementClauseStatus.VERIFIED
+        ):
+            updated.append(
+                clause.model_copy(
+                    update={
+                        "status": RequirementClauseStatus.NOT_APPLICABLE,
+                        "evidence": (
+                            "depth modifier fragment attached to the preceding verified feature clause"
+                        ),
+                        "observation_tags": list(
+                            dict.fromkeys([*clause.observation_tags, "clause:modifier_fragment"])
+                        ),
+                        "decision_hints": [],
+                    }
+                )
+            )
+            continue
+        updated.append(clause)
+    return updated
+
+
+def _is_short_depth_modifier_fragment(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if len(normalized.split()) > 4:
+        return False
+    return bool(
+        re.match(
+            r"^(?:about\s+|approximately\s+|approx\.?\s*)?-?\d+(?:\.\d+)?\s*(?:mm|millimeter|millimeters)\s+deep$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _index_supplemental_checks(
@@ -349,6 +393,12 @@ def _is_operation_only_clause(text: str) -> bool:
         normalized,
         flags=re.IGNORECASE,
     ):
+        return True
+    if re.search(
+        r"\b(topology-aware|topology aware|local finishing pass|local finish pass)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    ) and re.search(r"\buseful\b", normalized, flags=re.IGNORECASE):
         return True
     return False
 
@@ -3831,7 +3881,43 @@ def _interpret_feature_clause(
         )
     ):
         solids = int(bundle.geometry_facts.get("solids") or 0)
-        if solids >= 2:
+        expected_part_count_raw = bundle.geometry_facts.get("expected_part_count")
+        expected_part_count = (
+            int(expected_part_count_raw)
+            if isinstance(expected_part_count_raw, (int, float))
+            else None
+        )
+        requires_exact_two_part_match = any(
+            token in lowered
+            for token in (
+                "two-part",
+                "two part",
+                "lid and base",
+                "top lid",
+                "bottom base",
+            )
+        )
+        if requires_exact_two_part_match and expected_part_count is None:
+            expected_part_count = 2
+        if expected_part_count is not None and solids == expected_part_count:
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.VERIFIED,
+                evidence=f"geometry_solids={solids}; expected_parts={expected_part_count}",
+                observation_tags=clause_tags + ["geometry:multi_part", "validation:feature_alignment"],
+                decision_hints=[],
+            )
+        if expected_part_count is not None and solids > 0 and solids != expected_part_count:
+            return RequirementClauseInterpretation(
+                clause_id=clause_id,
+                clause_text=clause_text,
+                status=RequirementClauseStatus.CONTRADICTED,
+                evidence=f"geometry_solids={solids}; expected_parts={expected_part_count}",
+                observation_tags=clause_tags + ["validation:legacy_fail", "geometry:multi_part"],
+                decision_hints=["repair the part decomposition before finishing"],
+            )
+        if expected_part_count is None and solids >= 2:
             return RequirementClauseInterpretation(
                 clause_id=clause_id,
                 clause_text=clause_text,

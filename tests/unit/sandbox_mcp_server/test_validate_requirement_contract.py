@@ -309,6 +309,34 @@ def test_multi_part_clause_verifies_from_solid_count() -> None:
     assert "geometry_solids=2" in clause.evidence
 
 
+def test_two_part_lid_base_clause_rejects_extra_detached_solids() -> None:
+    bundle = RequirementEvidenceBundle(
+        requirement_text="Include two-part lid/base separation.",
+        requirement_clauses=["Include two-part lid/base separation."],
+        snapshot_step=1,
+        geometry_facts={
+            "solids": 6,
+            "expected_part_count": 2,
+        },
+        topology_facts={},
+        process_facts={},
+        observation_tags=[],
+        decision_hints=[],
+        coverage_confidence=0.0,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": "Include two-part lid/base separation."},
+        requirement_text="Include two-part lid/base separation.",
+    )
+
+    clause = summary.clause_interpretations[0]
+    assert clause.status == RequirementClauseStatus.CONTRADICTED
+    assert "geometry_solids=6" in clause.evidence
+    assert "expected_parts=2" in clause.evidence
+
+
 def test_attach_clause_grounding_surface_marks_explicit_anchor_clause_as_geometry_topology_bound() -> None:
     interpretation = RequirementInterpretationSummary(
         clause_interpretations=[
@@ -948,6 +976,64 @@ def test_interpretation_projects_unknown_high_level_clause_without_marking_compl
     assert summary.clause_interpretations[0].status == RequirementClauseStatus.INSUFFICIENT_EVIDENCE
     assert summary.insufficient_evidence == ["make_it_elegant"]
     assert summary.legacy_checks[0].status == RequirementCheckStatus.UNKNOWN
+
+
+def test_interpret_requirement_clauses_treats_local_finish_usefulness_clause_as_process_only() -> None:
+    requirement_text = "so that a topology-aware local finishing pass on the front face is useful"
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=1),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    assert summary.clause_interpretations[0].status == RequirementClauseStatus.NOT_APPLICABLE
+    assert summary.insufficient_evidence == []
+
+
+def test_interpret_requirement_clauses_demotes_short_depth_modifier_fragment_after_verified_feature() -> None:
+    requirement_text = (
+        "Add a centered rounded-rectangle recess on the front face sized about 12mm x 6mm "
+        "and 2mm deep."
+    )
+    bundle = RequirementEvidenceBuilder.build(
+        snapshot=_snapshot(step=1, solids=1),
+        history=[],
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+    )
+
+    summary = interpret_requirement_clauses(
+        bundle=bundle,
+        requirements={"description": requirement_text},
+        requirement_text=requirement_text,
+        supplemental_checks=[
+            RequirementCheck(
+                check_id="feature_target_face_edit",
+                label="Target-face edit uses a grounded face",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="face_targets=['front'], execute_build123d_geometry_fallback=true",
+            ),
+            RequirementCheck(
+                check_id="feature_target_face_subtractive_merge",
+                label="Target-face subtractive feature stays merged",
+                status=RequirementCheckStatus.PASS,
+                blocking=True,
+                evidence="face_targets=['front'] merged_subtractive_feature execute_build123d_geometry_fallback=true",
+            ),
+        ],
+    )
+
+    clause_status = {clause.clause_text: clause.status for clause in summary.clause_interpretations}
+    assert clause_status["2mm deep"] == RequirementClauseStatus.NOT_APPLICABLE
+    assert summary.insufficient_evidence == []
 
 
 def test_single_dimension_clauses_reuse_passed_dimension_checks() -> None:
