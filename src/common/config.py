@@ -131,7 +131,7 @@ class Settings(BaseSettings):
 
     # Reasoning Tier - Most capable for complex generation
     llm_reasoning_provider: str = "kimi"
-    llm_reasoning_model: str = "kimi-k2.5-thinking"
+    llm_reasoning_model: str = "kimi-k2.6"
 
     # Storage
     storage_type: str = "local"  # local | remote

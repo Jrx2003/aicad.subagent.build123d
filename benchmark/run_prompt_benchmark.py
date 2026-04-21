@@ -32,6 +32,7 @@ CSV_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "gbk", "latin1")
 PROMPT_FIELD_FALLBACK = ("pro_prompt_en", "geo_prompt_en", "prompt", "requirement")
 _TIMESTAMP_RUN_ID_RE = re.compile(r"^\d{8}_\d{6}$")
 _CASE_SET_MANIFEST_PATH = _REPO_ROOT / "benchmark" / "canary_case_sets.json"
+_ROLLOUT_PACKET_FAMILIES = ("explicit_anchor_hole", "axisymmetric_profile")
 
 
 @dataclass
@@ -1637,7 +1638,36 @@ def _build_case_baseline_metrics(case_payload: dict[str, Any]) -> dict[str, Any]
     latest_repair_packet_family_id = str(
         feature_graph_summary.get("latest_repair_packet_family_id") or ""
     ).strip()
-    repair_packet_available = repair_packet_count > 0 or bool(latest_repair_packet_family_id)
+    repair_packet_exposed_count = int(runtime_summary.get("repair_packet_exposed_count", 0) or 0)
+    repair_packet_supported_count = int(runtime_summary.get("repair_packet_supported_count", 0) or 0)
+    repair_packet_compile_success_count = int(
+        runtime_summary.get("repair_packet_compile_success_count", 0) or 0
+    )
+    repair_packet_compile_failure_count = int(
+        runtime_summary.get("repair_packet_compile_failure_count", 0) or 0
+    )
+    repair_packet_fallback_count = int(
+        runtime_summary.get("repair_packet_fallback_count", 0) or 0
+    )
+    repair_packet_fallback_reasons = (
+        runtime_summary.get("repair_packet_fallback_reasons")
+        if isinstance(runtime_summary.get("repair_packet_fallback_reasons"), dict)
+        else {}
+    )
+    execute_build123d_preflight_fail_count = int(
+        runtime_summary.get("execute_build123d_preflight_fail_count", 0) or 0
+    )
+    repair_packet_available = repair_packet_count > 0
+    repair_packet_families = sorted(
+        {
+            str(family_id).strip()
+            for family_id in [
+                latest_repair_packet_family_id,
+                *(feature_graph_summary.get("repair_packet_kinds") or []),
+            ]
+            if isinstance(family_id, str) and str(family_id).strip()
+        }
+    )
     token_total = (
         int(token_usage.get("total_tokens"))
         if isinstance(token_usage.get("total_tokens"), (int, float))
@@ -1651,6 +1681,7 @@ def _build_case_baseline_metrics(case_payload: dict[str, Any]) -> dict[str, Any]
     return {
         "case_id": str(case_payload.get("case_id") or ""),
         "status": status,
+        "planner_rounds": planner_rounds,
         "first_solid_success": first_positive_write is not None,
         "first_solid_round": first_solid_round,
         "first_solid_tool": (
@@ -1668,6 +1699,18 @@ def _build_case_baseline_metrics(case_payload: dict[str, Any]) -> dict[str, Any]
         "family_repair_packet_hit": repair_packet_available and status == "PASS",
         "repair_packet_count": repair_packet_count,
         "latest_repair_packet_family_id": latest_repair_packet_family_id or None,
+        "repair_packet_families": repair_packet_families,
+        "repair_packet_exposed_count": repair_packet_exposed_count,
+        "repair_packet_supported_count": repair_packet_supported_count,
+        "repair_packet_compile_success_count": repair_packet_compile_success_count,
+        "repair_packet_compile_failure_count": repair_packet_compile_failure_count,
+        "repair_packet_fallback_count": repair_packet_fallback_count,
+        "repair_packet_fallback_reasons": {
+            str(reason).strip(): int(count or 0)
+            for reason, count in repair_packet_fallback_reasons.items()
+            if isinstance(reason, str) and str(reason).strip()
+        },
+        "execute_build123d_preflight_fail_count": execute_build123d_preflight_fail_count,
         "hallucination_event_count": int(hallucination.get("event_count", 0) or 0),
         "hallucination_weighted_score": float(
             hallucination.get("weighted_score", 0.0) or 0.0
@@ -1706,12 +1749,22 @@ def _summarize_baseline_metrics(case_payloads: list[dict[str, Any]]) -> dict[str
         for item in case_metrics
         if item.get("status") == "PASS" and isinstance(item.get("tokens"), int)
     ]
+    pass_turn_values = [
+        int(item["planner_rounds"])
+        for item in case_metrics
+        if item.get("status") == "PASS" and isinstance(item.get("planner_rounds"), int)
+    ]
     family_repair_packet_cases = [
         item for item in case_metrics if item.get("family_repair_packet_available") is True
     ]
     family_repair_packet_hit_case_count = sum(
         1 for item in family_repair_packet_cases if item.get("family_repair_packet_hit") is True
     )
+    repair_packet_fallback_reason_counts = Counter()
+    for item in case_metrics:
+        for reason, count in (item.get("repair_packet_fallback_reasons") or {}).items():
+            if isinstance(reason, str) and reason.strip():
+                repair_packet_fallback_reason_counts[reason.strip()] += int(count or 0)
     hallucination_event_count = sum(
         int(item.get("hallucination_event_count", 0) or 0) for item in case_metrics
     )
@@ -1723,6 +1776,20 @@ def _summarize_baseline_metrics(case_payloads: list[dict[str, Any]]) -> dict[str
         for item in case_metrics
         if str(item.get("hallucination_primary_layer") or "").strip()
     )
+    rollout_family_case_counts: dict[str, int] = {}
+    rollout_family_pass_rates: dict[str, float] = {}
+    for family_id in _ROLLOUT_PACKET_FAMILIES:
+        family_cases = [
+            item
+            for item in case_metrics
+            if family_id in (item.get("repair_packet_families") or [])
+        ]
+        family_pass_count = sum(1 for item in family_cases if item.get("status") == "PASS")
+        rollout_family_case_counts[family_id] = len(family_cases)
+        rollout_family_pass_rates[family_id] = _safe_ratio(
+            family_pass_count,
+            len(family_cases),
+        )
     return {
         "total_cases": total_cases,
         "case_metrics": case_metrics,
@@ -1733,6 +1800,11 @@ def _summarize_baseline_metrics(case_payloads: list[dict[str, Any]]) -> dict[str
         "runtime_rewrite_turn_count": rewrite_turn_total,
         "runtime_write_turn_count": write_turn_total,
         "runtime_rewrite_rate": _safe_ratio(rewrite_turn_total, write_turn_total),
+        "mean_turns_per_pass": (
+            float(sum(pass_turn_values)) / float(len(pass_turn_values))
+            if pass_turn_values
+            else 0.0
+        ),
         "mean_repair_turns_after_first_write": (
             sum(repair_turn_values) / len(repair_turn_values) if repair_turn_values else 0.0
         ),
@@ -1751,6 +1823,30 @@ def _summarize_baseline_metrics(case_payloads: list[dict[str, Any]]) -> dict[str
             family_repair_packet_hit_case_count,
             len(family_repair_packet_cases),
         ),
+        "repair_packet_exposed_count": sum(
+            int(item.get("repair_packet_exposed_count", 0) or 0) for item in case_metrics
+        ),
+        "repair_packet_supported_count": sum(
+            int(item.get("repair_packet_supported_count", 0) or 0) for item in case_metrics
+        ),
+        "repair_packet_compile_success_count": sum(
+            int(item.get("repair_packet_compile_success_count", 0) or 0)
+            for item in case_metrics
+        ),
+        "repair_packet_compile_failure_count": sum(
+            int(item.get("repair_packet_compile_failure_count", 0) or 0)
+            for item in case_metrics
+        ),
+        "repair_packet_fallback_count": sum(
+            int(item.get("repair_packet_fallback_count", 0) or 0) for item in case_metrics
+        ),
+        "repair_packet_fallback_reason_counts": dict(repair_packet_fallback_reason_counts),
+        "execute_build123d_preflight_fail_count": sum(
+            int(item.get("execute_build123d_preflight_fail_count", 0) or 0)
+            for item in case_metrics
+        ),
+        "rollout_family_case_counts": rollout_family_case_counts,
+        "rollout_family_pass_rates": rollout_family_pass_rates,
         "hallucination_event_count": hallucination_event_count,
         "hallucination_weighted_score_mean": round(
             (sum(hallucination_weighted_scores) / len(hallucination_weighted_scores))
@@ -1853,6 +1949,24 @@ def _build_brief_case_row(case_payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "feature_probe_count": int(runtime_summary.get("feature_probe_count", 0) or 0),
         "probe_code_count": int(runtime_summary.get("probe_code_count", 0) or 0),
+        "repair_packet_exposed_count": int(
+            runtime_summary.get("repair_packet_exposed_count", 0) or 0
+        ),
+        "repair_packet_supported_count": int(
+            runtime_summary.get("repair_packet_supported_count", 0) or 0
+        ),
+        "repair_packet_compile_success_count": int(
+            runtime_summary.get("repair_packet_compile_success_count", 0) or 0
+        ),
+        "repair_packet_compile_failure_count": int(
+            runtime_summary.get("repair_packet_compile_failure_count", 0) or 0
+        ),
+        "repair_packet_fallback_count": int(
+            runtime_summary.get("repair_packet_fallback_count", 0) or 0
+        ),
+        "execute_build123d_preflight_fail_count": int(
+            runtime_summary.get("execute_build123d_preflight_fail_count", 0) or 0
+        ),
         "hallucination_events": int(hallucination.get("event_count", 0) or 0),
         "hallucination_weighted_score": float(
             hallucination.get("weighted_score", 0.0) or 0.0
@@ -2205,7 +2319,7 @@ def _write_brief_report(
     baseline_metrics = _summarize_baseline_metrics(case_payloads)
     failure_rows = [row for row in rows if row["status"] != "PASS"]
     tsv_lines = [
-        "case_id\tstatus\teval_passed\tvalidation_complete\tscore\ttokens\trounds\twrites\tinspections\tvalidation_calls\trepeated_validation\tread_only_turns\tprompt_chars\truntime_mode_effective\tprimary_write_mode\tfirst_write_tool\tfirst_solid_success\tfirst_solid_round\trepair_turns_after_first_write\truntime_rewrite_turn_count\tstructured_bootstrap_rounds\tstale_probe_carry_count\tstale_evidence_incidents\tfreshness_conflict_count\tevidence_conflict_count\tforced_policy_chain\tfeature_probe_count\tprobe_code_count\thallucination_events\thallucination_weighted_score\thallucination_primary_layer\tfailure_cluster\trecommended_fix_layer\tfirst_bad_turn_round\tfirst_bad_feature_instance\tlast_good_write_round\tlast_good_write_tool\tkernel_binding_count\tkernel_binding_kinds\tfeature_instance_count\tkernel_patch_count\tkernel_patch_kinds\trepair_packet_count\tlatest_repair_packet_family_id\tfamily_repair_packet_hit\tlatest_patch_repair_mode\tissue"
+        "case_id\tstatus\teval_passed\tvalidation_complete\tscore\ttokens\trounds\twrites\tinspections\tvalidation_calls\trepeated_validation\tread_only_turns\tprompt_chars\truntime_mode_effective\tprimary_write_mode\tfirst_write_tool\tfirst_solid_success\tfirst_solid_round\trepair_turns_after_first_write\truntime_rewrite_turn_count\tstructured_bootstrap_rounds\tstale_probe_carry_count\tstale_evidence_incidents\tfreshness_conflict_count\tevidence_conflict_count\tforced_policy_chain\tfeature_probe_count\tprobe_code_count\trepair_packet_exposed_count\trepair_packet_supported_count\trepair_packet_compile_success_count\trepair_packet_compile_failure_count\trepair_packet_fallback_count\texecute_build123d_preflight_fail_count\thallucination_events\thallucination_weighted_score\thallucination_primary_layer\tfailure_cluster\trecommended_fix_layer\tfirst_bad_turn_round\tfirst_bad_feature_instance\tlast_good_write_round\tlast_good_write_tool\tkernel_binding_count\tkernel_binding_kinds\tfeature_instance_count\tkernel_patch_count\tkernel_patch_kinds\trepair_packet_count\tlatest_repair_packet_family_id\tfamily_repair_packet_hit\tlatest_patch_repair_mode\tissue"
     ]
     for row in rows:
         score_text = "" if row["score"] is None else f"{row['score']:.4f}"
@@ -2218,7 +2332,7 @@ def _write_brief_report(
         validation_text = "done" if row["validation_complete"] else "open"
         forced_policy_chain_text = ",".join(row.get("forced_policy_chain") or [])
         tsv_lines.append(
-            f"{row['case_id']}\t{row['status']}\t{eval_text}\t{validation_text}\t{score_text}\t{token_text}\t{row['rounds']}\t{row['writes']}\t{row['inspections']}\t{row.get('validation_call_count') or 0}\t{row.get('repeated_validation_count') or 0}\t{row.get('read_only_turn_count') or 0}\t{row['prompt_chars']}\t{row.get('runtime_mode_effective') or ''}\t{row.get('primary_write_mode') or ''}\t{row.get('first_write_tool') or ''}\t{int(row.get('first_solid_success') is True)}\t{row.get('first_solid_round') or ''}\t{row.get('repair_turns_after_first_write') if row.get('repair_turns_after_first_write') is not None else ''}\t{row.get('runtime_rewrite_turn_count') or 0}\t{row.get('structured_bootstrap_rounds') or 0}\t{row.get('stale_probe_carry_count') or 0}\t{row.get('stale_evidence_incidents') or 0}\t{row.get('freshness_conflict_count') or 0}\t{row.get('evidence_conflict_count') or 0}\t{forced_policy_chain_text}\t{row.get('feature_probe_count') or 0}\t{row.get('probe_code_count') or 0}\t{row.get('hallucination_events') or 0}\t{row.get('hallucination_weighted_score') or 0.0}\t{row.get('hallucination_primary_layer') or ''}\t{row.get('failure_cluster') or ''}\t{row.get('recommended_fix_layer') or ''}\t{row.get('first_bad_turn_round') or ''}\t{row.get('first_bad_feature_instance') or ''}\t{row.get('last_good_write_round') or ''}\t{row.get('last_good_write_tool') or ''}\t{row.get('kernel_binding_count') or 0}\t{','.join(row.get('kernel_binding_kinds') or [])}\t{row.get('feature_instance_count') or 0}\t{row.get('kernel_patch_count') or 0}\t{','.join(row.get('kernel_patch_kinds') or [])}\t{row.get('repair_packet_count') or 0}\t{row.get('latest_repair_packet_family_id') or ''}\t{int(row.get('family_repair_packet_hit') is True)}\t{row.get('latest_patch_repair_mode') or ''}\t{row['issue']}"
+            f"{row['case_id']}\t{row['status']}\t{eval_text}\t{validation_text}\t{score_text}\t{token_text}\t{row['rounds']}\t{row['writes']}\t{row['inspections']}\t{row.get('validation_call_count') or 0}\t{row.get('repeated_validation_count') or 0}\t{row.get('read_only_turn_count') or 0}\t{row['prompt_chars']}\t{row.get('runtime_mode_effective') or ''}\t{row.get('primary_write_mode') or ''}\t{row.get('first_write_tool') or ''}\t{int(row.get('first_solid_success') is True)}\t{row.get('first_solid_round') or ''}\t{row.get('repair_turns_after_first_write') if row.get('repair_turns_after_first_write') is not None else ''}\t{row.get('runtime_rewrite_turn_count') or 0}\t{row.get('structured_bootstrap_rounds') or 0}\t{row.get('stale_probe_carry_count') or 0}\t{row.get('stale_evidence_incidents') or 0}\t{row.get('freshness_conflict_count') or 0}\t{row.get('evidence_conflict_count') or 0}\t{forced_policy_chain_text}\t{row.get('feature_probe_count') or 0}\t{row.get('probe_code_count') or 0}\t{row.get('repair_packet_exposed_count') or 0}\t{row.get('repair_packet_supported_count') or 0}\t{row.get('repair_packet_compile_success_count') or 0}\t{row.get('repair_packet_compile_failure_count') or 0}\t{row.get('repair_packet_fallback_count') or 0}\t{row.get('execute_build123d_preflight_fail_count') or 0}\t{row.get('hallucination_events') or 0}\t{row.get('hallucination_weighted_score') or 0.0}\t{row.get('hallucination_primary_layer') or ''}\t{row.get('failure_cluster') or ''}\t{row.get('recommended_fix_layer') or ''}\t{row.get('first_bad_turn_round') or ''}\t{row.get('first_bad_feature_instance') or ''}\t{row.get('last_good_write_round') or ''}\t{row.get('last_good_write_tool') or ''}\t{row.get('kernel_binding_count') or 0}\t{','.join(row.get('kernel_binding_kinds') or [])}\t{row.get('feature_instance_count') or 0}\t{row.get('kernel_patch_count') or 0}\t{','.join(row.get('kernel_patch_kinds') or [])}\t{row.get('repair_packet_count') or 0}\t{row.get('latest_repair_packet_family_id') or ''}\t{int(row.get('family_repair_packet_hit') is True)}\t{row.get('latest_patch_repair_mode') or ''}\t{row['issue']}"
         )
     (run_root / "brief_report.tsv").write_text(
         "\n".join(tsv_lines) + "\n",
@@ -2243,6 +2357,14 @@ def _write_brief_report(
         f"- runtime_mode_effective_counts: {dict(Counter(row.get('runtime_mode_effective') or 'unknown' for row in rows))}",
         f"- primary_write_modes: {dict(Counter(row.get('primary_write_mode') or 'unknown' for row in rows))}",
         f"- first_write_tools: {dict(Counter(row.get('first_write_tool') or 'unknown' for row in rows))}",
+        f"- repair_packet_exposed_count: {baseline_metrics.get('repair_packet_exposed_count')}",
+        f"- repair_packet_supported_count: {baseline_metrics.get('repair_packet_supported_count')}",
+        f"- repair_packet_compile_success_count: {baseline_metrics.get('repair_packet_compile_success_count')}",
+        f"- repair_packet_compile_failure_count: {baseline_metrics.get('repair_packet_compile_failure_count')}",
+        f"- repair_packet_fallback_count: {baseline_metrics.get('repair_packet_fallback_count')}",
+        f"- repair_packet_fallback_reason_counts: {baseline_metrics.get('repair_packet_fallback_reason_counts')}",
+        f"- execute_build123d_preflight_fail_count: {baseline_metrics.get('execute_build123d_preflight_fail_count')}",
+        f"- mean_turns_per_pass: {baseline_metrics.get('mean_turns_per_pass')}",
         f"- dominant_failure_clusters: {dict(Counter(row.get('failure_cluster') or 'none' for row in rows if row['status'] != 'PASS'))}",
         f"- recommended_fix_layer_counts: {dict(Counter(row.get('recommended_fix_layer') or 'unknown' for row in failure_rows))}",
         f"- repeated_validation_cases: {sum(1 for row in rows if int(row.get('repeated_validation_count', 0) or 0) > 0)}",
@@ -2532,6 +2654,12 @@ def _resolve_case_timeout_seconds(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = _parse_args()
+    if args.reasoning_provider.strip():
+        settings.llm_reasoning_provider = args.reasoning_provider.strip()
+        os.environ["LLM_REASONING_PROVIDER"] = args.reasoning_provider.strip()
+    if args.reasoning_model.strip():
+        settings.llm_reasoning_model = args.reasoning_model.strip()
+        os.environ["LLM_REASONING_MODEL"] = args.reasoning_model.strip()
     repo_root = Path(__file__).resolve().parents[1]
     dataset_root = (
         args.dataset_root

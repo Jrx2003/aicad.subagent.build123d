@@ -11,6 +11,25 @@ If the agent cannot discover a policy from this directory, that policy should be
 
 - Primary historical source: [../CAD_ACTION_ITERATION.md](../CAD_ACTION_ITERATION.md)
 - This directory reframes that source into stable records, contracts, and upgrade checkpoints.
+- Retired planner/codegen materials and historical working notes now live under [../archive/](../archive/).
+- Live runtime internals now use four top-level subdomains plus second-level package surfaces:
+  - `orchestration/policy/*`
+  - `prompting/{skill_assembly,requirements,failures,diagnostics_policy}`
+  - `semantic_kernel/{bootstrap,bindings,instances,taxonomy,recipes}`
+  - `tooling/{execution/*,lint/*}`
+    - rule-family owners live in `tooling/lint/families/{builders,planes,structural,keywords,path_profiles,countersinks}`
+    - AST-only helpers live in `tooling/lint/ast_utils.py`
+- Current refactor phase is **structure freeze + hotspot deconcentration**:
+  - do not add new top-level subdomains
+  - do not add more naming facades around the same implementation hotspot
+  - prefer moving real logic into the existing owner modules above
+  - `tooling/execution/__init__.py` is now a thin execution/generic-helper surface; family detector tests should read owner modules directly
+  - recent owner migrations moved plane-family heuristics into `tooling/lint/families/planes.py` and generic AST/build-context helpers into `tooling/lint/ast_utils.py`
+  - recent orchestration owner migrations moved sketch-window continuation helpers into `orchestration/policy/local_finish.py`, auto-validation/result helpers into `orchestration/policy/validation.py`, repair/failure cluster helpers into `orchestration/policy/code_repair.py`, and semantic-refresh lookback helpers into `orchestration/policy/semantic_refresh.py`
+  - `orchestration/policy/shared.py` now serves primarily as the live loop shell plus cross-lane shared utilities and compatibility rebinds
+  - current hotspot targets are `orchestration/policy/shared.py` (loop-shell size only), `prompting/context_builder.py`, `prompting/skill_assembly.py`, `tooling/lint/families/builders.py`, and `tooling/lint/preflight.py`
+  - `prompting` should only do owner cleanup and dedupe inside `requirements`, `skill_assembly`, and `context_builder`
+- Unit tests mirror those boundaries under `tests/unit/sub_agent_runtime/{orchestration,prompting,semantic_kernel,tooling}`.
 
 ## Read Order (for Agents)
 

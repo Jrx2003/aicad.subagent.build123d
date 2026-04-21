@@ -1,5 +1,14 @@
 # CODEX.md
 
+## Legacy Notice
+
+1. Canonical runtime behavior now lives under `docs/cad_iteration/` plus `docs/OBSERVABILITY.md`.
+2. If this file still mentions `execute_cadquery` / CadQuery as a live default lane, treat that as legacy unless current Build123d code and canonical docs explicitly corroborate it.
+3. For current tool policy, prefer:
+   - `execute_build123d` as the default first write
+   - `execute_repair_packet` as the preferred narrow repair lane when runtime-supported
+   - `apply_cad_action` only for bounded local finish on stable code-backed hosts
+
 ## Project Goal
 
 This repository is the isolated iterative CAD `sub_agent` runtime.
@@ -13,6 +22,35 @@ It focuses on post-main-agent loop quality: planning, action execution, evidence
    - `sub_agent_runtime.contracts.IterationRunResult`
 3. CLI: `aicad-iter-run`
 4. Benchmark entry: `benchmark/run_prompt_benchmark.sh`
+
+## Internal Runtime Packages (2026-04-20)
+
+1. Stable shells stay in place for compatibility:
+   - `sub_agent_runtime.runner`
+   - `sub_agent_runtime.agent_loop_v2`
+   - `sub_agent_runtime.feature_graph`
+   - `sub_agent_runtime.tool_runtime`
+2. New implementation should land under `sub_agent_runtime.orchestration` for:
+   - runner shell
+   - turn loop
+   - policy / stopping
+   - artifact persistence
+3. New prompt assembly and model-visible guidance should land under `sub_agent_runtime.prompting` for:
+   - context building
+   - skill-pack assembly
+   - runtime guidance
+   - compaction orchestration
+4. New semantic-state logic should land under `sub_agent_runtime.semantic_kernel` for:
+   - `DomainKernelState` models
+   - sync
+   - patches
+   - digest and repair packets
+5. New tool runtime logic should land under `sub_agent_runtime.tooling` for:
+   - tool catalog
+   - executor
+   - result normalization
+   - adapters / cad-action gate / preflight lint
+6. Treat the legacy top-level modules as facades or compatibility imports, not as the place to grow new logic.
 
 ## Runtime Principles
 
@@ -86,12 +124,8 @@ Each run keeps:
 
 ## Current Focus (2026-03-30)
 
-1. Move the planner/runtime contract from prompt-only repair heuristics toward a surface-bounded ReAct loop.
-2. Keep the new round contract explicit and inspectable:
-   - `active_surface`
-   - `surface_policy`
-   - `expected_outcome`
-   - `outcome_delta`
+1. This was the historical surface-bounded planner phase that has now been retired and archived.
+2. Live runtime work should express round structure through package-local policy, current evidence, and domain-kernel state rather than planner-local artifact blobs.
 3. Reduce low-signal planner payload noise so local blockers and local evidence dominate the next-round decision.
 4. Treat capability-family specialization as a pack-level concern instead of further inflating `runner.py`.
 5. Default live probes and benchmark reruns to `kimi` / `kimi-k2.5-thinking` unless a different provider/model is being explicitly diagnosed.
@@ -156,7 +190,7 @@ Each run keeps:
    - defer full graph-to-code and topology-history reconstruction
 9. Keep L1 stable on the default V2 path before widening changes to sampled L2 prompt repairs.
 10. Add context compaction grouped by assistant turn / tool round.
-11. Demote `active_surface`, `surface_policy`, `relation_focus`, `relation_eval`, and `feature_agenda` to diagnostics unless the runtime explicitly chooses to expose them.
+11. Retire old planner-local artifact tracks from the live path rather than carrying them forward as diagnostics-by-default.
 12. Keep `apply_cad_action` and `execute_cadquery` as peer write tools so the model can choose the simpler or more reliable path, but keep `execute_cadquery` first in model-facing catalog order.
 13. Split validation feedback into loop-safe core facts vs diagnostics-only explanations.
 
@@ -882,10 +916,7 @@ Current target planner interface:
    - `latest_action_result`
    - `latest_unresolved_blockers`
    - persistent `query_sketch/query_snapshot/query_geometry/query_topology` evidence when still current
-   - `active_surface`
-   - `surface_policy`
-   - previous-round `expected_outcome`
-   - current-round `outcome_delta`
+   - current runtime evidence summaries instead of retired planner-local artifact blobs
 
 ## Pointer / Topology Roadmap
 
@@ -1000,37 +1031,14 @@ Current target planner interface:
    - `radius`
    - sketch loop entities
    - path segment start/end tangents
-6. First-wave runtime `relation_focus` / `relation_eval` is now implemented in `src/sub_agent_runtime/relation_feedback.py`.
-   - focus families: `sweep_path_geometry`, `sweep_profile_section`, `sweep_result_annular_topology`, `annular_profile_section`, `annular_topology_core`
-   - eval items now carry `expected`, `observed`, `deviation`, `status`, `score`, and `blocking`
-7. Runner integration now:
-   - writes `queries/round_XX_relation_focus.json`
-   - writes `queries/round_XX_relation_eval.json`
-   - injects both into `prompts/round_XX_request_full.json`
-   - prefers specific `relation_eval.blocking_eval_ids` over broad sweep validator blockers where appropriate
-8. Keep `docs/work_logs/2026-03-27.md` updated as the canonical Chinese log for this reset.
+6. The first-wave relation-feedback experiment is historical only and now lives in `docs/archive/`.
+7. Runner-facing live documentation should stay under `docs/cad_iteration/`; archived daily notes now live under `docs/archive/work_logs/`.
 
 ## Current Focus (2026-03-30)
 
-1. Reduce architecture inflation in the iterative CAD runtime instead of adding more prompt-side patch rules.
-2. Introduce a planner-facing `active_surface` artifact so each round is bounded to one local work region:
-   - pre-solid base sketch
-   - path rail
-   - path profile
-   - loft profile stack
-   - face-edit window
-   - edge-feature window
-   - post-solid finishing window
-3. Move toward a surface-bounded ReAct loop:
-   - planner declares the local intent
-   - planner declares the expected near-term outcome
-   - runtime compares the expectation with actual evidence in the next round
-4. Keep `relation_base` objective and inspectable, but stop treating `relation_focus` / `relation_eval` as the only path toward autonomy.
-5. Treat capability families as explicit packs (`sweep`, `loft`, `face_edit`, `edge_feature`, `pattern`, `groove`, `trim`) instead of continuing to grow one giant runner policy layer.
-6. Remove low-signal planner payload noise where it does not materially help repair:
-   - generic `suggestions`
-   - requirement-agnostic `completeness`
-7. Keep every behavior change documented first under `docs/cad_iteration/` and every daily decision recorded in `docs/work_logs/2026-03-30.md`.
+1. This section is historical. The surface-bounded planner artifacts from this experiment were retired on 2026-04-21.
+2. Live runtime work should stay on package surfaces under `sub_agent_runtime/{orchestration,prompting,tooling,semantic_kernel}`.
+3. Keep every behavior change documented first under `docs/cad_iteration/`; older daily notes belong in `docs/archive/work_logs/`.
 
 ## Refactor Direction
 
@@ -1047,11 +1055,8 @@ The intended 2026-03-30 refactor direction is:
    - prompt-only policy rules that compensate for weak intermediate state
    - duplicated strategy spread across runner, registry, prompt assembly, and validator
 3. Add:
-   - `active_surface`
-   - `surface_policy`
-   - `expected_outcome`
-   - `outcome_delta`
    - explicit capability-pack boundaries
+   - package-local policy surfaces instead of old planner-local artifacts
 
 ## Active Risks
 
@@ -2027,7 +2032,7 @@ The intended 2026-03-30 refactor direction is:
 3. Repair policy remains unchanged:
    - inspect only failed cases
    - derive reusable execution / validation / rewrite defects
-   - update `docs/work_logs/*` and `docs/cad_iteration/*` before landing behavioral changes
+   - update `docs/archive/work_logs/*` and `docs/cad_iteration/*` before landing behavioral changes
 4. Partial confirmed baseline results so far:
    - `FAIL`: `L2_164`, `L2_149`, `L2_148`
    - `PASS`: `L2_96`, `L2_90`
@@ -2485,7 +2490,7 @@ The intended 2026-03-30 refactor direction is:
    - counts and summaries stay visible
    - full binding / revision detail is still preserved in trace artifacts
 4. Runtime/tool boundaries are thinner:
-   - runtime-local kernel tools now sit behind `sub_agent_runtime.tool_adapters.KernelStateToolAdapter`
+   - runtime-local kernel tools now sit behind `sub_agent_runtime.tooling.adapters.KernelStateToolAdapter`
    - this keeps semantic-state tooling out of sandbox geometry-service dispatch
 5. Current milestone priority remains:
    - keep `L1 full` stable

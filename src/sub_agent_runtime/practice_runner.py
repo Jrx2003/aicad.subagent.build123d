@@ -17,7 +17,7 @@ from typing import Any
 from common.run_artifacts import ensure_timestamp_run_id
 from sub_agent_runtime.contracts import IterationRequest
 from sub_agent_runtime.hallucination import normalize_hallucination_summary
-from sub_agent_runtime.runner import run_from_env
+from sub_agent_runtime.orchestration.runner import run_from_env
 
 
 _DEFAULT_MANIFEST_PATH = Path("practice") / "seed_manifest.json"
@@ -731,6 +731,13 @@ def _build_practice_run_summary(
         if isinstance(item.get("practice_analysis"), dict)
     ]
     hallucination_layers = Counter()
+    repair_packet_fallback_reason_counts = Counter()
+    repair_packet_exposed_count = 0
+    repair_packet_supported_count = 0
+    repair_packet_compile_success_count = 0
+    repair_packet_compile_failure_count = 0
+    repair_packet_fallback_count = 0
+    execute_build123d_preflight_fail_count = 0
     for analysis in analyses:
         hallucination = (
             analysis.get("hallucination")
@@ -740,6 +747,30 @@ def _build_practice_run_summary(
         primary_layer = str(hallucination.get("primary_layer") or "").strip()
         if primary_layer:
             hallucination_layers[primary_layer] += 1
+        runtime_summary = (
+            analysis.get("runtime_summary")
+            if isinstance(analysis.get("runtime_summary"), dict)
+            else {}
+        )
+        repair_packet_exposed_count += int(runtime_summary.get("repair_packet_exposed_count", 0) or 0)
+        repair_packet_supported_count += int(
+            runtime_summary.get("repair_packet_supported_count", 0) or 0
+        )
+        repair_packet_compile_success_count += int(
+            runtime_summary.get("repair_packet_compile_success_count", 0) or 0
+        )
+        repair_packet_compile_failure_count += int(
+            runtime_summary.get("repair_packet_compile_failure_count", 0) or 0
+        )
+        repair_packet_fallback_count += int(
+            runtime_summary.get("repair_packet_fallback_count", 0) or 0
+        )
+        execute_build123d_preflight_fail_count += int(
+            runtime_summary.get("execute_build123d_preflight_fail_count", 0) or 0
+        )
+        for reason, count in (runtime_summary.get("repair_packet_fallback_reasons") or {}).items():
+            if isinstance(reason, str) and reason.strip():
+                repair_packet_fallback_reason_counts[reason.strip()] += int(count or 0)
     return {
         "practice_identity": practice_identity,
         "total_cases": len(case_payloads),
@@ -769,6 +800,13 @@ def _build_practice_run_summary(
             for analysis in analyses
         ),
         "hallucination_primary_layer_counts": dict(hallucination_layers),
+        "repair_packet_exposed_count": repair_packet_exposed_count,
+        "repair_packet_supported_count": repair_packet_supported_count,
+        "repair_packet_compile_success_count": repair_packet_compile_success_count,
+        "repair_packet_compile_failure_count": repair_packet_compile_failure_count,
+        "repair_packet_fallback_count": repair_packet_fallback_count,
+        "repair_packet_fallback_reason_counts": dict(repair_packet_fallback_reason_counts),
+        "execute_build123d_preflight_fail_count": execute_build123d_preflight_fail_count,
         "fresh_targeting_action_count": sum(
             int(
                 (
@@ -841,17 +879,51 @@ def _write_practice_brief_report(*, run_root: Path, case_payloads: list[dict[str
                     hallucination.get("weighted_score", 0.0) or 0.0
                 ),
                 "hallucination_primary_layer": str(hallucination.get("primary_layer") or ""),
+                "repair_packet_exposed_count": int(
+                    runtime_summary.get("repair_packet_exposed_count", 0) or 0
+                ),
+                "repair_packet_supported_count": int(
+                    runtime_summary.get("repair_packet_supported_count", 0) or 0
+                ),
+                "repair_packet_compile_success_count": int(
+                    runtime_summary.get("repair_packet_compile_success_count", 0) or 0
+                ),
+                "repair_packet_compile_failure_count": int(
+                    runtime_summary.get("repair_packet_compile_failure_count", 0) or 0
+                ),
+                "repair_packet_fallback_count": int(
+                    runtime_summary.get("repair_packet_fallback_count", 0) or 0
+                ),
+                "execute_build123d_preflight_fail_count": int(
+                    runtime_summary.get("execute_build123d_preflight_fail_count", 0) or 0
+                ),
                 "issue": str(analysis.get("issue") or ""),
             }
         )
     tsv_lines = [
-        "case_id\tstatus\tvalidation_complete\trounds\twrites\tfirst_write_tool\tfeature_probe_count\tquery_topology_count\tquery_geometry_count\tquery_kernel_state_count\tvalidate_requirement_count\tlocal_targeting_action_count\tfresh_targeting_action_count\tstale_ref_action_count\tnonconcrete_ref_action_count\thost_role_targeting_observed\thallucination_events\thallucination_weighted_score\thallucination_primary_layer\tissue"
+        "case_id\tstatus\tvalidation_complete\trounds\twrites\tfirst_write_tool\tfeature_probe_count\tquery_topology_count\tquery_geometry_count\tquery_kernel_state_count\tvalidate_requirement_count\tlocal_targeting_action_count\tfresh_targeting_action_count\tstale_ref_action_count\tnonconcrete_ref_action_count\thost_role_targeting_observed\trepair_packet_exposed_count\trepair_packet_supported_count\trepair_packet_compile_success_count\trepair_packet_compile_failure_count\trepair_packet_fallback_count\texecute_build123d_preflight_fail_count\thallucination_events\thallucination_weighted_score\thallucination_primary_layer\tissue"
     ]
     for row in rows:
         tsv_lines.append(
-            f"{row['case_id']}\t{row['status']}\t{int(row['validation_complete'])}\t{row['rounds']}\t{row['writes']}\t{row['first_write_tool']}\t{row['feature_probe_count']}\t{row['query_topology_count']}\t{row['query_geometry_count']}\t{row['query_kernel_state_count']}\t{row['validate_requirement_count']}\t{row['local_targeting_action_count']}\t{row['fresh_targeting_action_count']}\t{row['stale_ref_action_count']}\t{row['nonconcrete_ref_action_count']}\t{int(row['host_role_targeting_observed'])}\t{row['hallucination_events']}\t{row['hallucination_weighted_score']}\t{row['hallucination_primary_layer']}\t{row['issue']}"
+            f"{row['case_id']}\t{row['status']}\t{int(row['validation_complete'])}\t{row['rounds']}\t{row['writes']}\t{row['first_write_tool']}\t{row['feature_probe_count']}\t{row['query_topology_count']}\t{row['query_geometry_count']}\t{row['query_kernel_state_count']}\t{row['validate_requirement_count']}\t{row['local_targeting_action_count']}\t{row['fresh_targeting_action_count']}\t{row['stale_ref_action_count']}\t{row['nonconcrete_ref_action_count']}\t{int(row['host_role_targeting_observed'])}\t{row['repair_packet_exposed_count']}\t{row['repair_packet_supported_count']}\t{row['repair_packet_compile_success_count']}\t{row['repair_packet_compile_failure_count']}\t{row['repair_packet_fallback_count']}\t{row['execute_build123d_preflight_fail_count']}\t{row['hallucination_events']}\t{row['hallucination_weighted_score']}\t{row['hallucination_primary_layer']}\t{row['issue']}"
         )
     (run_root / "brief_report.tsv").write_text("\n".join(tsv_lines) + "\n", encoding="utf-8")
+
+    repair_packet_fallback_reason_counts = Counter()
+    for item in case_payloads:
+        analysis = (
+            item.get("practice_analysis")
+            if isinstance(item.get("practice_analysis"), dict)
+            else {}
+        )
+        runtime_summary = (
+            analysis.get("runtime_summary")
+            if isinstance(analysis.get("runtime_summary"), dict)
+            else {}
+        )
+        for reason, count in (runtime_summary.get("repair_packet_fallback_reasons") or {}).items():
+            if isinstance(reason, str) and reason.strip():
+                repair_packet_fallback_reason_counts[reason.strip()] += int(count or 0)
 
     md_lines = [
         "# Practice Brief Report",
@@ -859,14 +931,21 @@ def _write_practice_brief_report(*, run_root: Path, case_payloads: list[dict[str
         f"- total_cases: {len(rows)}",
         f"- complete_cases: {sum(1 for row in rows if row['validation_complete'])}",
         f"- topology_query_cases: {sum(1 for row in rows if row['query_topology_count'] > 0)}",
+        f"- repair_packet_exposed_count: {sum(row['repair_packet_exposed_count'] for row in rows)}",
+        f"- repair_packet_supported_count: {sum(row['repair_packet_supported_count'] for row in rows)}",
+        f"- repair_packet_compile_success_count: {sum(row['repair_packet_compile_success_count'] for row in rows)}",
+        f"- repair_packet_compile_failure_count: {sum(row['repair_packet_compile_failure_count'] for row in rows)}",
+        f"- repair_packet_fallback_count: {sum(row['repair_packet_fallback_count'] for row in rows)}",
+        f"- repair_packet_fallback_reason_counts: {dict(repair_packet_fallback_reason_counts)}",
+        f"- execute_build123d_preflight_fail_count: {sum(row['execute_build123d_preflight_fail_count'] for row in rows)}",
         f"- hallucination_events: {sum(row['hallucination_events'] for row in rows)}",
         "",
-        "| case_id | status | validation | rounds | writes | first_write_tool | query_topology | query_geometry | query_kernel | validate | local_targeting | fresh_targeting | stale_ref | nonconcrete_ref | host_role | hallucination_events | hallucination_layer | issue |",
-        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |",
+        "| case_id | status | validation | rounds | writes | first_write_tool | query_topology | query_geometry | query_kernel | validate | local_targeting | fresh_targeting | stale_ref | nonconcrete_ref | host_role | packet_exposed | packet_supported | packet_compile_ok | packet_compile_fail | packet_fallback | preflight_fail | hallucination_events | hallucination_layer | issue |",
+        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for row in rows:
         md_lines.append(
-            f"| {row['case_id']} | {row['status']} | {int(row['validation_complete'])} | {row['rounds']} | {row['writes']} | {row['first_write_tool'] or '-'} | {row['query_topology_count']} | {row['query_geometry_count']} | {row['query_kernel_state_count']} | {row['validate_requirement_count']} | {row['local_targeting_action_count']} | {row['fresh_targeting_action_count']} | {row['stale_ref_action_count']} | {row['nonconcrete_ref_action_count']} | {int(row['host_role_targeting_observed'])} | {row['hallucination_events']} | {row['hallucination_primary_layer'] or '-'} | {row['issue'].replace('|', '/')} |"
+            f"| {row['case_id']} | {row['status']} | {int(row['validation_complete'])} | {row['rounds']} | {row['writes']} | {row['first_write_tool'] or '-'} | {row['query_topology_count']} | {row['query_geometry_count']} | {row['query_kernel_state_count']} | {row['validate_requirement_count']} | {row['local_targeting_action_count']} | {row['fresh_targeting_action_count']} | {row['stale_ref_action_count']} | {row['nonconcrete_ref_action_count']} | {int(row['host_role_targeting_observed'])} | {row['repair_packet_exposed_count']} | {row['repair_packet_supported_count']} | {row['repair_packet_compile_success_count']} | {row['repair_packet_compile_failure_count']} | {row['repair_packet_fallback_count']} | {row['execute_build123d_preflight_fail_count']} | {row['hallucination_events']} | {row['hallucination_primary_layer'] or '-'} | {row['issue'].replace('|', '/')} |"
         )
     (run_root / "brief_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
@@ -877,6 +956,38 @@ def _write_practice_run_diagnostics(*, run_root: Path, case_payloads: list[dict[
         for item in case_payloads
         if isinstance(item.get("practice_analysis"), dict)
     ]
+    repair_packet_fallback_reason_counts = Counter()
+    repair_packet_exposed_count = 0
+    repair_packet_supported_count = 0
+    repair_packet_compile_success_count = 0
+    repair_packet_compile_failure_count = 0
+    repair_packet_fallback_count = 0
+    execute_build123d_preflight_fail_count = 0
+    for analysis in analyses:
+        runtime_summary = (
+            analysis.get("runtime_summary")
+            if isinstance(analysis.get("runtime_summary"), dict)
+            else {}
+        )
+        repair_packet_exposed_count += int(runtime_summary.get("repair_packet_exposed_count", 0) or 0)
+        repair_packet_supported_count += int(
+            runtime_summary.get("repair_packet_supported_count", 0) or 0
+        )
+        repair_packet_compile_success_count += int(
+            runtime_summary.get("repair_packet_compile_success_count", 0) or 0
+        )
+        repair_packet_compile_failure_count += int(
+            runtime_summary.get("repair_packet_compile_failure_count", 0) or 0
+        )
+        repair_packet_fallback_count += int(
+            runtime_summary.get("repair_packet_fallback_count", 0) or 0
+        )
+        execute_build123d_preflight_fail_count += int(
+            runtime_summary.get("execute_build123d_preflight_fail_count", 0) or 0
+        )
+        for reason, count in (runtime_summary.get("repair_packet_fallback_reasons") or {}).items():
+            if isinstance(reason, str) and reason.strip():
+                repair_packet_fallback_reason_counts[reason.strip()] += int(count or 0)
     top_hallucination_cases = sorted(
         analyses,
         key=lambda item: float(
@@ -946,6 +1057,13 @@ def _write_practice_run_diagnostics(*, run_root: Path, case_payloads: list[dict[
                 ).get("host_role_targeting_observed")
             )
         ],
+        "repair_packet_exposed_count": repair_packet_exposed_count,
+        "repair_packet_supported_count": repair_packet_supported_count,
+        "repair_packet_compile_success_count": repair_packet_compile_success_count,
+        "repair_packet_compile_failure_count": repair_packet_compile_failure_count,
+        "repair_packet_fallback_count": repair_packet_fallback_count,
+        "repair_packet_fallback_reason_counts": dict(repair_packet_fallback_reason_counts),
+        "execute_build123d_preflight_fail_count": execute_build123d_preflight_fail_count,
         "top_hallucination_cases": top_hallucination_cases,
     }
     _write_json(run_root / "run_diagnostics.json", payload)
@@ -958,6 +1076,13 @@ def _write_practice_run_diagnostics(*, run_root: Path, case_payloads: list[dict[
         f"- local_targeting_cases: {payload['local_targeting_cases']}",
         f"- stale_targeting_cases: {payload['stale_targeting_cases']}",
         f"- host_role_targeting_cases: {payload['host_role_targeting_cases']}",
+        f"- repair_packet_exposed_count: {payload['repair_packet_exposed_count']}",
+        f"- repair_packet_supported_count: {payload['repair_packet_supported_count']}",
+        f"- repair_packet_compile_success_count: {payload['repair_packet_compile_success_count']}",
+        f"- repair_packet_compile_failure_count: {payload['repair_packet_compile_failure_count']}",
+        f"- repair_packet_fallback_count: {payload['repair_packet_fallback_count']}",
+        f"- repair_packet_fallback_reason_counts: {payload['repair_packet_fallback_reason_counts']}",
+        f"- execute_build123d_preflight_fail_count: {payload['execute_build123d_preflight_fail_count']}",
         "",
         "## Top Hallucination Cases",
         "",

@@ -282,7 +282,7 @@ async def test_iterative_runner_closes_sandbox_after_run() -> None:
                 summary=IterationRunSummary(
                     session_id="session-1",
                     provider="kimi",
-                    model="kimi-k2.5-thinking",
+                    model="kimi-k2.6",
                     planner_rounds=1,
                     executed_action_count=0,
                     executed_action_types=[],

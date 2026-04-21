@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from sub_agent_runtime.feature_graph import DomainKernelState
+from sub_agent_runtime.semantic_kernel.models import DomainKernelState
 
 _SEMANTIC_REFRESH_TOOL_NAMES = {
     "query_kernel_state",

@@ -76,6 +76,13 @@ def test_summarize_baseline_metrics_uses_existing_case_artifacts() -> None:
                 "validation_complete": True,
                 "stale_probe_carry_count": 1,
                 "evidence_conflict_count": 1,
+                "repair_packet_exposed_count": 2,
+                "repair_packet_supported_count": 1,
+                "repair_packet_compile_success_count": 1,
+                "repair_packet_compile_failure_count": 0,
+                "repair_packet_fallback_count": 1,
+                "repair_packet_fallback_reasons": {"unsupported_recipe": 1},
+                "execute_build123d_preflight_fail_count": 1,
                 "build123d_hallucination": {
                     "event_count": 2,
                     "weighted_score": 1.6,
@@ -109,6 +116,7 @@ def test_summarize_baseline_metrics_uses_existing_case_artifacts() -> None:
                 "domain_kernel_summary": {
                     "repair_packet_count": 1,
                     "latest_repair_packet_family_id": "half_shell_profile",
+                    "repair_packet_kinds": ["half_shell_profile"],
                 },
             },
         },
@@ -121,6 +129,13 @@ def test_summarize_baseline_metrics_uses_existing_case_artifacts() -> None:
                 "validation_complete": False,
                 "stale_probe_carry_count": 0,
                 "evidence_conflict_count": 0,
+                "repair_packet_exposed_count": 1,
+                "repair_packet_supported_count": 0,
+                "repair_packet_compile_success_count": 0,
+                "repair_packet_compile_failure_count": 1,
+                "repair_packet_fallback_count": 1,
+                "repair_packet_fallback_reasons": {"missing_recipe_id": 1},
+                "execute_build123d_preflight_fail_count": 0,
                 "build123d_hallucination": {
                     "event_count": 1,
                     "weighted_score": 0.6,
@@ -146,7 +161,8 @@ def test_summarize_baseline_metrics_uses_existing_case_artifacts() -> None:
                 ],
                 "domain_kernel_summary": {
                     "repair_packet_count": 0,
-                    "latest_repair_packet_family_id": None,
+                    "latest_repair_packet_family_id": "explicit_anchor_hole",
+                    "repair_packet_kinds": ["explicit_anchor_hole"],
                 },
             },
         },
@@ -159,12 +175,31 @@ def test_summarize_baseline_metrics_uses_existing_case_artifacts() -> None:
     assert summary["first_solid_success_rate"] == 0.5
     assert summary["requirement_complete_rate"] == 0.5
     assert summary["runtime_rewrite_rate"] == 1 / 3
+    assert summary["mean_turns_per_pass"] == 3.0
     assert summary["mean_repair_turns_after_first_write"] == 2.0
     assert summary["stale_evidence_incidents"] == 2
     assert summary["tokens_per_successful_case"] == 100.0
     assert summary["family_repair_packet_case_count"] == 1
     assert summary["family_repair_packet_hit_case_count"] == 1
     assert summary["family_repair_packet_hit_rate"] == 1.0
+    assert summary["repair_packet_exposed_count"] == 3
+    assert summary["repair_packet_supported_count"] == 1
+    assert summary["repair_packet_compile_success_count"] == 1
+    assert summary["repair_packet_compile_failure_count"] == 1
+    assert summary["repair_packet_fallback_count"] == 2
+    assert summary["repair_packet_fallback_reason_counts"] == {
+        "missing_recipe_id": 1,
+        "unsupported_recipe": 1,
+    }
+    assert summary["execute_build123d_preflight_fail_count"] == 1
+    assert summary["rollout_family_case_counts"] == {
+        "axisymmetric_profile": 0,
+        "explicit_anchor_hole": 1,
+    }
+    assert summary["rollout_family_pass_rates"] == {
+        "axisymmetric_profile": 0.0,
+        "explicit_anchor_hole": 0.0,
+    }
     assert summary["hallucination_event_count"] == 3
     assert summary["hallucination_weighted_score_mean"] == 1.1
     assert summary["hallucination_primary_layer_counts"] == {
@@ -184,6 +219,13 @@ def test_build_brief_case_row_includes_hallucination_columns() -> None:
                 "planner_rounds": 5,
                 "executed_action_count": 2,
                 "validation_complete": False,
+                "repair_packet_exposed_count": 2,
+                "repair_packet_supported_count": 1,
+                "repair_packet_compile_success_count": 1,
+                "repair_packet_compile_failure_count": 0,
+                "repair_packet_fallback_count": 1,
+                "repair_packet_fallback_reasons": {"unsupported_recipe": 1},
+                "execute_build123d_preflight_fail_count": 2,
                 "build123d_hallucination": {
                     "event_count": 4,
                     "weighted_score": 2.1,
@@ -201,6 +243,10 @@ def test_build_brief_case_row_includes_hallucination_columns() -> None:
     assert row["hallucination_events"] == 4
     assert row["hallucination_weighted_score"] == 2.1
     assert row["hallucination_primary_layer"] == "write_surface"
+    assert row["repair_packet_exposed_count"] == 2
+    assert row["repair_packet_compile_success_count"] == 1
+    assert row["repair_packet_fallback_count"] == 1
+    assert row["execute_build123d_preflight_fail_count"] == 2
 
 
 def test_diagnose_case_keeps_concrete_runtime_error_primary(tmp_path: Path) -> None:

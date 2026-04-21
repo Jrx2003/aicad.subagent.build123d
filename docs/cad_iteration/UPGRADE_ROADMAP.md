@@ -60,17 +60,32 @@ Done criteria:
 2. Attempt metrics include autonomy stage telemetry.
 3. Repair loop uses structured failure and validation evidence.
 
-## Stage 6 - Surface-Bounded ReAct
+## Stage 6 - Legacy Planner Cleanup
 
-Goal: constrain each round to one local work region and make repair depend on
-explicit expected-vs-observed feedback.
-Status: active planning.
+Goal: remove the old planner/codegen chain and keep historical material out of
+the live architecture narrative.
+Status: implemented.
 
 Done criteria:
 
-1. Runtime derives `active_surface` for each round.
-2. Planner receives `active_surface` and a local `surface_policy`.
-3. Planner can emit `expected_outcome`.
-4. Runtime computes `outcome_delta` from actual evidence.
-5. Benchmark-driven repair uses `active_surface + outcome_delta` before adding
-   new global prompt rules.
+1. `src/sub_agent/*` is removed from the live package set.
+2. Legacy prompt resources are removed from the active runtime path.
+3. Retired planning artifacts no longer appear in canonical runtime docs as live routes.
+4. Historical work logs, interview prep, and old plans/specs live under `docs/archive/`.
+
+## Stage 7 - Hotspot Deconcentration
+
+Goal: keep the current four-subdomain structure frozen while moving remaining real logic
+out of oversized hotspot files and into the owner modules that already exist.
+Status: active focus.
+
+Done criteria:
+
+1. `orchestration/policy/shared.py` no longer owns lane-specific code-repair or local-finish helpers.
+2. `orchestration/policy/shared.py` no longer owns auto-validation/result helpers or repair/failure-cluster helpers that have clear owner modules.
+3. `orchestration/policy/shared.py` no longer owns semantic-refresh lookback helpers that belong in `semantic_refresh.py`.
+4. `tooling/execution/batch.py` keeps execution coordination only and no longer owns lint/routing/recipe logic.
+5. `tooling/execution/__init__.py` no longer re-exports lint family detector implementations as a shadow owner surface.
+6. `tooling/lint/preflight.py` depends on `lint/{families,ast_utils,routing,recipes}` directly instead of reflecting rules back through execution.
+7. `prompting/skill_assembly.py` only changes through owner cleanup and requirement-semantic dedupe; no new package layers are introduced.
+8. Canonical docs continue to describe this phase as frozen structure plus hotspot deconcentration, not another architecture expansion.

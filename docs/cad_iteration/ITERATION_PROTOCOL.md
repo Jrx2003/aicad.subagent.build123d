@@ -12,17 +12,54 @@ The runtime has a single canonical execution path:
 
 There is no legacy planner/runtime path in the canonical protocol.
 
+## Internal Runtime Structure
+
+The stable external shell stays compatible, but the internal runtime is organized into four subdomains:
+
+1. `sub_agent_runtime.orchestration`
+   - run lifecycle
+   - turn loop facade
+   - turn policy lanes under `orchestration.policy.*`
+   - stopping and artifact persistence
+2. `sub_agent_runtime.prompting`
+   - context assembly
+   - runtime guidance
+   - skill assembly in `skill_assembly`
+   - requirement detectors in `requirements`
+   - failure handling in `failures`
+   - diagnostics inclusion policy
+3. `sub_agent_runtime.semantic_kernel`
+   - `DomainKernelState`
+   - sync / patches / digest surfaces
+   - bootstrap, binding, instance, taxonomy, and recipe internals
+4. `sub_agent_runtime.tooling`
+   - tool catalog
+   - execution layer under `tooling.execution.*`
+   - result normalization
+   - runtime adapters
+   - lint routing / families under `tooling.lint.*`
+
+The unit test tree mirrors these boundaries:
+
+1. `tests/unit/sub_agent_runtime/orchestration`
+2. `tests/unit/sub_agent_runtime/prompting`
+3. `tests/unit/sub_agent_runtime/semantic_kernel`
+4. `tests/unit/sub_agent_runtime/tooling`
+
 ## Turn Rules
 
 1. Multiple read tools may run in one turn when safe.
 2. At most one write tool may run in one turn.
 3. `execute_build123d` is the default first write.
-4. `apply_cad_action` is only for bounded local finishing after a stable code-backed host already exists.
-5. `validate_requirement` is a judge, not a per-turn mandatory action.
-6. `execute_build123d` may be rejected before sandbox execution by deterministic preflight lint when the code already contains known-invalid legacy API or argument usage.
-7. Known-invalid Build123d helper guesses such as bare `subtract(...)`, bare `rotate(...)`, bare `shell(...)`, wrong countersink helper names such as `CountersinkHole(...)`, nonexistent semi-profile helpers such as `Semicircle(...)`, unsupported primitive/workplane keywords such as `Cylinder(..., axis=...)`, `Box(..., depth=...)`, `Circle(..., arc_size=...)`, `CenterArc(..., end_angle=...)`, `Plane.rotated(..., (0, 0, 0))`, or `countersink_radius=...`, and `CounterSinkHole(...)` misused inside `BuildSketch(...)`, should be handled as preflight repair surfaces rather than spent as full sandbox retries.
-8. Invalid Python syntax or indentation inside `execute_build123d` should also be converted into a preflight repair surface so repeated failures stay on direct code repair instead of falling into probe-only semantic refresh loops.
-9. Nested `BuildPart()` cutter arithmetic inside an active host builder, for example `part.part -= cutter.part` after building the cutter in a nested builder block, should also be treated as a preflight repair surface because repeated subtractive placements can collapse to the wrong location even when the script executes successfully.
+4. `execute_repair_packet` is the preferred repair write when the latest `FamilyRepairPacket` is runtime-supported and exposes an executable recipe contract.
+5. If the latest packet is descriptive only or runtime-unsupported, its recipe/skeleton should stay as next-turn `execute_build123d` guidance rather than being treated as an executable packet lane.
+6. `apply_cad_action` is only for bounded local finishing after a stable code-backed host already exists.
+7. `apply_cad_action` uses the canonical shape `action_type + action_params`; face/edge/diameter/center/depth fields belong in `action_params`, not at the top level.
+8. `validate_requirement` is a judge, not a per-turn mandatory action.
+9. `execute_build123d` may be rejected before sandbox execution by deterministic preflight lint when the code already contains known-invalid legacy API or argument usage.
+10. Known-invalid Build123d helper guesses such as bare `subtract(...)`, bare `rotate(...)`, bare `shell(...)`, wrong countersink helper names such as `CountersinkHole(...)`, nonexistent semi-profile helpers such as `Semicircle(...)`, unsupported primitive/workplane keywords such as `Cylinder(..., axis=...)`, `Box(..., depth=...)`, `Circle(..., arc_size=...)`, `CenterArc(..., end_angle=...)`, `Plane.rotated(..., (0, 0, 0))`, or `countersink_radius=...`, and `CounterSinkHole(...)` misused inside `BuildSketch(...)`, should be handled as preflight repair surfaces rather than spent as full sandbox retries.
+11. Invalid Python syntax or indentation inside `execute_build123d` should also be converted into a preflight repair surface so repeated failures stay on direct code repair instead of falling into probe-only semantic refresh loops.
+12. Nested `BuildPart()` cutter arithmetic inside an active host builder, for example `part.part -= cutter.part` after building the cutter in a nested builder block, should also be treated as a preflight repair surface because repeated subtractive placements can collapse to the wrong location even when the script executes successfully.
 
 ## Canonical Turn Lanes
 
@@ -101,7 +138,7 @@ Preferred probe families should come from the freshest available source in this 
 3. latest validation blocker taxonomy
 4. requirement semantics fallback
 
-When fresh blockers persist after a write, runtime should prefer a `FamilyRepairPacket`-backed repair lane over a generic free-form retry whenever the kernel already has enough host, anchor, and parameter evidence to narrow the repair.
+When fresh blockers persist after a write, runtime should prefer a `FamilyRepairPacket`-backed repair lane over a generic free-form retry whenever the kernel already has enough host, anchor, and parameter evidence to narrow the repair. If the packet is runtime-supported, that lane should be `execute_repair_packet`; otherwise it should remain a code-first `execute_build123d` repair guided by the packet recipe/skeleton.
 
 For recurring families with low-variance repair recipes, the packet should carry a compact executable skeleton instead of only prose. Current examples include:
 

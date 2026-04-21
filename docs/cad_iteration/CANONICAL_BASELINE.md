@@ -26,6 +26,9 @@ The following surfaces must remain stable while internal convergence work contin
    - `query_kernel_state`
    - `patch_domain_kernel`
    - `validate_requirement`
+6. default Kimi provider defaults:
+   - standard: `kimi-k2.6`
+   - reasoning: `kimi-k2.6`
 
 ## Canonical Live Lane
 
@@ -36,15 +39,10 @@ Current live-lane policy:
 3. `validate_requirement` is the completion judge and must not become the default per-turn driver.
 4. `DomainKernelState` is the semantic authority for blocker, repair, and family-level guidance.
 
-## Diagnostics-Only Legacy Surface
+## Retired Planner Artifacts
 
-The following artifacts may still exist in traces and prompt diagnostics, but they are not the preferred live control surface:
-
-1. `active_surface`
-2. `surface_policy`
-3. `relation_focus`
-4. `relation_eval`
-5. `feature_agenda`
+Planner-local artifacts from the removed legacy planner chain are archived and
+must not be reintroduced as the live control surface.
 
 If new logic needs to influence the loop, it should first be expressed through:
 
@@ -52,6 +50,42 @@ If new logic needs to influence the loop, it should first be expressed through:
 2. domain-kernel evidence
 3. repair packet / patch guidance
 4. validator/core evidence
+
+## Current Internal Package Map
+
+The live external contract remains frozen, but the current implementation map is:
+
+1. `sub_agent_runtime.orchestration`
+   - public orchestration surface
+   - live loop shell remains `sub_agent_runtime.orchestration.policy.shared`
+   - lane helpers and repair/validation ownership live in `sub_agent_runtime.orchestration.policy.{code_repair,semantic_refresh,local_finish,validation}`
+   - `policy.shared` should only keep loop-shell logic, cross-lane shared utilities, and compatibility rebinds
+2. `sub_agent_runtime.prompting.context_builder`
+   - prompt payload and message-stack orchestration
+   - runtime skill assembly lives in `skill_assembly`
+   - requirement detectors live in `requirements`
+   - failure classification lives in `failures`
+3. `sub_agent_runtime.semantic_kernel._core`
+   - internal bridge only
+   - semantic implementation lives in `bootstrap`, `bindings`, `instances`, `taxonomy`, and `recipes`
+4. `sub_agent_runtime.tooling.execution`
+   - execution implementation lives in `tooling.execution.batch`
+   - `tooling.execution.__init__` is only a thin execution/generic-helper surface
+   - lint orchestration lives in `tooling.lint.preflight`
+   - lint family owners live in `tooling.lint.families.*`
+   - AST helpers live in `tooling.lint.ast_utils`
+   - plane-family helpers now live in `tooling.lint.families.planes`
+   - tests should import family owners directly instead of using the execution package surface for detector access
+
+Current consolidation rule:
+- keep this package map stable
+- when a hotspot remains too large, move behavior into the existing owner modules before introducing any new facade or package layer
+- current hotspot phase targets:
+  - `orchestration/policy/shared.py` -> keep shrinking only if more behavior can move into existing owner modules; the remaining target is loop-shell size rather than lane-helper ownership
+  - `tooling/lint/families/builders.py` -> absorb remaining builder-context heuristics that still sit too close to generic execution helpers
+  - `tooling/lint/preflight.py` -> keep only lint orchestration plus result assembly
+  - `prompting/context_builder.py` -> keep as the prompt assembly surface while moving any obvious non-assembly helper leakage into existing owner modules
+  - `prompting/skill_assembly.py` -> limit changes to owner cleanup and requirement-semantic dedupe
 
 ## Canary Benchmark Set
 

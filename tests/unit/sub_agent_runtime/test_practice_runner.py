@@ -5,6 +5,7 @@ import os
 
 from sub_agent_runtime.practice_runner import (
     PracticeSeed,
+    _build_practice_run_summary,
     _temporary_env_overrides,
     _summarize_read_model_usage,
     _write_practice_run_diagnostics,
@@ -219,6 +220,71 @@ def test_write_practice_run_diagnostics_only_counts_real_query_topology_usage(tm
 
     payload = json.loads((run_root / "run_diagnostics.json").read_text(encoding="utf-8"))
     assert payload["topology_query_cases"] == ["topology_case"]
+
+
+def test_build_practice_run_summary_aggregates_repair_packet_observability() -> None:
+    summary = _build_practice_run_summary(
+        practice_identity={"run_id": "practice-demo"},
+        case_payloads=[
+            {
+                "practice_analysis": {
+                    "case_id": "case_supported",
+                    "status": "complete",
+                    "hallucination": {
+                        "event_count": 1,
+                        "primary_layer": "repair_surface",
+                    },
+                    "runtime_summary": {
+                        "step_file_exists": True,
+                        "repair_packet_exposed_count": 2,
+                        "repair_packet_supported_count": 1,
+                        "repair_packet_compile_success_count": 1,
+                        "repair_packet_compile_failure_count": 0,
+                        "repair_packet_fallback_count": 1,
+                        "repair_packet_fallback_reasons": {"unsupported_recipe": 1},
+                        "execute_build123d_preflight_fail_count": 1,
+                    },
+                    "topology_read_model_usage": {
+                        "fresh_targeting_action_count": 1,
+                    },
+                }
+            },
+            {
+                "practice_analysis": {
+                    "case_id": "case_compile_miss",
+                    "status": "incomplete",
+                    "hallucination": {
+                        "event_count": 2,
+                        "primary_layer": "write_surface",
+                    },
+                    "runtime_summary": {
+                        "step_file_exists": False,
+                        "repair_packet_exposed_count": 1,
+                        "repair_packet_supported_count": 0,
+                        "repair_packet_compile_success_count": 0,
+                        "repair_packet_compile_failure_count": 1,
+                        "repair_packet_fallback_count": 1,
+                        "repair_packet_fallback_reasons": {"missing_recipe_id": 1},
+                        "execute_build123d_preflight_fail_count": 0,
+                    },
+                    "topology_read_model_usage": {
+                        "fresh_targeting_action_count": 0,
+                    },
+                }
+            },
+        ],
+    )
+
+    assert summary["repair_packet_exposed_count"] == 3
+    assert summary["repair_packet_supported_count"] == 1
+    assert summary["repair_packet_compile_success_count"] == 1
+    assert summary["repair_packet_compile_failure_count"] == 1
+    assert summary["repair_packet_fallback_count"] == 2
+    assert summary["repair_packet_fallback_reason_counts"] == {
+        "missing_recipe_id": 1,
+        "unsupported_recipe": 1,
+    }
+    assert summary["execute_build123d_preflight_fail_count"] == 1
 
 
 def test_summarize_read_model_usage_marks_stale_and_nonconcrete_refs(tmp_path) -> None:

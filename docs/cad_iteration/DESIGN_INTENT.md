@@ -129,10 +129,9 @@ Preferred judge/meta tools:
 2. `validate_requirement`
 3. `finish_run` (runtime-local virtual tool)
 
-Legacy planner-facing artifacts such as `active_surface`, `surface_policy`,
-`expected_outcome`, `outcome_delta`, `relation_focus`, `relation_eval`, and
-`feature_agenda` may remain available for diagnostics, but they are no longer
-the preferred control surface for the main decision loop.
+Retired planner-local artifacts from the removed planner/codegen chain are
+archived under `docs/archive/` and are not valid control surfaces for the main
+decision loop.
 
 Validation lanes now follow this split:
 

@@ -62,6 +62,22 @@ Canonical runtime/kernel names:
 
 Compatibility graph aliases are no longer part of the live runtime surface.
 
+Internal implementation now lives under `sub_agent_runtime.semantic_kernel`.
+Live semantic-kernel logic lives in:
+
+1. `models`
+2. `sync`
+3. `patches`
+4. `digest`
+5. `repair_packets`
+6. `bootstrap`
+7. `bindings`
+8. `instances`
+9. `taxonomy`
+10. `recipes`
+
+The `_core` module remains an internal bridge only and should not reclaim new semantic implementation.
+
 ## Repair-Oriented Objects
 
 `FeatureInstance` carries instance-level semantic ownership:

@@ -42,7 +42,6 @@ packages = [
   "src/llm",
   "src/sandbox",
   "src/sandbox_mcp_server",
-  "src/sub_agent",
   "src/sub_agent_runtime",
 ]
 

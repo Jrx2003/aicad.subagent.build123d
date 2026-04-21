@@ -180,10 +180,10 @@ class OpenAICompatibleClient:
 
     def _effective_temperature(self, requested_temperature: float) -> float:
         model_name = self._model.lower()
-        if model_name.startswith("kimi-k2.5-thinking"):
+        if _is_kimi_k2_thinking_model(model_name):
             return 1.0
-        # Kimi K2.5 instant mode requires temperature=0.6.
-        if model_name.startswith("kimi-k2.5"):
+        # Kimi K2.x non-thinking mode requires temperature=0.6.
+        if _is_kimi_k2_chat_model(model_name):
             return 0.6
         # Other Kimi chat models currently require temperature=1.
         if model_name.startswith("kimi-"):
@@ -192,21 +192,21 @@ class OpenAICompatibleClient:
 
     def _provider_invoke_overrides(self) -> dict:
         model_name = self._model.lower()
-        if model_name.startswith("kimi-k2.5-thinking"):
+        if _is_kimi_k2_thinking_model(model_name):
             return {"extra_body": {"thinking": {"type": "enabled"}}}
-        if model_name.startswith("kimi-k2.5"):
+        if _is_kimi_k2_chat_model(model_name):
             return {"extra_body": {"thinking": {"type": "disabled"}}}
         return {}
 
     def _resolve_api_model_name(self, model: str) -> str:
         model_name = model.strip().lower()
-        if model_name.startswith("kimi-k2.5-thinking"):
-            return "kimi-k2.5"
+        if _is_kimi_k2_thinking_model(model_name):
+            return model_name.removesuffix("-thinking")
         return model
 
     def _resolve_request_timeout(self, timeout: float | None) -> float | None:
         if timeout is None:
-            if self._model.lower().startswith("kimi-k2.5-thinking"):
+            if _is_kimi_k2_thinking_model(self._model.lower()):
                 return 180.0
             return None
         return max(0.1, float(timeout))
@@ -331,3 +331,13 @@ def _strip_ref_conflicting_descriptions(node: Any) -> None:
     if isinstance(node, list):
         for item in node:
             _strip_ref_conflicting_descriptions(item)
+
+
+def _is_kimi_k2_thinking_model(model_name: str) -> bool:
+    normalized = model_name.strip().lower()
+    return normalized.startswith("kimi-k2.") and normalized.endswith("-thinking")
+
+
+def _is_kimi_k2_chat_model(model_name: str) -> bool:
+    normalized = model_name.strip().lower()
+    return normalized.startswith("kimi-k2.") and not normalized.endswith("-thinking")

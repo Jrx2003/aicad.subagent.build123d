@@ -120,7 +120,7 @@ cd ~/code/aicad.subagent.build123d
 ./benchmark/run_prompt_benchmark.sh \
   --cases L1_20 \
   --reasoning-provider kimi \
-  --reasoning-model kimi-k2.5-thinking
+  --reasoning-model kimi-k2.6
 ```
 
 Run with explicit provider/model:
@@ -130,15 +130,15 @@ cd ~/code/aicad.subagent.build123d
 ./benchmark/run_prompt_benchmark.sh \
   --cases L1_20 \
   --reasoning-provider kimi \
-  --reasoning-model kimi-k2.5-thinking \
+  --reasoning-model kimi-k2.6 \
   --batch-actions \
   --max-rounds 2
 ```
 
 Operational default:
 
-1. Prefer `kimi` / `kimi-k2.5-thinking` for real probes and benchmark reruns unless you are explicitly diagnosing another provider/model.
-2. If your shell/default `.env` points to another provider, pass `--reasoning-provider kimi --reasoning-model kimi-k2.5-thinking` explicitly.
+1. Prefer `kimi` / `kimi-k2.6` for real probes and benchmark reruns unless you are explicitly diagnosing another provider/model.
+2. If your shell/default `.env` points to another provider, pass `--reasoning-provider kimi --reasoning-model kimi-k2.6` explicitly.
 3. The benchmark runtime is fixed to `v2`; there is no live `legacy` selection surface anymore.
 4. CLI flags such as `--reasoning-provider` and `--reasoning-model` are authoritative.
 5. If the CLI omits them, caller-provided environment variables such as `LLM_REASONING_PROVIDER` and `LLM_REASONING_MODEL` remain authoritative and must not be overwritten by repository `.env`.
@@ -189,7 +189,7 @@ Archive behavior:
 Environment variables used by `run_aci_live_probe.sh`:
 
 1. `LLM_REASONING_PROVIDER` (`glm`/`kimi`/`openai`/...)
-2. `LLM_REASONING_MODEL` (e.g. `glm-4.7`, `kimi-k2.5-thinking`)
+2. `LLM_REASONING_MODEL` (e.g. `glm-4.7`, `kimi-k2.6`)
 3. `AICAD_PROBE_REQUIREMENT` (plain text requirement)
 4. `AICAD_PROBE_REQUIREMENTS_FILE` (JSON object file path)
 5. `AICAD_PROBE_MAX_ROUNDS` (default `4`)

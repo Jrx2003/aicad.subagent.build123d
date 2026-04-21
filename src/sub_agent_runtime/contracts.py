@@ -61,6 +61,13 @@ class IterationRunSummary(BaseModel):
     forced_policy_chain: list[str] = Field(default_factory=list)
     feature_probe_count: int = 0
     probe_code_count: int = 0
+    repair_packet_exposed_count: int = 0
+    repair_packet_supported_count: int = 0
+    repair_packet_compile_success_count: int = 0
+    repair_packet_compile_failure_count: int = 0
+    repair_packet_fallback_count: int = 0
+    repair_packet_fallback_reasons: dict[str, int] = Field(default_factory=dict)
+    execute_build123d_preflight_fail_count: int = 0
     build123d_hallucination: dict[str, Any] = Field(default_factory=dict)
     baseline_comparison: dict[str, Any] = Field(default_factory=dict)
     failure_cluster: str | None = None

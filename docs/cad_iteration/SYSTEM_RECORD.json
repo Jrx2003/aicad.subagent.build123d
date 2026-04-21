@@ -1,7 +1,7 @@
 {
   "record_id": "cad_iteration_system_record_v2_only",
-  "record_version": "3.1.18",
-  "last_updated": "2026-04-13",
+  "record_version": "3.5.0",
+  "last_updated": "2026-04-21",
   "canonical_dir": "docs/cad_iteration",
   "execution_order": [1, 2, 3, 4, 5],
   "mission": {
@@ -12,9 +12,87 @@
     "stable_api_shell": "sub_agent_runtime.runner.IterativeSubAgentRunner",
     "output_artifact": "model.step"
   },
+  "internal_runtime_packages": {
+    "compatibility_policy": "external contracts stay stable while implementation migrates behind package entrypoints and owner modules",
+    "current_refactor_phase": "frozen_structure_plus_hotspot_deconcentration",
+    "orchestration": {
+      "package": "sub_agent_runtime.orchestration",
+      "second_level_surfaces": [
+        "policy.shared",
+        "policy.code_repair",
+        "policy.semantic_refresh",
+        "policy.local_finish",
+        "policy.validation"
+      ],
+      "responsibilities": [
+        "runner shell",
+        "turn loop",
+        "policy selection",
+        "stopping and artifact persistence",
+        "keep lane-specific policy logic in policy/* owner modules",
+        "treat policy.shared as the loop shell plus cross-lane shared utilities and compatibility rebinds"
+      ]
+    },
+    "prompting": {
+      "package": "sub_agent_runtime.prompting",
+      "second_level_surfaces": [
+        "context_builder",
+        "skill_assembly",
+        "requirements",
+        "failures",
+        "diagnostics_policy"
+      ],
+      "responsibilities": [
+        "context assembly",
+        "message stack building",
+        "runtime guidance and skill notes",
+        "prompt compaction orchestration",
+        "owner cleanup only; no new prompting package layers"
+      ]
+    },
+    "semantic_kernel": {
+      "package": "sub_agent_runtime.semantic_kernel",
+      "second_level_surfaces": [
+        "bootstrap",
+        "bindings",
+        "instances",
+        "taxonomy",
+        "recipes",
+        "_core (compat facade)"
+      ],
+      "responsibilities": [
+        "DomainKernelState models",
+        "evidence sync",
+        "repair packets",
+        "patch and digest surfaces"
+      ]
+    },
+    "tooling": {
+      "package": "sub_agent_runtime.tooling",
+      "second_level_surfaces": [
+        "execution",
+        "execution.dispatch",
+        "execution.cancellation",
+        "execution.writes",
+        "execution.__init__ (generic surface only)",
+        "lint.routing",
+        "lint.ast_utils",
+        "lint.families.*"
+      ],
+      "responsibilities": [
+        "tool catalog",
+        "executor and result normalization",
+        "runtime adapters",
+        "cad-action gate and preflight lint",
+        "lint family ownership in lint/families with ast_utils/routing/recipes as stable helper owners",
+        "execution package surface exports ToolRuntime plus generic helper functions only"
+      ]
+    }
+  },
   "domain_kernel_contract": {
     "authoritative_semantic_state": true,
-    "canonical_state_class": "sub_agent_runtime.feature_graph.DomainKernelState",
+    "canonical_state_class": "sub_agent_runtime.semantic_kernel.models.DomainKernelState",
+    "legacy_compat_state_class": null,
     "canonical_surface_name": "DomainKernelState",
     "canonical_digest_key": "domain_kernel_digest",
     "canonical_runtime_tools": [

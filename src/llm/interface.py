@@ -37,8 +37,8 @@ TIERED_MODELS: dict[str, dict[str, str]] = {
     },
     "kimi": {
         "rapid": "kimi-k2-instruct",
-        "standard": "kimi-k2.5",
-        "reasoning": "kimi-k2-thinking",
+        "standard": "kimi-k2.6",
+        "reasoning": "kimi-k2.6",
     },
     "deepseek": {
         "rapid": "deepseek-v3.2",

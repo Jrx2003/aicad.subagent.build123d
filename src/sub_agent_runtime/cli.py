@@ -6,7 +6,7 @@ from typing import Any
 
 from common.config import settings
 from sub_agent_runtime.contracts import IterationRequest
-from sub_agent_runtime.runner import run_from_env
+from sub_agent_runtime.orchestration.runner import run_from_env
 
 
 def _load_requirements(args: argparse.Namespace) -> dict[str, Any]:

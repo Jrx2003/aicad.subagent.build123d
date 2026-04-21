@@ -121,3 +121,41 @@ Per run token totals are persisted in `summary.json -> token_usage`:
 2. `output_tokens`
 3. `total_tokens`
 4. `rounds_with_usage`
+
+## Repair Packet Visibility
+
+Packet-first repair observability is exposed both per event and per run summary.
+
+Per-event trace visibility in `trace/events.jsonl`:
+
+1. `phase=repair_packet_exposed`
+2. `phase=repair_packet_supported`
+3. `phase=repair_packet_compile_succeeded`
+4. `phase=repair_packet_compile_failed`
+5. `phase=repair_packet_fallback`
+6. `phase=build123d_preflight_failed`
+
+Run-level summary visibility in `summary.json`:
+
+1. `repair_packet_exposed_count`
+2. `repair_packet_supported_count`
+3. `repair_packet_compile_success_count`
+4. `repair_packet_compile_failure_count`
+5. `repair_packet_fallback_count`
+6. `repair_packet_fallback_reasons`
+7. `execute_build123d_preflight_fail_count`
+
+Benchmark/practice aggregation visibility:
+
+1. `brief_report.md` / `brief_report.tsv`
+2. `run_diagnostics.md` / `run_diagnostics.json`
+3. benchmark baseline metrics additionally expose:
+   - `mean_turns_per_pass`
+   - `runtime_rewrite_rate`
+   - rollout-family slices such as `rollout_family_case_counts` and `rollout_family_pass_rates`
+
+Compatibility note:
+
+1. `family_repair_packet_hit` remains as a deprecated compatibility metric.
+2. It does not mean `execute_repair_packet` compiled or executed successfully.
+3. Prefer the explicit packet observability counters above for new analysis and reporting.
